@@ -96,7 +96,7 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_
         mark = "+" if e.get("is_library_material") else "-"
         kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
         click.echo(f"{fid:5} {mark} {kind or '?':13} {r['extract_s'] + r.get('decide_s', 0):5.1f}s "
-                   f"{r.get('abstract_method', '-'):17} {e.get('title', '')[:60]}")
+                   f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     db.finish_run(conn, run_id, stats)
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
