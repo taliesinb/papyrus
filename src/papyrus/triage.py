@@ -133,17 +133,39 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = 7000) -
     return header + "\n\n" + "\n".join(body)
 
 
-def detect_ids(conn: sqlite3.Connection, file_id: int, state: str) -> dict[str, Any]:
-    try:
-        from .enrich import ids as idmod  # provided by the enrichment module
-    except ImportError:
-        return {}
+def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
+    """Identifiers of *this* document, not of papers it cites.
+
+    Trusted, in order: filename and download URLs; then page 1 (arXiv stamp in
+    the margin, DOI/ISBN in the header or footer). Later pages are ignored
+    because they are full of references.
+    """
+    from .enrich import ids as idmod
+
+    names_urls = []
+    for r in conn.execute(
+        "SELECT c.extra FROM context_refs r JOIN contexts c ON c.id=r.context_id"
+        " WHERE r.file_id=? AND c.kind='filesystem'", (file_id,)):
+        extra = json.loads(r["extra"] or "{}")
+        names_urls += [extra.get("filename") or "", *(extra.get("where_froms") or [])]
+    page1 = conn.execute("SELECT text FROM file_pages WHERE file_id=? AND page=1", (file_id,)).fetchone()
+    page1 = page1["text"] if page1 else ""
+
     found: dict[str, Any] = {}
-    try:
-        found = idmod.detect_all(state)
-    except AttributeError:
-        pass
-    return found
+    meta = idmod.detect("\n".join(names_urls))
+    p1 = idmod.detect(page1)
+    arx = meta.best_arxiv or next((a for a in p1.arxiv if a.explicit), None)
+    if arx:
+        found["arxiv"], found["arxiv_version"] = arx.id, arx.version
+    dois = [d for d in meta.dois + p1.dois if not idmod.is_arxiv_doi(d)]
+    if dois:
+        found["doi"] = dois[0]
+    isbns = meta.isbns + p1.isbns
+    if isbns:
+        found["isbn"] = isbns[0]
+        if len(isbns) > 1:
+            found["isbns"] = isbns
+    return {k: v for k, v in found.items() if v}
 
 
 def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decider: Decider | None,
@@ -177,7 +199,7 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
                            run_id=run_id)
                 db.assert_(conn, "file", file_id, key + "_probs", ans.probabilities, source=dtag, run_id=run_id)
                 result[key] = (value, round(ans.confidence, 3))
-        ids = detect_ids(conn, file_id, state)
+        ids = detect_ids(conn, file_id)
         if ids:
             db.assert_(conn, "file", file_id, "ids", ids, source="heuristic:regex", run_id=run_id)
             result["ids"] = ids
