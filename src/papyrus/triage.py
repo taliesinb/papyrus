@@ -19,8 +19,12 @@ from typing import Any
 
 from . import db
 from .llm.base import Backend, Decider, Question
+from .textspan import heuristic_abstract, locate
 
-PROMPT_VERSION = "triage-1"
+# triage-1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
+# triage-2: model gives start/end anchors; the exact span is cut from the page text.
+PROMPT_VERSION = "triage-2"
+ANCHOR_WORDS = 8
 
 KINDS = {
     "paper": "a research paper or preprint (journal, conference, arXiv, workshop paper)",
@@ -45,9 +49,11 @@ metadata. Rules:
 - Use only information present in the input; do not invent authors, years or venues.
 - title: the document's real title as printed (not the filename), in normal capitalisation.
 - authors: full names in printed order, without affiliations, footnote marks or emails.
-- abstract: copy the abstract verbatim only if the text contains one; otherwise has_abstract=false and
-  abstract is the empty string. Never put other page text (copyright pages, forms, tables) there.
-- summary: one or two sentences in your own words describing what the document is about.
+- abstract: do NOT copy it. If the text contains an abstract, set has_abstract=true and give
+  abstract_start = its first 8 words and abstract_end = its last 8 words, copied exactly as they
+  appear (excluding the heading word 'Abstract'). Otherwise has_abstract=false and both are empty.
+  Never point at other page text (copyright pages, forms, tables).
+- summary: one sentence in your own words describing what the document is about.
 - topics: 2-6 specific topics, each with the academic field it belongs to
   (e.g. {"name": "equality saturation", "field": "programming languages"}).
 - year: the publication year if stated or clearly implied (arXiv id 2412.xxxxx means 2024)."""
@@ -66,8 +72,10 @@ EXTRACT_SCHEMA: dict[str, Any] = {
         "has_abstract": {"type": "boolean",
                          "description": "true only if the text contains an Abstract section or an obvious "
                                         "abstract paragraph"},
-        "abstract": {"type": "string",
-                     "description": "the abstract copied verbatim; empty string if has_abstract is false"},
+        "abstract_start": {"type": "string",
+                           "description": "first 8 words of the abstract, verbatim; empty if no abstract"},
+        "abstract_end": {"type": "string",
+                         "description": "last 8 words of the abstract, verbatim; empty if no abstract"},
         "summary": {"type": "string"},
         "topics": {"type": "array", "items": {
             "type": "object",
@@ -75,8 +83,8 @@ EXTRACT_SCHEMA: dict[str, Any] = {
             "required": ["name", "field"]}},
         "language": {"type": "string", "description": "ISO 639-1 code, e.g. en"},
     },
-    "required": ["kind", "is_library_material", "title", "authors", "has_abstract", "abstract", "summary",
-                 "topics", "language"],
+    "required": ["kind", "is_library_material", "title", "authors", "has_abstract", "abstract_start",
+                 "abstract_end", "summary", "topics", "language"],
 }
 
 DECISIONS = [
@@ -176,22 +184,36 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
     btag = "llm:" + backend.info().tag
     extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state, schema=EXTRACT_SCHEMA, max_tokens=1500)
     result["extract_s"] = round(time.monotonic() - t0, 2)
-    # Small models fill 'abstract' with whatever is on the page (copyright pages, a whole payslip).
-    # Keep it only when the model says there is one and the document is library material.
-    if not extracted.get("has_abstract") or extracted.get("is_library_material") is False:
-        extracted["abstract"] = None
+    # Abstract: cut the exact span out of the page text using the model's anchors, falling back
+    # to an 'Abstract ... Introduction' heuristic. Only for library material, so that personal
+    # paperwork never gets copied into the database as an "abstract".
+    extracted["abstract"], abstract_source = None, None
+    if extracted.get("has_abstract") and extracted.get("is_library_material") is not False:
+        pages = "\n".join(r[0] for r in conn.execute(
+            "SELECT text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,)))
+        span = locate(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
+        if span:
+            extracted["abstract"], abstract_source = span, btag + "#anchors"
+        elif h := heuristic_abstract(pages):
+            extracted["abstract"], abstract_source = h, "heuristic:abstract"
+        result["abstract_method"] = abstract_source or "not_found"
     if extracted.get("is_library_material") is False:
         extracted["topics"] = []  # don't index personal paperwork by topic
+    answers = {}
+    if decider is not None:  # outside the write transaction: model calls can take seconds
+        t1 = time.monotonic()
+        answers = decider.decide(state, DECISIONS)
+        result["decide_s"] = round(time.monotonic() - t1, 2)
     with db.tx(conn):
-        for field in ["title", "authors", "year", "venue", "abstract", "summary", "topics", "language",
+        for field in ["title", "authors", "year", "venue", "summary", "topics", "language",
                       "kind", "is_library_material"]:
             v = extracted.get(field)
             if v not in (None, "", []):
                 db.assert_(conn, "file", file_id, field, v, source=btag, run_id=run_id)
-        if decider is not None:
-            t1 = time.monotonic()
-            answers = decider.decide(state, DECISIONS)
-            result["decide_s"] = round(time.monotonic() - t1, 2)
+        if extracted["abstract"]:
+            db.assert_(conn, "file", file_id, "abstract", extracted["abstract"], source=abstract_source,
+                       run_id=run_id)
+        if answers:
             dtag = "decide:" + decider.info().tag
             for key, ans in answers.items():
                 value = ans.best if key == "kind" else ans.best == "yes"

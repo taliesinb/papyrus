@@ -43,6 +43,8 @@ def pdf_date_to_iso(s: str | None) -> str | None:
 
 def clean_text(s: str) -> str:
     s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    # soft hyphens (PDFium emits \x02 at hyphenation points), zero-width chars, other C0 controls
+    s = re.sub("[\x01-\x08\x0b\x0c\x0e-\x1f\u00ad\u200b\u200c\u200d\ufeff\ufffe]", "", s)
     s = re.sub(r"[ \t\u00a0]+", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     # undo end-of-line hyphenation: "repre-\nsentation" -> "representation"

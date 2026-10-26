@@ -42,7 +42,8 @@ class FakeDecider:
 
 
 PAPER = {"kind": "paper", "is_library_material": True, "title": "A Study of Things", "authors": ["Jane Doe"],
-         "year": 2020, "has_abstract": True, "abstract": "We study things.", "summary": "About things.",
+         "year": 2020, "has_abstract": True, "abstract_start": "We study things",
+         "abstract_end": "in great detail", "summary": "About things.",
          "topics": [{"name": "Things", "field": "Thingology"}], "language": "en"}
 
 
@@ -56,13 +57,16 @@ def _lib(tmp_path: Path, name: str, text: str):
 
 
 def test_triage_and_promote_paper(tmp_path):
-    conn = _lib(tmp_path, "2412.06464v3.pdf", "A Study of Things. Jane Doe. arXiv:2412.06464v3 [cs.LG]")
+    conn = _lib(tmp_path, "2412.06464v3.pdf",
+                "A Study of Things. Jane Doe. arXiv:2412.06464v3 [cs.LG] Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
     r = triage_file(conn, 1, be, FakeDecider("paper", True))
     assert "Found at:" in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
     assert r["ids"]["arxiv"] == "2412.06464" and r["ids"]["arxiv_version"] == "v3"
     claims = db.current_assertions(conn, "file", 1)
     assert {c["source"] for c in claims["kind"]} == {"llm:fake:m", "decide:fakedec:d"}
+    assert claims["abstract"][0]["value"] == "We study things in great detail."
+    assert claims["abstract"][0]["source"] == "llm:fake:m#anchors"
     action, wid = promote_file(conn, 1)
     assert action == "created"
     w = work_json(conn, wid)
@@ -75,7 +79,8 @@ def test_triage_and_promote_paper(tmp_path):
 
 def test_personal_document_not_promoted_and_abstract_dropped(tmp_path):
     conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
-    out = dict(PAPER, kind="personal", is_library_material=False, abstract="Net pay 1234.00 ...", title="Payslip")
+    out = dict(PAPER, kind="personal", is_library_material=False, abstract_start="Payslip October",
+               abstract_end="Net pay 1234.00", title="Payslip")
     triage_file(conn, 1, FakeBackend(out), FakeDecider("personal", False))
     claims = db.current_assertions(conn, "file", 1)
     assert "abstract" not in claims and "topics" not in claims
