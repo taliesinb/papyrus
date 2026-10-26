@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import { collapsed } from '#lib/collapse.svelte.ts';
 	import FacetGroup from '#lib/components/FacetGroup.svelte';
 	import WorkCard from '#lib/components/WorkCard.svelte';
 	import YearHistogram from '#lib/components/YearHistogram.svelte';
@@ -18,22 +19,43 @@
 		Object.keys(data.filters.facets).length > 0 || data.filters.yearFrom != null || data.filters.yearTo != null
 	);
 
-	const SORTS: { value: string; label: string }[] = [
-		{ value: 'auto', label: 'Best' },
-		{ value: 'added', label: 'Recently added' },
-		{ value: 'year', label: 'Year' },
-		{ value: 'cited', label: 'Most cited' },
-		{ value: 'title', label: 'Title' },
-		{ value: 'random', label: 'Random' }
+	const SORTS: { value: string; label: string; title: string }[] = [
+		{ value: 'auto', label: 'Best', title: '' },
+		{ value: 'added', label: 'New', title: 'Most recently added (file download time) first' },
+		{ value: 'year', label: 'Year', title: 'Newest publication year first' },
+		{ value: 'cited', label: 'Citations', title: 'Most cited first' },
+		{ value: 'title', label: 'Title', title: 'Alphabetical by title' },
+		{ value: 'random', label: 'Random', title: 'Random order (click again to reshuffle)' }
 	];
 	const sortParam = $derived(page.url.searchParams.get('sort') ?? 'auto');
 	const autoLabel = $derived(data.sort === 'similar' ? 'similarity' : data.sort === 'relevance' ? 'relevance' : 'recently added');
-
-	function setSort(value: string) {
-		goto(hrefWith(url, { sort: value === 'auto' ? null : value, seed: value === 'random' ? data.filters.seed : null }), {
-			reset: false
-		});
+	function sortHref(value: string): string {
+		if (value === 'random')
+			return hrefWith(url, { sort: 'random', seed: sortParam === 'random' ? data.filters.seed + 1 : data.filters.seed });
+		return hrefWith(url, { sort: value === 'auto' ? null : value, seed: null });
 	}
+
+	// Two fixed columns of filter cards (stacked in one column when narrow).
+	// Year leads column A and Kind leads column B. arXiv category is hidden,
+	// except while one is selected (from a cs.LG-style chip on a card), so
+	// that selection stays visible and can be undone.
+	const COL_A = ['subject', 'field', 'author'];
+	const COL_B = ['kind', 'folder', 'origin', 'status'];
+	const showArxiv = $derived(!!data.filters.facets.arxiv?.length);
+	const facetByKey = $derived(new Map(data.facets.map((f) => [f.key, f])));
+	// Over the whole library the author distribution is nearly flat (almost
+	// everyone has one work), so only offer it once something has narrowed
+	// the set, or while an author is selected.
+	const showAuthor = $derived(
+		Object.keys(data.filters.facets).some((k) => k !== 'author') ||
+			data.filters.yearFrom != null ||
+			data.filters.yearTo != null ||
+			!!data.filters.q ||
+			data.filters.like.length > 0 ||
+			!!data.filters.facets.author?.length
+	);
+
+	onMount(() => collapsed.load());
 
 	// Keyboard navigation (j/k, o/Enter, s, x).
 	let focused = $state(-1);
@@ -92,15 +114,36 @@
 
 <div class="layout">
 	<aside>
-		{#if anyFilter}
-			<a class="clear-all" href={hrefWith(url, Object.fromEntries([...Object.keys(data.filters.facets), 'from', 'to'].map((k) => [k, null])))}
+		<!-- Always occupies its row, so it never pushes the panels down when it appears. -->
+		<div class="clear-all">
+			<a
+				class:hidden={!anyFilter}
+				tabindex={anyFilter ? 0 : -1}
+				href={hrefWith(url, Object.fromEntries([...Object.keys(data.filters.facets), 'from', 'to'].map((k) => [k, null])))}
 				>× clear filters</a
 			>
-		{/if}
-		<YearHistogram years={data.years} from={data.filters.yearFrom} to={data.filters.yearTo} {url} />
-		{#each data.facets as f (f.key)}
-			<FacetGroup facet={f} {url} limit={facetLimits[f.key] ?? 8} />
-		{/each}
+		</div>
+		<div class="cards">
+			<div class="col">
+				<YearHistogram years={data.years} range={data.yearRange} from={data.filters.yearFrom} to={data.filters.yearTo} {url} />
+				{#each COL_A as key (key)}
+					{@const f = facetByKey.get(key)}
+					{#if f && (key !== 'author' || showAuthor)}
+						<FacetGroup facet={f} {url} limit={facetLimits[key] ?? 8} />
+					{/if}
+				{/each}
+			</div>
+			<div class="col">
+				{#each COL_B as key (key)}
+					{@const f = facetByKey.get(key)}
+					{#if f}<FacetGroup facet={f} {url} limit={facetLimits[key] ?? 8} />{/if}
+				{/each}
+				<!-- Last, so its appearance never moves the cards above it. -->
+				{#if showArxiv && facetByKey.get('arxiv')}
+					<FacetGroup facet={facetByKey.get('arxiv')!} {url} limit={8} />
+				{/if}
+			</div>
+		</div>
 	</aside>
 
 	<section class="results">
@@ -111,17 +154,17 @@
 				{#if data.filters.q}matching <q>{data.filters.q}</q>{/if}
 			</div>
 			<div class="controls">
-				<label class="sort">
-					<span class="muted">Sort</span>
-					<select value={sortParam} onchange={(e) => setSort(e.currentTarget.value)}>
-						{#each SORTS as s (s.value)}
-							<option value={s.value}>{s.value === 'auto' ? `Best (${autoLabel})` : s.label}</option>
-						{/each}
-					</select>
-				</label>
-				{#if data.sort === 'random'}
-					<a class="btn" href={hrefWith(url, { seed: data.filters.seed + 1 })} title="Shuffle again">⟳ shuffle</a>
-				{/if}
+				<div class="seg" role="group" aria-label="Sort">
+					{#each SORTS as s (s.value)}
+						<a
+							class="btn"
+							class:active={sortParam === s.value}
+							href={sortHref(s.value)}
+							title={s.value === 'auto' ? `Best for the current view: ${autoLabel}` : s.title}
+							>{s.label}{#if s.value === 'random' && sortParam === 'random'}&nbsp;⟳{/if}</a
+						>
+					{/each}
+				</div>
 				<div class="seg" role="group" aria-label="View">
 					<a class="btn" class:active={view === 'list'} href={hrefWith(url, { view: null })} title="List (v)">List</a>
 					<a class="btn" class:active={view === 'strip'} href={hrefWith(url, { view: 'strip' })} title="Page strips, arxiv-sanity style (v)">Pages</a>
@@ -177,26 +220,60 @@
 </div>
 
 <style>
+	/* The results column is capped at a readable width; on wide windows the
+	   spare width gives the filters a second column. */
 	.layout {
+		--card: 252px;
+		--card-gap: 12px;
+		--cols: 1;
 		display: grid;
-		grid-template-columns: 250px minmax(0, 1fr);
+		/* Left-aligned; the results column takes all remaining width (capped
+		   only on very wide screens, where lines would get unreadably long). */
+		grid-template-columns:
+			calc(var(--cols) * var(--card) + (var(--cols) - 1) * var(--card-gap))
+			minmax(0, 1fr);
+		justify-content: start;
 		gap: 28px;
-		max-width: 1320px;
-		margin: 0 auto;
 		padding: 18px 22px 40px;
+	}
+	@media (min-width: 1720px) {
+		.layout {
+			--cols: 2;
+		}
 	}
 	aside {
 		position: sticky;
 		top: 70px;
 		align-self: start;
 		max-height: calc(100vh - 88px);
-		overflow-y: auto;
-		padding-right: 6px;
+		/* Always show the scrollbar track (scrollbar-gutter alone is not
+		   honoured everywhere), so cards never narrow when the list grows. */
+		overflow-y: scroll;
+		scrollbar-gutter: stable;
+	}
+	/* Fixed columns, no flowing: each card stays in its column whatever
+	   happens to the others. One column = A stacked above B. */
+	.cards {
+		display: grid;
+		grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+		column-gap: var(--card-gap);
+		align-items: start;
+	}
+	.col {
+		min-width: 0;
 	}
 	.clear-all {
-		display: inline-block;
+		height: 18px;
 		font-size: 12px;
-		margin-bottom: 12px;
+		margin-bottom: 8px;
+		padding-left: 6px;
+	}
+	.clear-all .hidden {
+		visibility: hidden;
+	}
+	.results {
+		min-width: 0;
+		max-width: 2000px;
 	}
 	.toolbar {
 		display: flex;
@@ -219,31 +296,6 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
-	}
-	.sort {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 12.5px;
-	}
-	.sort select {
-		padding: 3px 8px;
-		font-size: 12.5px;
-	}
-	.seg {
-		display: flex;
-	}
-	.seg .btn {
-		border-radius: 0;
-	}
-	.seg .btn:first-child {
-		border-radius: 6px 0 0 6px;
-	}
-	.seg .btn:last-child {
-		border-radius: 0 6px 6px 0;
-	}
-	.seg .btn + .btn {
-		margin-left: -1px;
 	}
 	.seeds {
 		display: flex;

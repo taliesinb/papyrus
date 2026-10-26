@@ -199,6 +199,7 @@ export interface QueryResult {
 	total: number;
 	facets: Facet[];
 	years: { year: number; count: number }[];
+	yearRange: { min: number; max: number } | null;
 	sort: Exclude<Sort, 'auto'>;
 	seeds: { id: number; title: string | null }[];
 }
@@ -231,29 +232,53 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 	const passAll = (w: WorkSummary, except?: string) =>
 		keys.every((k) => k === except || passFacet(w, k)) && (except === 'year' || passYear(w));
 
+	// Facet values and their order come from a fixed universe (every work that
+	// passes the status selection), not from the current result set, so rows
+	// never move or disappear under the cursor as filters are toggled; only the
+	// counts change. Status itself is ranked over all works.
+	const statusSel = facetSel.status;
+	const inUniverse = (w: WorkSummary, key: string) => key === 'status' || statusSel.includes(w.status);
+
 	const facets: Facet[] = FACETS.map((fd) => {
-		const counts = new Map<string, FacetValue>();
+		const entries = new Map<string, FacetValue & { total: number }>();
+		for (const w of lib.works) {
+			if (!inUniverse(w, fd.key)) continue;
+			for (const v of valuesOf.get(w.id)![fd.key]) {
+				const e = entries.get(v.value);
+				if (e) e.total++;
+				else entries.set(v.value, { ...v, count: 0, total: 1, selected: false });
+			}
+		}
 		for (const w of base) {
 			if (!passAll(w, fd.key)) continue;
 			for (const v of valuesOf.get(w.id)![fd.key]) {
-				const c = counts.get(v.value);
-				if (c) c.count++;
-				else counts.set(v.value, { ...v, count: 1, selected: false });
+				const e = entries.get(v.value);
+				if (e) e.count++;
 			}
 		}
-		const sel = facetSel[fd.key] ?? [];
+		// Only the user's own choices count as selected (not the implicit
+		// "hide rejected" status default).
+		const sel = f.facets[fd.key] ?? [];
 		for (const s of sel)
-			if (!counts.has(s)) counts.set(s, { value: s, label: labelFor(lib, fd.key, s), count: 0, selected: true });
-		for (const c of counts.values()) c.selected = sel.includes(c.value);
-		const values = [...counts.values()].sort(
-			(a, b) => Number(b.selected) - Number(a.selected) || b.count - a.count || a.label.localeCompare(b.label)
-		);
+			if (!entries.has(s))
+				entries.set(s, { value: s, label: labelFor(lib, fd.key, s), count: 0, total: 0, selected: true });
+		for (const e of entries.values()) e.selected = sel.includes(e.value);
+		const values = [...entries.values()]
+			.sort((a, b) => b.total - a.total || a.label.localeCompare(b.label))
+			.map(({ total: _total, ...v }) => v);
 		return { key: fd.key, label: fd.label, values };
 	});
 
+	// Year bars: counts follow the other filters, but the axis spans the universe.
 	const yearCounts = new Map<number, number>();
 	for (const w of base) if (w.year != null && passAll(w, 'year')) yearCounts.set(w.year, (yearCounts.get(w.year) ?? 0) + 1);
 	const years = [...yearCounts].map(([year, count]) => ({ year, count })).sort((a, b) => a.year - b.year);
+	const universeYears = lib.works
+		.filter((w) => inUniverse(w, 'year') && w.year != null)
+		.map((w) => w.year!);
+	const yearRange = universeYears.length
+		? { min: Math.min(...universeYears), max: Math.max(...universeYears) }
+		: null;
 
 	let rows = base.filter((w) => passAll(w));
 
@@ -311,6 +336,7 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 		total,
 		facets,
 		years,
+		yearRange,
 		sort,
 		seeds: f.like.map((id) => ({ id, title: lib.byId.get(id)?.title ?? null }))
 	};

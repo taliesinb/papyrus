@@ -118,6 +118,31 @@ button {
 	background: var(--panel-2);
 }
 
+/* Segmented control: one outer border, borderless segments, active = tint only. */
+.seg {
+	display: inline-flex;
+	gap: 2px;
+	padding: 2px;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 7px;
+}
+.seg .btn {
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--muted);
+	padding: 3px 10px;
+}
+.seg .btn:hover {
+	background: var(--panel-2);
+	color: var(--text);
+}
+.seg .btn.active {
+	background: #1d3150;
+	color: #a9c8ff;
+}
+
 mark {
 	background: var(--mark);
 	color: var(--mark-text);

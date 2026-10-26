@@ -134,21 +134,8 @@
 	.toolbar input {
 		width: 280px;
 	}
-	.seg {
-		display: flex;
-	}
 	.seg .btn {
-		border-radius: 0;
 		text-transform: capitalize;
-	}
-	.seg .btn:first-child {
-		border-radius: 6px 0 0 6px;
-	}
-	.seg .btn:last-child {
-		border-radius: 0 6px 6px 0;
-	}
-	.seg .btn + .btn {
-		margin-left: -1px;
 	}
 	table {
 		width: 100%;

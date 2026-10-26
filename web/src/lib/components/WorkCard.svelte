@@ -266,6 +266,7 @@
 	.strip {
 		display: grid;
 		grid-template-columns: repeat(8, minmax(0, 1fr));
+		max-width: 1100px; /* don't let page thumbnails balloon on wide screens */
 		gap: 6px;
 		margin-top: 10px;
 	}
