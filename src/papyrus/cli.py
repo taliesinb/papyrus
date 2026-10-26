@@ -206,6 +206,13 @@ def show(ctx: click.Context, file_id: int, text: bool) -> None:
             click.echo(f"\n----- page {r['page']} -----\n{r['text']}")
 
 
+@main.command("mcp")
+def mcp_cmd() -> None:
+    """Run the MCP server on stdio."""
+    from .mcp_server import run
+    run()
+
+
 @main.command()
 @click.pass_context
 def stats(ctx: click.Context) -> None:

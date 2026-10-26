@@ -1,0 +1,79 @@
+# papyrus
+
+A local-first library for papers, books, slides and notes. It has:
+
+* an open, documented SQLite database
+* provenance for everything: where and how each document was found, and
+  which model or API said what about it
+* local-model triage
+* full-text search
+* an MCP server
+
+## Status
+
+Early. What works today:
+
+| stage | command | what it does |
+|---|---|---|
+| scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms`. Re-scans are idempotent, and paths that have gone are marked missing. |
+| triage | `papyrus triage [--backend B] [--decider D]` | Asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
+| promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. |
+| browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus search QUERY`, `papyrus stats` | |
+| MCP | `papyrus mcp` | stdio MCP server with these tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only), `library_stats`. Resource: `papyrus://schema`. |
+
+Enrichment (arXiv / OpenAlex / Semantic Scholar / Crossref matching,
+disambiguated authors, published-version DOIs) lives in
+`src/papyrus/enrich/` and is being wired in. Next on the list:
+
+* Slack, Safari Reading List and Twitter contexts
+* embeddings with `sqlite-vec`
+* a managed file store
+
+## Models
+
+All models run locally.
+
+| role | backend | spec |
+|---|---|---|
+| extraction | LM Studio (OpenAI-compatible, `localhost:1234`) | `--backend lmstudio:qwen3.5-9b-mlx` |
+| extraction | Apple Foundation Models (on-device; Swift bridge in `tools/afm-bridge`) | `--backend apple` |
+| decisions | LM Studio emulation of the Jev `/v1/systemone` API, using logprobs over option letters | `--decider lmstudio:qwen3.5-4b-mlx` |
+| decisions | any Jev-compatible server (TypeSafe, Ollama `tev1`, decider, Lichen…) | `--decider jev:http://host:port` |
+
+`--backend auto` picks LM Studio if it is running, otherwise Apple FM. Build
+the Apple bridge once with:
+
+```sh
+cd tools/afm-bridge && swift build -c release
+```
+
+Two LM Studio notes:
+
+* With Qwen3.5 MLX models in LM Studio 0.4.x, thinking can only be switched
+  off by prefilling an empty `<think></think>` assistant turn. Both backends
+  do this.
+* The JSON answer may also arrive in `reasoning_content` and is not
+  schema-enforced, so every result is parsed and validated (`llm/schema_lite.py`).
+
+## Data
+
+* Database: `~/.papyrus/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
+* Schema: [`src/papyrus/schema.sql`](src/papyrus/schema.sql), explained in
+  [`docs/schema.md`](docs/schema.md).
+
+## Environment
+
+| variable | purpose |
+|---|---|
+| `PAPYRUS_DB`, `PAPYRUS_HOME` | database location |
+| `PAPYRUS_LMSTUDIO_URL`, `PAPYRUS_LMSTUDIO_MODEL` | extraction via LM Studio |
+| `PAPYRUS_DECIDER`, `PAPYRUS_DECIDE_MODEL` | decider via LM Studio |
+| `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible decider server |
+| `PAPYRUS_AFM_BIN` | Apple bridge binary |
+| `OPENALEX_API_KEY`, `S2_API_KEY`, `PAPYRUS_MAILTO` | enrichment APIs |
+
+## Development
+
+```sh
+uv run pytest            # live LM Studio / Apple tests skip themselves when unavailable
+```
