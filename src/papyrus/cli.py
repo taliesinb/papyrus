@@ -91,6 +91,54 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 
+@main.command()
+@click.pass_context
+def promote(ctx: click.Context) -> None:
+    """Create/link works from triaged files (dedupes by arXiv/DOI/ISBN and title)."""
+    from .works import promote_all
+    stats = promote_all(_conn(ctx))
+    click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
+
+
+@main.command("works")
+@click.argument("query", required=False)
+@click.option("--kind")
+@click.option("-n", "--limit", default=50, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_context
+def list_works(ctx: click.Context, query: str | None, kind: str | None, limit: int, as_json: bool) -> None:
+    """List works, optionally full-text matching QUERY over title/authors/abstract/topics."""
+    conn = _conn(ctx)
+    sql = ("SELECT w.id, w.kind, w.year, w.title, (SELECT group_concat(raw_name, ', ') FROM "
+           "(SELECT raw_name FROM work_authors WHERE work_id=w.id ORDER BY position LIMIT 4)) AS authors FROM works w")
+    args: list = []
+    where = ["w.status<>'merged'"]
+    if query:
+        sql += " JOIN works_fts ON works_fts.rowid=w.id"
+        where.append("works_fts MATCH ?")
+        args.append(query)
+    if kind:
+        where.append("w.kind=?")
+        args.append(kind)
+    sql += " WHERE " + " AND ".join(where) + (" ORDER BY bm25(works_fts)" if query else " ORDER BY w.id") + " LIMIT ?"
+    rows = [dict(r) for r in conn.execute(sql, (*args, limit))]
+    if as_json:
+        click.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+    for r in rows:
+        click.echo(f"{r['id']:5} {r['kind'] or '?':8} {r['year'] or '':4}  {r['title'][:80]}\n"
+                   f"{'':20}{(r['authors'] or '')[:80]}")
+
+
+@main.command("work")
+@click.argument("work_id", type=int)
+@click.pass_context
+def show_work(ctx: click.Context, work_id: int) -> None:
+    """Show a work with ids, authors, topics, files and discovery contexts."""
+    from .works import work_json
+    click.echo(json.dumps(work_json(_conn(ctx), work_id), indent=2, ensure_ascii=False))
+
+
 @main.command("files")
 @click.option("--status", help="Filter by triage status (pending/done/error).")
 @click.option("--json", "as_json", is_flag=True)
