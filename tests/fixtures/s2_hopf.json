@@ -1,0 +1,94 @@
+{
+ "paperId": "7ee76cc2109ce7842a5c768f60bdc0ece61fbdfb",
+ "externalIds": {
+  "MAG": "2081277248",
+  "ArXiv": "1206.3620",
+  "DOI": "10.1007/s10801-013-0456-7",
+  "CorpusId": 689286
+ },
+ "corpusId": 689286,
+ "publicationVenue": {
+  "id": "124f6e0e-43e2-467f-8f42-b97050f7f8d4",
+  "name": "Journal of Algebraic Combinatorics",
+  "type": "journal",
+  "alternate_names": [
+   "J Algebraic Comb"
+  ],
+  "issn": "0925-9899",
+  "url": "https://www.springer.com/mathematics/journal/10801",
+  "alternate_urls": [
+   "http://www.springer.com/sgw/cda/frontpage/0,11855,1-0-70-35731096-detailsPage=journal|description|description,00.html?referer=www.springer.com/journal/10801/about",
+   "https://link.springer.com/journal/10801"
+  ]
+ },
+ "url": "https://www.semanticscholar.org/paper/7ee76cc2109ce7842a5c768f60bdc0ece61fbdfb",
+ "title": "Hopf algebras and Markov chains: two examples and a theory",
+ "venue": "Journal of Algebraic Combinatorics",
+ "year": 2012,
+ "citationCount": 42,
+ "openAccessPdf": {
+  "url": "https://link.springer.com/content/pdf/10.1007%2Fs10801-013-0456-7.pdf",
+  "status": "BRONZE",
+  "license": null,
+  "disclaimer": "Notice: Paper or abstract available at https://arxiv.org/abs/1206.3620, which is subject to the license by the author or copyright owner provided with this content. Please go to the source to verify the license and copyright information for your use."
+ },
+ "fieldsOfStudy": [
+  "Mathematics"
+ ],
+ "s2FieldsOfStudy": [
+  {
+   "category": "Mathematics",
+   "source": "external"
+  },
+  {
+   "category": "Mathematics",
+   "source": "s2-fos-model"
+  }
+ ],
+ "tldr": null,
+ "publicationTypes": null,
+ "publicationDate": "2012-06-16",
+ "journal": {
+  "name": "Journal of Algebraic Combinatorics",
+  "pages": "527 - 585",
+  "volume": "39"
+ },
+ "embedding": {
+  "model": "specter_v2",
+  "vector": [
+   -0.01132910791784525,
+   0.1974300593137741,
+   -0.56500244140625,
+   0.1962345689535141,
+   -0.11972198635339737,
+   -0.3615122437477112,
+   0.6894724369049072,
+   -0.7735941410064697
+  ]
+ },
+ "authors": [
+  {
+   "authorId": "2796350",
+   "externalIds": {
+    "DBLP": [
+     "Persi Diaconis"
+    ]
+   },
+   "name": "P. Diaconis",
+   "affiliations": []
+  },
+  {
+   "authorId": null,
+   "externalIds": null,
+   "name": "C. Y. Amy Pang",
+   "affiliations": null
+  },
+  {
+   "authorId": "143795757",
+   "externalIds": {},
+   "name": "Arun Ram",
+   "affiliations": []
+  }
+ ],
+ "abstract": "The operation of squaring (coproduct followed by product) in a combinatorial Hopf algebra is shown to induce a Markov chain in natural bases. Chains constructed in this way include widely studied methods of card shuffling, a natural \u201crock-breaking\u201d process, and Markov chains on simplicial complexes. Many of these chains can be explicitly diagonalized using the primitive elements of the algebra and the combinatorics of the free Lie algebra. For card shuffling, this gives an explicit description of the eigenvectors. For rock-breaking, an explicit description of the quasi-stationary distribution and sharp rates to absorption follow."
+}

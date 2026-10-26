@@ -1,0 +1,48 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/GoNmf6cg5nw57HTxfIOyqKOED/o</id>
+  <title>arXiv Query: search_query=&amp;id_list=2412.06464,math/0601001&amp;start=0&amp;max_results=2</title>
+  <updated>2026-10-26T15:00:18Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=2&amp;id_list=2412.06464,math/0601001" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>2</opensearch:itemsPerPage>
+  <opensearch:totalResults>2</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/math/0601001v3</id>
+    <title>Codepth Two and Related Topics</title>
+    <updated>2006-08-21T14:45:05Z</updated>
+    <link href="https://arxiv.org/abs/math/0601001v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/math/0601001v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>  A depth two extension $A \| B$ is shown to be weak depth two over its double centralizer $V_A(V_A(B))$ if this is separable over $B$. We consider various examples and non-examples of depth one and two properties. Depth two and its relationship to direct and tensor product of algebras as well as cup product of relative Hochschild cochains is examined. Section~6 introduces a notion of codepth two coalgebra homomorphism $g: C \to D$, dual to a depth two algebra homomorphism. It is shown that the endomorphism ring of bicomodule endomorphisms $\End {}^DC^D$ forms a right bialgebroid over the centralizer subalgebra $g^*: D^* \to C^*$ of the dual algebra $C^*$.</summary>
+    <category term="math.QA" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="math.RA" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2005-12-30T21:10:34Z</published>
+    <arxiv:comment>19 pages, final version to appear in Applied Categorical Structures</arxiv:comment>
+    <arxiv:primary_category term="math.QA"/>
+    <author>
+      <name>Lars Kadison</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2412.06464v3</id>
+    <title>Gated Delta Networks: Improving Mamba2 with Delta Rule</title>
+    <updated>2025-03-06T06:57:34Z</updated>
+    <link href="https://arxiv.org/abs/2412.06464v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2412.06464v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Linear Transformers have gained attention as efficient alternatives to standard Transformers, but their performance in retrieval and long-context tasks has been limited. To address these limitations, recent work has explored two distinct mechanisms: gating for adaptive memory control and the delta update rule for precise memory modifications. We observe that these mechanisms are complementary: gating enables rapid memory erasure while the delta rule facilitates targeted updates. Building on this insight, we introduce the gated delta rule and develop a parallel training algorithm optimized for modern hardware. Our proposed architecture, Gated DeltaNet, consistently surpasses existing models like Mamba2 and DeltaNet across multiple benchmarks, including language modeling, common-sense reasoning, in-context retrieval, length extrapolation, and long-context understanding. We further enhance performance by developing hybrid architectures that combine Gated DeltaNet layers with sliding window attention or Mamba2 layers, achieving both improved training efficiency and superior task performance.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-12-09T13:09:04Z</published>
+    <arxiv:comment>ICLR 2025 camera ready</arxiv:comment>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Songlin Yang</name>
+    </author>
+    <author>
+      <name>Jan Kautz</name>
+    </author>
+    <author>
+      <name>Ali Hatamizadeh</name>
+    </author>
+  </entry>
+</feed>

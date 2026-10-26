@@ -1,0 +1,34 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/75Ek43oECTaPuoY4ZeHtogzzX7U</id>
+  <title>arXiv Query: search_query=ti:hopf AND ti:markov AND au:diaconis&amp;id_list=&amp;start=0&amp;max_results=2</title>
+  <updated>2026-10-26T15:00:22Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=ti:hopf+AND+(ti:markov+AND+au:diaconis)&amp;start=0&amp;max_results=2&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>2</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/1206.3620v2</id>
+    <title>Hopf algebras and Markov chains: Two examples and a theory</title>
+    <updated>2013-06-20T13:27:43Z</updated>
+    <link href="https://arxiv.org/abs/1206.3620v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1206.3620v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The operation of squaring (coproduct followed by product) in a combinatorial Hopf algebra is shown to induce a Markov chain in natural bases. Chains constructed in this way include widely studied methods of card shuffling, a natural "rock-breaking" process, and Markov chains on simplicial complexes. Many of these chains can be explictly diagonalized using the primitive elements of the algebra and the combinatorics of the free Lie algebra. For card shuffling, this gives an explicit description of the eigenvectors. For rock-breaking, an explicit description of the quasi-stationary distribution and sharp rates to absorption follow.</summary>
+    <category term="math.CO" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="math.PR" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2012-06-16T01:26:09Z</published>
+    <arxiv:comment>51 pages, 17 figures. (Typographical errors corrected. Further fixes will only appear on the version on Amy Pang's website, the arXiv version will not be updated.)</arxiv:comment>
+    <arxiv:primary_category term="math.CO"/>
+    <author>
+      <name>Persi Diaconis</name>
+    </author>
+    <author>
+      <name>C. Y. Amy Pang</name>
+    </author>
+    <author>
+      <name>Arun Ram</name>
+    </author>
+    <arxiv:doi>10.1007/s10801-013-0456-7</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1007/s10801-013-0456-7" title="doi"/>
+  </entry>
+</feed>
