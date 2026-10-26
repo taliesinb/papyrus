@@ -1,6 +1,7 @@
 // Library queries: URL filters → facets + ranked hits.
 
 import type { Facet, FacetValue, PageHit, WorkHit, WorkSummary } from '#lib/types.ts';
+import { matchesText } from '#lib/util.ts';
 import { all } from './db.ts';
 import { lineage, type Library } from './library.ts';
 import { similarity } from './similar.ts';
@@ -9,6 +10,8 @@ export type Sort = 'auto' | 'relevance' | 'similar' | 'added' | 'year' | 'title'
 
 export interface Filters {
 	q: string;
+	/** Results-only sub-filter: exact substring of title / author / abstract. Does not affect facets. */
+	match: string;
 	like: number[];
 	sort: Sort;
 	seed: number;
@@ -48,6 +51,7 @@ export function parseFilters(url: URL): Filters {
 		.filter((n) => Number.isFinite(n));
 	return {
 		q: (sp.get('q') ?? '').trim(),
+		match: sp.get('match') ?? '',
 		like,
 		sort: (sp.get('sort') as Sort) || 'auto',
 		seed: int('seed') ?? 1,
@@ -280,7 +284,7 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 		? { min: Math.min(...universeYears), max: Math.max(...universeYears) }
 		: null;
 
-	let rows = base.filter((w) => passAll(w));
+	let rows = base.filter((w) => passAll(w) && matchesText(w, f.match));
 
 	const sort: Exclude<Sort, 'auto'> =
 		f.sort !== 'auto' ? f.sort : sims ? 'similar' : matches ? 'relevance' : 'added';

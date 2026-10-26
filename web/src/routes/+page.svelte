@@ -6,7 +6,7 @@
 	import FacetGroup from '#lib/components/FacetGroup.svelte';
 	import WorkCard from '#lib/components/WorkCard.svelte';
 	import YearHistogram from '#lib/components/YearHistogram.svelte';
-	import { hrefWith } from '#lib/util.ts';
+	import { hrefWith, matchesText } from '#lib/util.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -57,25 +57,44 @@
 
 	onMount(() => collapsed.load());
 
+	// Results sub-filter: applied instantly to the loaded hits, then (debounced)
+	// written to ?match= so the server applies it to the whole result set.
+	let matchText = $state(page.url.searchParams.get('match') ?? '');
+	let matchEl: HTMLInputElement | undefined = $state();
+	let matchTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		const m = page.url.searchParams.get('match') ?? '';
+		if (document.activeElement !== matchEl) matchText = m;
+	});
+	function commitMatch(delay = 250) {
+		clearTimeout(matchTimer);
+		matchTimer = setTimeout(() => {
+			const v = matchText.trim() ? matchText : null;
+			if ((v ?? '') === (page.url.searchParams.get('match') ?? '')) return;
+			goto(hrefWith(page.url, { match: v }), { replace: true, reset: false });
+		}, delay);
+	}
+	const hits = $derived(matchText.trim() ? data.hits.filter((h) => matchesText(h, matchText)) : data.hits);
+
 	// Keyboard navigation (j/k, o/Enter, s, x).
 	let focused = $state(-1);
 	$effect(() => {
-		void data.hits;
+		void hits;
 		focused = -1;
 	});
 
 	async function move(delta: number) {
-		const n = data.hits.length;
+		const n = hits.length;
 		if (!n) return;
 		focused = focused < 0 ? (delta > 0 ? 0 : n - 1) : Math.max(0, Math.min(n - 1, focused + delta));
 		await tick();
-		document.querySelector(`[data-work="${data.hits[focused].id}"]`)?.scrollIntoView({ block: 'nearest' });
+		document.querySelector(`[data-work="${hits[focused].id}"]`)?.scrollIntoView({ block: 'nearest' });
 	}
 
 	function onkeydown(e: KeyboardEvent) {
 		const t = e.target as HTMLElement;
 		if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
-		const hit = focused >= 0 ? data.hits[focused] : undefined;
+		const hit = focused >= 0 ? hits[focused] : undefined;
 		switch (e.key) {
 			case 'j':
 				move(1);
@@ -149,11 +168,37 @@
 	<section class="results">
 		<div class="toolbar">
 			<div class="count">
-				<strong>{data.total}</strong>
-				{data.total === 1 ? 'work' : 'works'}
+				{#if matchText.trim() && hits.length < data.hits.length && data.total === data.hits.length}
+					<!-- typed but not yet applied server-side: count what is shown -->
+					<strong>{hits.length}</strong> {hits.length === 1 ? 'work' : 'works'}
+				{:else}
+					<strong>{data.total}</strong>
+					{data.total === 1 ? 'work' : 'works'}
+				{/if}
 				{#if data.filters.q}matching <q>{data.filters.q}</q>{/if}
+				{#if matchText.trim()}containing <q>{matchText.trim()}</q>{/if}
 			</div>
 			<div class="controls">
+				<div class="match" class:active={!!matchText.trim()}>
+					<input
+						bind:this={matchEl}
+						type="search"
+						placeholder="Filter results…"
+						aria-label="Filter results by exact text in title, author or abstract"
+						title="Exact text in title, author or abstract (case-insensitive)"
+						bind:value={matchText}
+						oninput={() => commitMatch()}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') commitMatch(0);
+							else if (e.key === 'Escape') {
+								if (matchText) {
+									matchText = '';
+									commitMatch(0);
+								} else matchEl?.blur();
+							}
+						}}
+					/>
+				</div>
 				<div class="seg" role="group" aria-label="Sort">
 					{#each SORTS as s (s.value)}
 						<a
@@ -187,7 +232,7 @@
 			</div>
 		{/if}
 
-		{#if data.hits.length === 0}
+		{#if hits.length === 0}
 			<div class="empty">
 				<p>Nothing matches.</p>
 				{#if data.filters.q}
@@ -199,8 +244,8 @@
 			</div>
 		{:else}
 			<div class="list">
-				{#each data.hits as hit, i (hit.id)}
-					<WorkCard {hit} {url} {view} focused={i === focused} {like} sort={data.sort} />
+				{#each hits as hit, i (hit.id)}
+					<WorkCard {hit} {url} {view} focused={i === focused} {like} sort={data.sort} match={matchText} />
 				{/each}
 			</div>
 			{#if data.total > data.hits.length}
@@ -275,6 +320,16 @@
 		min-width: 0;
 		max-width: 2000px;
 	}
+	.match input {
+		width: 190px;
+		padding: 4px 10px;
+		font-size: 12.5px;
+		background: var(--panel);
+	}
+	.match.active input {
+		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+		background: #16233a;
+	}
 	.toolbar {
 		display: flex;
 		align-items: center;
@@ -285,6 +340,13 @@
 	}
 	.count {
 		color: var(--muted);
+		min-width: 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.controls {
+		flex: none;
 	}
 	.count strong {
 		color: var(--text-strong);

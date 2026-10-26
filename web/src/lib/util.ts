@@ -106,6 +106,54 @@ export function authorLine(authors: { name: string }[], max = 6): string {
 	return authors.slice(0, max).map((a) => a.name).join(', ') + ` +${authors.length - max}`;
 }
 
+// ---------------------------------------------------------------------------
+// Results sub-filter: exact (case-insensitive) substring match.
+
+interface Matchable {
+	title: string | null;
+	authors: { name: string }[];
+	abstract: string | null;
+	summary: string | null;
+}
+
+/** Does `needle` occur literally in the title, an author, or the abstract (or summary, if no abstract)? */
+export function matchesText(w: Matchable, needle: string): boolean {
+	const n = needle.trim().toLowerCase();
+	if (!n) return true;
+	return (
+		(w.title ?? '').toLowerCase().includes(n) ||
+		w.authors.some((a) => a.name.toLowerCase().includes(n)) ||
+		(w.abstract ?? w.summary ?? '').toLowerCase().includes(n)
+	);
+}
+
+/** Wrap every case-insensitive occurrence of `needle` in \u0002 … \u0003 (rendered by Hl). */
+export function markAll(text: string, needle: string): string {
+	const n = needle.trim().toLowerCase();
+	if (!n) return text;
+	const lower = text.toLowerCase();
+	let out = '';
+	let i = 0;
+	for (let j = lower.indexOf(n); j !== -1; j = lower.indexOf(n, i)) {
+		out += text.slice(i, j) + '\u0002' + text.slice(j, j + n.length) + '\u0003';
+		i = j + n.length;
+	}
+	return out + text.slice(i);
+}
+
+/** A highlighted excerpt starting a little before the first match, or null if no match. */
+export function markExcerpt(text: string, needle: string, before = 90): string | null {
+	const n = needle.trim().toLowerCase();
+	const j = n ? text.toLowerCase().indexOf(n) : -1;
+	if (j === -1) return null;
+	let start = Math.max(0, j - before);
+	if (start > 0) {
+		const space = text.indexOf(' ', start);
+		if (space !== -1 && space < j) start = space + 1;
+	}
+	return (start > 0 ? '…' : '') + markAll(text.slice(start), needle);
+}
+
 export function hostOf(url: string): string {
 	try {
 		return new URL(url).hostname.replace(/^www\./, '');

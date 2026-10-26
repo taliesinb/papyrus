@@ -41,6 +41,14 @@
 	box-sizing: border-box;
 }
 
+/* Always reserve the page scrollbar's track, so the layout never changes
+   width when results grow past (or shrink below) the window height.
+   scrollbar-gutter alone is not honoured everywhere, hence overflow-y. */
+html {
+	overflow-y: scroll;
+	scrollbar-gutter: stable;
+}
+
 html,
 body {
 	margin: 0;
