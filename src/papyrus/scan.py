@@ -162,14 +162,15 @@ def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None =
                 _record_context(conn, path, st, file_id, host, now)
             if progress:
                 progress("new" if new else "dup", path)
-        # anything under this root we didn't see this time has gone missing
+        # known paths under this root that no longer exist have gone missing
+        # (checked on disk, so a shallow scan doesn't flag deeper files it didn't visit)
         prefix = str(root).rstrip("/") + "/"
-        cur = conn.execute(
-            "UPDATE contexts SET missing_at=? WHERE kind='filesystem' AND missing_at IS NULL"
-            " AND last_seen_at < ? AND (locator = ? OR substr(locator, 1, ?) = ?)"
-            + ("" if opts.recursive else " AND instr(substr(locator, ?), '/') = 0"),
-            (now, now, str(root), len(prefix), prefix) + (() if opts.recursive else (len(prefix) + 1,)),
-        )
-        stats["went_missing"] += cur.rowcount
+        for r in conn.execute(
+            "SELECT id, locator FROM contexts WHERE kind='filesystem' AND missing_at IS NULL"
+            " AND (locator = ? OR substr(locator, 1, ?) = ?)", (str(root), len(prefix), prefix),
+        ).fetchall():
+            if not os.path.exists(r["locator"]):
+                conn.execute("UPDATE contexts SET missing_at=? WHERE id=?", (now, r["id"]))
+                stats["went_missing"] += 1
     db.finish_run(conn, run_id, dict(stats))
     return stats
