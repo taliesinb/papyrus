@@ -45,7 +45,8 @@ metadata. Rules:
 - Use only information present in the input; do not invent authors, years or venues.
 - title: the document's real title as printed (not the filename), in normal capitalisation.
 - authors: full names in printed order, without affiliations, footnote marks or emails.
-- abstract: copy the abstract verbatim if the text contains one, else null.
+- abstract: copy the abstract verbatim only if the text contains one; otherwise has_abstract=false and
+  abstract is the empty string. Never put other page text (copyright pages, forms, tables) there.
 - summary: one or two sentences in your own words describing what the document is about.
 - topics: 2-6 specific topics, each with the academic field it belongs to
   (e.g. {"name": "equality saturation", "field": "programming languages"}).
@@ -62,7 +63,11 @@ EXTRACT_SCHEMA: dict[str, Any] = {
         "authors": {"type": "array", "items": {"type": "string"}},
         "year": {"type": "integer"},
         "venue": {"type": "string"},
-        "abstract": {"type": "string"},
+        "has_abstract": {"type": "boolean",
+                         "description": "true only if the text contains an Abstract section or an obvious "
+                                        "abstract paragraph"},
+        "abstract": {"type": "string",
+                     "description": "the abstract copied verbatim; empty string if has_abstract is false"},
         "summary": {"type": "string"},
         "topics": {"type": "array", "items": {
             "type": "object",
@@ -70,7 +75,8 @@ EXTRACT_SCHEMA: dict[str, Any] = {
             "required": ["name", "field"]}},
         "language": {"type": "string", "description": "ISO 639-1 code, e.g. en"},
     },
-    "required": ["kind", "is_library_material", "title", "authors", "summary", "topics"],
+    "required": ["kind", "is_library_material", "title", "authors", "has_abstract", "abstract", "summary",
+                 "topics", "language"],
 }
 
 DECISIONS = [
@@ -148,6 +154,12 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
     btag = "llm:" + backend.info().tag
     extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state, schema=EXTRACT_SCHEMA, max_tokens=1500)
     result["extract_s"] = round(time.monotonic() - t0, 2)
+    # Small models fill 'abstract' with whatever is on the page (copyright pages, a whole payslip).
+    # Keep it only when the model says there is one and the document is library material.
+    if not extracted.get("has_abstract") or extracted.get("is_library_material") is False:
+        extracted["abstract"] = None
+    if extracted.get("is_library_material") is False:
+        extracted["topics"] = []  # don't index personal paperwork by topic
     with db.tx(conn):
         for field in ["title", "authors", "year", "venue", "abstract", "summary", "topics", "language",
                       "kind", "is_library_material"]:
