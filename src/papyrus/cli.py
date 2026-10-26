@@ -159,7 +159,7 @@ def list_works(ctx: click.Context, query: str | None, kind: str | None, limit: i
     sql = ("SELECT w.id, w.kind, w.year, w.title, (SELECT group_concat(raw_name, ', ') FROM "
            "(SELECT raw_name FROM work_authors WHERE work_id=w.id ORDER BY position LIMIT 4)) AS authors FROM works w")
     args: list = []
-    where = ["w.status<>'merged'"]
+    where = ["w.status NOT IN ('merged', 'rejected')"]
     if query:
         sql += " JOIN works_fts ON works_fts.rowid=w.id"
         where.append("works_fts MATCH ?")

@@ -84,5 +84,12 @@ def test_personal_document_not_promoted_and_abstract_dropped(tmp_path):
     triage_file(conn, 1, FakeBackend(out), FakeDecider("personal", False))
     claims = db.current_assertions(conn, "file", 1)
     assert "abstract" not in claims and "topics" not in claims
-    # decider (rank 2) outranks llm (rank 3); both say not library
+    assert promote_file(conn, 1) == ("not_library", None)
+
+
+def test_decider_kind_overrides_biased_yesno(tmp_path):
+    """Decider says kind=personal (p=.9) but its yes/no says library: kind wins."""
+    conn = _lib(tmp_path, "exam.pdf", "Grade 9 June Paper 1. Answer all questions.")
+    dec = FakeDecider("personal", True)
+    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Grade 9 Paper")), dec)
     assert promote_file(conn, 1) == ("not_library", None)

@@ -69,12 +69,37 @@ def reindex_work(conn: sqlite3.Connection, work_id: int) -> None:
                   topics))
 
 
+def is_library(claims: dict[str, list[dict]]) -> bool:
+    """Library material vs personal paperwork.
+
+    The decider's *kind* distribution is well calibrated, but its yes/no 'is this library
+    material' answer is biased towards yes (0.7 for an exam paper it calls personal with p=1.0).
+    So: P(kind=personal) from the decider when present, else the extraction model's flag.
+    """
+    for c in claims.get("kind_probs") or []:
+        if c["source"].startswith("decide:") and isinstance(c["value"], dict):
+            return c["value"].get("personal", 0.0) < 0.5
+    llm = [c["value"] for c in claims.get("is_library_material") or [] if c["source"].startswith("llm:")]
+    return llm[0] is not False if llm else best(claims, "is_library_material") is not False
+
+
 def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | None]:
     """Create or link a work for a triaged file. Returns (action, work_id)."""
     claims = db.current_assertions(conn, "file", file_id)
-    if conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (file_id,)).fetchone():
+    linked = conn.execute("SELECT work_id FROM file_works WHERE file_id=?", (file_id,)).fetchall()
+    if linked:
+        if not is_library(claims):
+            # created by an earlier, laxer rule: reject (never delete) works whose files are all personal
+            n = 0
+            for (wid,) in linked:
+                others = [r[0] for r in conn.execute(
+                    "SELECT file_id FROM file_works WHERE work_id=? AND file_id<>?", (wid, file_id))]
+                if all(not is_library(db.current_assertions(conn, "file", f)) for f in others):
+                    n += conn.execute("UPDATE works SET status='rejected', updated_at=? WHERE id=?"
+                                      " AND status='candidate'", (db.now_iso(), wid)).rowcount
+            return ("rejected" if n else "already_linked"), None
         return "already_linked", None
-    if best(claims, "is_library_material") is False:
+    if not is_library(claims):
         return "not_library", None
     title = best(claims, "title")
     if not title:

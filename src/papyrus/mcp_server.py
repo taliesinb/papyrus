@@ -47,7 +47,7 @@ def search_library(query: str, kind: str | None = None, limit: int = 20) -> list
                     (SELECT group_concat(raw_name, ', ') FROM work_authors WHERE work_id=w.id) AS authors,
                     snippet(works_fts, 2, '[', ']', '…', 20) AS abstract_snippet
              FROM works_fts JOIN works w ON w.id = works_fts.rowid
-             WHERE works_fts MATCH ? AND w.status <> 'merged'""" + (" AND w.kind = ?" if kind else "") + \
+             WHERE works_fts MATCH ? AND w.status NOT IN ('merged', 'rejected')""" + (" AND w.kind = ?" if kind else "") + \
           " ORDER BY bm25(works_fts) LIMIT ?"
     args = (query, kind, limit) if kind else (query, limit)
     return [dict(r) for r in conn.execute(sql, args)]
@@ -123,7 +123,7 @@ def library_stats() -> dict[str, Any]:
     out = {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
            for t in ["files", "works", "people", "contexts", "assertions"]}
     out["works_by_kind"] = {r[0] or "unknown": r[1] for r in conn.execute(
-        "SELECT kind, count(*) FROM works WHERE status<>'merged' GROUP BY kind")}
+        "SELECT kind, count(*) FROM works WHERE status NOT IN ('merged', 'rejected') GROUP BY kind")}
     return out
 
 
