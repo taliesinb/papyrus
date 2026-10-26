@@ -100,6 +100,43 @@ def promote(ctx: click.Context) -> None:
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
 
 
+@main.command()
+@click.argument("work_ids", nargs=-1, type=int)
+@click.option("--all", "redo_all", is_flag=True, help="Also re-enrich works that already have API data.")
+@click.option("-n", "--limit", type=int)
+@click.pass_context
+def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, limit: int | None) -> None:
+    """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
+    identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
+    from .enrich.pipeline import enrich_work
+
+    conn = _conn(ctx)
+    if work_ids:
+        ids = list(work_ids)
+    else:
+        q = "SELECT id FROM works w WHERE status IN ('candidate','confirmed')"
+        if not redo_all:
+            q += (" AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
+                  " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates'))")
+        ids = [r[0] for r in conn.execute(q + " ORDER BY id")]
+    ids = ids[:limit] if limit else ids
+    run_id = db.start_run(conn, "enrich", {"works": len(ids)})
+    stats: dict[str, int] = {}
+    for wid in ids:
+        try:
+            r = enrich_work(conn, wid, run_id=run_id)
+        except Exception as e:
+            r = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+        stats[r["status"]] = stats.get(r["status"], 0) + 1
+        title = conn.execute("SELECT title FROM works WHERE id=?", (wid,)).fetchone()[0] or ""
+        detail = (",".join(r.get("sources", [])) + f" score={r.get('score') or r.get('best_score') or 0:.2f}"
+                  + (f" authors={r['authors_linked']}" if "authors_linked" in r else "")
+                  if r["status"] != "error" else r["error"][:120])
+        click.echo(f"{wid:5} {r['status']:9} {title[:60]:60} {detail}")
+    db.finish_run(conn, run_id, stats)
+    click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
+
+
 @main.command("works")
 @click.argument("query", required=False)
 @click.option("--kind")
