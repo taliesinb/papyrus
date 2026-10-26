@@ -1,0 +1,30 @@
+[project]
+name = "papyrus"
+version = "0.1.0"
+description = "Local-first library of papers, books and other documents, with provenance, LLM triage, search and MCP."
+readme = "README.md"
+authors = [
+    { name = "Taliesin Beynon", email = "github@tali.link" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "click>=8.5.0",
+    "httpx>=0.28.1",
+    "pypdfium2>=5.14.0",
+]
+
+[project.scripts]
+papyrus = "papyrus.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+# Own workspace root, so uv never attaches this project to ~/pyproject.toml's workspace.
+[tool.uv.workspace]
+members = []
