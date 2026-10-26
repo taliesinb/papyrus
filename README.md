@@ -18,16 +18,22 @@ Early. What works today:
 | scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms`. Re-scans are idempotent, and paths that have gone are marked missing. |
 | triage | `papyrus triage [--backend B] [--decider D]` | Asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
 | promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. |
+| enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus search QUERY`, `papyrus stats` | |
 | MCP | `papyrus mcp` | stdio MCP server with these tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only), `library_stats`. Resource: `papyrus://schema`. |
 
-Enrichment (arXiv / OpenAlex / Semantic Scholar / Crossref matching,
-disambiguated authors, published-version DOIs) lives in
-`src/papyrus/enrich/` and is being wired in. Next on the list:
+Next on the list:
 
+* Open Library for books
 * Slack, Safari Reading List and Twitter contexts
 * embeddings with `sqlite-vec`
 * a managed file store
+
+The full list is under "Open issues" in
+[`docs/architecture.md`](docs/architecture.md).
+
+**Contributing (humans or agents):** start with [`AGENTS.md`](AGENTS.md),
+which covers data-safety rules, invariants and the hard-won gotchas.
 
 ## Models
 
@@ -35,7 +41,7 @@ All models run locally.
 
 | role | backend | spec |
 |---|---|---|
-| extraction | LM Studio (OpenAI-compatible, `localhost:1234`) | `--backend lmstudio:qwen3.5-9b-mlx` |
+| extraction | LM Studio (OpenAI-compatible, `localhost:1234`); the default is the 4B model | `--backend lmstudio:qwen3.5-4b-mlx` |
 | extraction | Apple Foundation Models (on-device; Swift bridge in `tools/afm-bridge`) | `--backend apple` |
 | decisions | LM Studio emulation of the Jev `/v1/systemone` API, using logprobs over option letters | `--decider lmstudio:qwen3.5-4b-mlx` |
 | decisions | any Jev-compatible server (TypeSafe, Ollama `tev1`, decider, Lichen…) | `--decider jev:http://host:port` |
