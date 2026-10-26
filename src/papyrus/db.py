@@ -1,0 +1,118 @@
+"""SQLite access: connection, schema bootstrap, small helpers."""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from importlib import resources
+from pathlib import Path
+from typing import Any, Iterator
+
+SCHEMA_VERSION = 1
+
+
+def library_home() -> Path:
+    return Path(os.environ.get("PAPYRUS_HOME", Path.home() / ".papyrus")).expanduser()
+
+
+def default_db_path() -> Path:
+    return Path(os.environ.get("PAPYRUS_DB", library_home() / "papyrus.sqlite")).expanduser()
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def to_iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def connect(path: Path | str | None = None) -> sqlite3.Connection:
+    path = Path(path) if path else default_db_path()
+    if str(path) != ":memory:":
+        path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, isolation_level=None)  # autocommit; use tx() for batches
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    init(conn)
+    return conn
+
+
+def init(conn: sqlite3.Connection) -> None:
+    sql = resources.files("papyrus").joinpath("schema.sql").read_text()
+    conn.executescript(sql)
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if row is None:
+        conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+    elif int(row[0]) > SCHEMA_VERSION:
+        raise RuntimeError(f"database schema v{row[0]} is newer than this papyrus (v{SCHEMA_VERSION})")
+    # future: elif int(row[0]) < SCHEMA_VERSION: run migrations in order
+
+
+@contextmanager
+def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+
+
+def dumps(v: Any) -> str:
+    return json.dumps(v, ensure_ascii=False, sort_keys=True)
+
+
+def start_run(conn: sqlite3.Connection, command: str, args: dict | None = None,
+              backend: str | None = None, prompt_version: str | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO runs(command, args, backend, prompt_version) VALUES (?,?,?,?)",
+        (command, dumps(args or {}), backend, prompt_version),
+    )
+    return cur.lastrowid
+
+
+def finish_run(conn: sqlite3.Connection, run_id: int, stats: dict) -> None:
+    conn.execute("UPDATE runs SET finished_at=?, stats=? WHERE id=?", (now_iso(), dumps(stats), run_id))
+
+
+def assert_(conn: sqlite3.Connection, subject_type: str, subject_id: int, field: str, value: Any,
+            source: str, confidence: float | None = None, run_id: int | None = None,
+            supersede: bool = True) -> int:
+    """Record a claim. By default supersedes earlier claims from the same source."""
+    if supersede:
+        conn.execute(
+            "UPDATE assertions SET superseded_at=? WHERE subject_type=? AND subject_id=? AND field=?"
+            " AND source=? AND superseded_at IS NULL",
+            (now_iso(), subject_type, subject_id, field, source),
+        )
+    cur = conn.execute(
+        "INSERT INTO assertions(subject_type, subject_id, field, value, confidence, source, run_id)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (subject_type, subject_id, field, dumps(value), confidence, source, run_id),
+    )
+    return cur.lastrowid
+
+
+def current_assertions(conn: sqlite3.Connection, subject_type: str, subject_id: int) -> dict[str, list[dict]]:
+    """field -> list of live claims (newest first), each {value, confidence, source, created_at}."""
+    out: dict[str, list[dict]] = {}
+    for r in conn.execute(
+        "SELECT field, value, confidence, source, created_at FROM assertions"
+        " WHERE subject_type=? AND subject_id=? AND superseded_at IS NULL ORDER BY id DESC",
+        (subject_type, subject_id),
+    ):
+        out.setdefault(r["field"], []).append(
+            {"value": json.loads(r["value"]), "confidence": r["confidence"],
+             "source": r["source"], "created_at": r["created_at"]}
+        )
+    return out
