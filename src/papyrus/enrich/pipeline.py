@@ -304,6 +304,40 @@ def _update_work(conn: sqlite3.Connection, work_id: int, merged: WorkRecord) -> 
     )
 
 
+_STRONG_IDS = ("arxiv", "doi", "openalex", "s2", "isbn")
+
+
+def _conflict(conn: sqlite3.Connection, work_id: int, hint: match.Hint, rec: WorkRecord) -> str | None:
+    """Why `rec` cannot be the same work as `work_id`, or None."""
+    if hint.arxiv_id and rec.ids.get("arxiv") and rec.ids["arxiv"] != hint.arxiv_id:
+        return f"different arXiv id {rec.ids['arxiv']} (work has {hint.arxiv_id})"
+    for scheme in _STRONG_IDS:
+        value = rec.ids.get(scheme)
+        if not value:
+            continue
+        row = conn.execute(
+            "SELECT wi.work_id FROM work_ids wi JOIN works w ON w.id = wi.work_id"
+            " WHERE wi.scheme=? AND wi.value=? AND wi.work_id<>? AND w.status NOT IN ('rejected', 'merged')",
+            (scheme, value, work_id)).fetchone()
+        if row:
+            return f"{scheme}:{value} belongs to work {row[0]}"
+    return None
+
+
+def reset_enrichment(conn: sqlite3.Connection, work_id: int) -> None:
+    """Undo what enrichment wrote for a work, keeping triage data and the claims as history."""
+    now = db.now_iso()
+    with db.tx(conn):
+        conn.execute("UPDATE assertions SET superseded_at=? WHERE subject_type='work' AND subject_id=?"
+                     " AND superseded_at IS NULL AND (source LIKE 'api:%')", (now, work_id))
+        conn.execute("DELETE FROM work_authors WHERE work_id=? AND source=?", (work_id, ENRICH_SOURCE))
+        conn.execute("UPDATE work_authors SET person_id=NULL WHERE work_id=?", (work_id,))
+        conn.execute("DELETE FROM work_ids WHERE work_id=? AND source LIKE 'api:%'", (work_id,))
+        conn.execute("DELETE FROM work_topics WHERE work_id=? AND source<>'triage'", (work_id,))
+        conn.execute("UPDATE works SET venue=NULL, date=NULL, updated_at=? WHERE id=?", (now, work_id))
+        works.reindex_work(conn, work_id)
+
+
 def enrich_work(
     conn: sqlite3.Connection,
     work_id: int,
@@ -318,6 +352,16 @@ def enrich_work(
         return {"status": "not_found", "work_id": work_id, "reason": "no identifiers or title"}
     records = match.resolve(hint, **resolve_kw)
     good = [r for r in records if (r.match_score or 0) >= threshold]
+    # A candidate that is demonstrably a *different* work must not be merged in, however well
+    # its title matches (e.g. a thesis vs. the journal paper with the same title prefix).
+    excluded = [(r, why) for r in good if (why := _conflict(conn, work_id, hint, r))]
+    if excluded:
+        good = [r for r in good if all(r is not x for x, _ in excluded)]
+        with db.tx(conn):
+            for r, why in excluded:
+                db.assert_(conn, "work", work_id, "excluded_candidate",
+                           {"source": r.source, "title": r.title, "ids": r.ids, "reason": why},
+                           source=ENRICH_SOURCE, confidence=r.match_score, run_id=run_id, supersede=False)
     if not good:
         cands = [_candidate_summary(r) for r in records[:10]]
         with db.tx(conn):

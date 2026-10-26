@@ -85,6 +85,25 @@ def finish_run(conn: sqlite3.Connection, run_id: int, stats: dict) -> None:
     conn.execute("UPDATE runs SET finished_at=?, stats=? WHERE id=?", (now_iso(), dumps(stats), run_id))
 
 
+@contextmanager
+def recorded_run(conn: sqlite3.Connection, command: str, args: dict | None = None,
+                 backend: str | None = None, prompt_version: str | None = None) -> Iterator[tuple[int, dict]]:
+    """A `runs` row that is always closed: stats gets status completed | interrupted | crashed: ..."""
+    run_id = start_run(conn, command, args, backend, prompt_version)
+    stats: dict = {}
+    status = "completed"
+    try:
+        yield run_id, stats
+    except KeyboardInterrupt:
+        status = "interrupted"
+        raise
+    except BaseException as e:
+        status = f"crashed: {type(e).__name__}: {e}"[:300]
+        raise
+    finally:
+        finish_run(conn, run_id, {**stats, "status": status})
+
+
 def assert_(conn: sqlite3.Connection, subject_type: str, subject_id: int, field: str, value: Any,
             source: str, confidence: float | None = None, run_id: int | None = None,
             supersede: bool = True) -> int:

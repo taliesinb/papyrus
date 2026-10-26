@@ -12,6 +12,7 @@ Produces assertions on the file (never overwrites anything):
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -101,6 +102,10 @@ class TriageInput:
     state: str
 
 
+# arXiv's margin stamp: 'arXiv:2412.06464v3 [cs.CL] 6 Mar 2025', 'arXiv:math/0601001v1 [math.CO] 1 Jan 2006'
+ARXIV_STAMP = re.compile(
+    r"arXiv:\s*(\d{4}\.\d{4,5}|[a-z][a-z\-]*(?:\.[A-Z]{2})?/\d{7})(v\d+)\s*\[[A-Za-z][A-Za-z\-.]*\]\s*"
+    r"\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4}")
 STATE_CHARS = 4000  # prompt processing dominates latency on small Macs; page 1 is nearly always enough
 
 
@@ -165,9 +170,14 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     found: dict[str, Any] = {}
     meta = idmod.detect("\n".join(names_urls))
     p1 = idmod.detect(page1)
-    arx = meta.best_arxiv or next((a for a in p1.arxiv if a.explicit), None)
+    arx = meta.best_arxiv
     if arx:
         found["arxiv"], found["arxiv_version"] = arx.id, arx.version
+    elif m := ARXIV_STAMP.search(page1):
+        # Only arXiv's own margin stamp identifies *this* document; arXiv URLs/ids elsewhere on
+        # page 1 are citations (e.g. a CV listing its author's papers).
+        if a := idmod.parse_arxiv_id(m.group(1) + m.group(2)):
+            found["arxiv"], found["arxiv_version"] = a.id, a.version
     dois = [d for d in meta.dois + p1.dois if not idmod.is_arxiv_doi(d)]
     if dois:
         found["doi"] = dois[0]

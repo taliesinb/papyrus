@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import signal
 import sqlite3
 from pathlib import Path
 
 import click
 
 from . import db
+
+
+def _sigterm(signum, frame):  # noqa: ARG001
+    raise KeyboardInterrupt
 
 
 def _conn(ctx: click.Context) -> sqlite3.Connection:
@@ -21,6 +26,8 @@ def _conn(ctx: click.Context) -> sqlite3.Connection:
 @click.pass_context
 def main(ctx: click.Context, db_path: Path | None) -> None:
     """Local library of papers, books and other documents."""
+    # turn `kill`/SIGTERM into KeyboardInterrupt so runs are closed as 'interrupted'
+    signal.signal(signal.SIGTERM, _sigterm)
     ctx.ensure_object(dict)
     ctx.obj["conn"] = db.connect(db_path)
 
@@ -80,24 +87,24 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_
         where = "text_status IN ('ok','no_text')" + ("" if redo_all else " AND triage_status<>'done'")
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
     ids = ids[:limit] if limit else ids
-    run_id = db.start_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag, prompt_version=PROMPT_VERSION)
-    stats = {"ok": 0, "error": 0}
     click.echo(f"triaging {len(ids)} files with {be.info().tag}" + (f" + {dec.info().tag}" if dec else ""))
-    for fid in ids:
-        try:
-            r = triage_file(conn, fid, be, dec, run_id=run_id)
-        except Exception as e:  # keep going; record the failure
-            stats["error"] += 1
-            conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (fid,))
-            click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
-            continue
-        stats["ok"] += 1
-        e = r["extracted"]
-        mark = "+" if e.get("is_library_material") else "-"
-        kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
-        click.echo(f"{fid:5} {mark} {kind or '?':13} {r['extract_s'] + r.get('decide_s', 0):5.1f}s "
-                   f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
-    db.finish_run(conn, run_id, stats)
+    with db.recorded_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag,
+                         prompt_version=PROMPT_VERSION) as (run_id, stats):
+        stats.update(ok=0, error=0)
+        for fid in ids:
+            try:
+                r = triage_file(conn, fid, be, dec, run_id=run_id)
+            except Exception as e:  # keep going; record the failure
+                stats["error"] += 1
+                conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (fid,))
+                click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
+                continue
+            stats["ok"] += 1
+            e = r["extracted"]
+            mark = "+" if e.get("is_library_material") else "-"
+            kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
+            click.echo(f"{fid:5} {mark} {kind or '?':13} {r['extract_s'] + r.get('decide_s', 0):5.1f}s "
+                       f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 
@@ -113,14 +120,17 @@ def promote(ctx: click.Context) -> None:
 @main.command()
 @click.argument("work_ids", nargs=-1, type=int)
 @click.option("--all", "redo_all", is_flag=True, help="Also re-enrich works that already have API data.")
+@click.option("--reset", is_flag=True, help="Undo previous enrichment of the given works first (keeps it as history).")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, limit: int | None) -> None:
+def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
     """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
     identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
-    from .enrich.pipeline import enrich_work
+    from .enrich.pipeline import enrich_work, reset_enrichment
 
     conn = _conn(ctx)
+    if reset and not work_ids:
+        raise click.UsageError("--reset needs explicit WORK_IDS")
     if work_ids:
         ids = list(work_ids)
     else:
@@ -130,20 +140,20 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, limit:
                   " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates'))")
         ids = [r[0] for r in conn.execute(q + " ORDER BY id")]
     ids = ids[:limit] if limit else ids
-    run_id = db.start_run(conn, "enrich", {"works": len(ids)})
-    stats: dict[str, int] = {}
-    for wid in ids:
-        try:
-            r = enrich_work(conn, wid, run_id=run_id)
-        except Exception as e:
-            r = {"status": "error", "error": f"{type(e).__name__}: {e}"}
-        stats[r["status"]] = stats.get(r["status"], 0) + 1
-        title = conn.execute("SELECT title FROM works WHERE id=?", (wid,)).fetchone()[0] or ""
-        detail = (",".join(r.get("sources", [])) + f" score={r.get('score') or r.get('best_score') or 0:.2f}"
-                  + (f" authors={r['authors_linked']}" if "authors_linked" in r else "")
-                  if r["status"] != "error" else r["error"][:120])
-        click.echo(f"{wid:5} {r['status']:9} {title[:60]:60} {detail}")
-    db.finish_run(conn, run_id, stats)
+    with db.recorded_run(conn, "enrich", {"works": len(ids), "reset": reset}) as (run_id, stats):
+        for wid in ids:
+            try:
+                if reset:
+                    reset_enrichment(conn, wid)
+                r = enrich_work(conn, wid, run_id=run_id)
+            except Exception as e:
+                r = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+            stats[r["status"]] = stats.get(r["status"], 0) + 1
+            title = conn.execute("SELECT title FROM works WHERE id=?", (wid,)).fetchone()[0] or ""
+            detail = (",".join(r.get("sources", [])) + f" score={r.get('score') or r.get('best_score') or 0:.2f}"
+                      + (f" authors={r['authors_linked']}" if "authors_linked" in r else "")
+                      if r["status"] != "error" else r["error"][:120])
+            click.echo(f"{wid:5} {r['status']:9} {title[:60]:60} {detail}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 

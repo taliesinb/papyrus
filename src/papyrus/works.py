@@ -37,12 +37,14 @@ def norm_title(t: str | None) -> str:
 def find_work(conn: sqlite3.Connection, ids: dict[str, str], title: str | None, year: int | None) -> int | None:
     for scheme, value in ids.items():
         if value:
-            r = conn.execute("SELECT work_id FROM work_ids WHERE scheme=? AND value=?", (scheme, value)).fetchone()
+            r = conn.execute("SELECT wi.work_id FROM work_ids wi JOIN works w ON w.id=wi.work_id"
+                             " WHERE wi.scheme=? AND wi.value=? AND w.status NOT IN ('rejected', 'merged')",
+                             (scheme, value)).fetchone()
             if r:
                 return r[0]
     nt = norm_title(title)
     if len(nt) >= 12:
-        for r in conn.execute("SELECT id, title, year FROM works WHERE status<>'merged'"):
+        for r in conn.execute("SELECT id, title, year FROM works WHERE status NOT IN ('merged', 'rejected')"):
             if norm_title(r["title"]) == nt and (year is None or r["year"] is None or abs(r["year"] - year) <= 1):
                 return r["id"]
     return None
@@ -83,6 +85,22 @@ def is_library(claims: dict[str, list[dict]]) -> bool:
     return llm[0] is not False if llm else best(claims, "is_library_material") is not False
 
 
+def reject_work(conn: sqlite3.Connection, work_id: int) -> int:
+    """Mark a candidate work rejected and release its identifiers (recorded as an assertion),
+    so that a real document with the same arXiv id / DOI can claim them later."""
+    n = conn.execute("UPDATE works SET status='rejected', updated_at=? WHERE id=? AND status='candidate'",
+                     (db.now_iso(), work_id)).rowcount
+    release_ids(conn, work_id)
+    return n
+
+
+def release_ids(conn: sqlite3.Connection, work_id: int) -> None:
+    ids = {r[0]: r[1] for r in conn.execute("SELECT scheme, value FROM work_ids WHERE work_id=?", (work_id,))}
+    if ids:
+        db.assert_(conn, "work", work_id, "released_ids", ids, source="papyrus:reject", supersede=False)
+        conn.execute("DELETE FROM work_ids WHERE work_id=?", (work_id,))
+
+
 def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | None]:
     """Create or link a work for a triaged file. Returns (action, work_id)."""
     claims = db.current_assertions(conn, "file", file_id)
@@ -95,8 +113,7 @@ def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | Non
                 others = [r[0] for r in conn.execute(
                     "SELECT file_id FROM file_works WHERE work_id=? AND file_id<>?", (wid, file_id))]
                 if all(not is_library(db.current_assertions(conn, "file", f)) for f in others):
-                    n += conn.execute("UPDATE works SET status='rejected', updated_at=? WHERE id=?"
-                                      " AND status='candidate'", (db.now_iso(), wid)).rowcount
+                    n += reject_work(conn, wid)
             return ("rejected" if n else "already_linked"), None
         return "already_linked", None
     if not is_library(claims):
