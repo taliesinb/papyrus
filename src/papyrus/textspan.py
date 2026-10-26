@@ -139,3 +139,30 @@ def heuristic_abstract(text: str, max_chars: int = 3000) -> str | None:
     body = rest[: stop.start()] if stop else rest[:max_chars]
     body = re.sub(r"\s+", " ", body).strip()
     return body if 200 <= len(body) <= max_chars else None
+
+
+def _normjoin(s: str) -> str:
+    return " ".join(w for w, *_ in tokens(s))
+
+
+def best_abstract(pages: str, start: str | None, end: str | None) -> tuple[str | None, str]:
+    """Combine model anchors with the 'Abstract ... Introduction' heuristic.
+
+    Returns (abstract, method) with method in anchors | heuristic | anchors+heuristic | none.
+    The heuristic wins when the anchor span is a truncated piece of it (the model saw a
+    clipped page and gave the last words it saw) or clearly over-runs it (the end anchor
+    matched text after the abstract).
+    """
+    span = locate(pages, start, end)
+    h = heuristic_abstract(pages)
+    if span and h:
+        ns, nh = _normjoin(span), _normjoin(h)
+        if ns in nh and len(nh) > len(ns) and not span.rstrip().endswith((".", "!", "?")):
+            return h, "anchors+heuristic"
+        if nh in ns and len(ns) > 1.3 * len(nh):
+            return h, "anchors+heuristic"
+    if span:
+        return span, "anchors"
+    if h:
+        return h, "heuristic"
+    return None, "none"

@@ -19,7 +19,7 @@ from typing import Any
 
 from . import db
 from .llm.base import Backend, Decider, Question
-from .textspan import heuristic_abstract, locate
+from .textspan import best_abstract
 
 # triage-1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
 # triage-2: model gives start/end anchors; the exact span is cut from the page text.
@@ -101,7 +101,10 @@ class TriageInput:
     state: str
 
 
-def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = 7000) -> str:
+STATE_CHARS = 4000  # prompt processing dominates latency on small Macs; page 1 is nearly always enough
+
+
+def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_CHARS) -> str:
     f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     lines: list[str] = []
     ctxs = conn.execute(
@@ -177,7 +180,7 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
 
 
 def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decider: Decider | None,
-                run_id: int | None = None, max_chars: int = 7000) -> dict[str, Any]:
+                run_id: int | None = None, max_chars: int = STATE_CHARS) -> dict[str, Any]:
     state = build_state(conn, file_id, max_chars=max_chars)
     result: dict[str, Any] = {"file_id": file_id}
     t0 = time.monotonic()
@@ -191,12 +194,11 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
     if extracted.get("has_abstract") and extracted.get("is_library_material") is not False:
         pages = "\n".join(r[0] for r in conn.execute(
             "SELECT text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,)))
-        span = locate(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
-        if span:
-            extracted["abstract"], abstract_source = span, btag + "#anchors"
-        elif h := heuristic_abstract(pages):
-            extracted["abstract"], abstract_source = h, "heuristic:abstract"
-        result["abstract_method"] = abstract_source or "not_found"
+        text, method = best_abstract(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
+        if text:
+            extracted["abstract"] = text
+            abstract_source = "heuristic:abstract" if method == "heuristic" else f"{btag}#{method}"
+        result["abstract_method"] = method
     if extracted.get("is_library_material") is False:
         extracted["topics"] = []  # don't index personal paperwork by topic
     answers = {}

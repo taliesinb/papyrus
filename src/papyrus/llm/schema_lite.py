@@ -12,6 +12,9 @@ import re
 from typing import Any
 
 
+_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 class SchemaError(ValueError):
     pass
 
@@ -93,6 +96,7 @@ def coerce(value: Any, schema: dict[str, Any], path: str = "$") -> Any:
     if t == "string":
         if not isinstance(value, str):
             value = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+        value = _CONTROL.sub("", value)
         if "enum" in schema:
             for e in schema["enum"]:
                 if value.strip().lower() == str(e).lower():

@@ -49,7 +49,7 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
 @click.argument("file_ids", nargs=-1, type=int)
 @click.option("--backend", default="auto", show_default=True,
               help="Extraction model: auto | lmstudio[:model] | apple")
-@click.option("--decider", "decider_spec", default="none", show_default=True,
+@click.option("--decider", "decider_spec", default="auto", show_default=True,
               help="Jev-style decider for kind/is-library: none | auto | lmstudio[:model] | jev:<url>")
 @click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
 @click.option("-n", "--limit", type=int)
@@ -64,8 +64,16 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_
     be = get_backend(backend)
     dec = None
     if decider_spec != "none":
+        from .llm.base import BackendUnavailable
         from .llm.decide import get_decider
-        dec = get_decider(None if decider_spec == "auto" else decider_spec)
+        try:
+            dec = get_decider(None if decider_spec == "auto" else decider_spec)
+            if decider_spec == "auto" and not dec.available():
+                dec = None
+        except BackendUnavailable as e:
+            if decider_spec != "auto":
+                raise
+            click.echo(f"(no decider: {e})", err=True)
     if file_ids:
         ids = list(file_ids)
     else:
@@ -86,7 +94,9 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_
         stats["ok"] += 1
         e = r["extracted"]
         mark = "+" if e.get("is_library_material") else "-"
-        click.echo(f"{fid:5} {mark} {e.get('kind', '?'):13} {r['extract_s']:5.1f}s  {e.get('title', '')[:70]}")
+        kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
+        click.echo(f"{fid:5} {mark} {kind or '?':13} {r['extract_s'] + r.get('decide_s', 0):5.1f}s "
+                   f"{r.get('abstract_method', '-'):17} {e.get('title', '')[:60]}")
     db.finish_run(conn, run_id, stats)
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
