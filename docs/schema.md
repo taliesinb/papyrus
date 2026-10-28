@@ -51,7 +51,7 @@ are required to read it.
   * `api:enrich`: the enrichment pipeline's own records (candidates, exclusions, duplicates)
   * `papyrus:reject`: written when a work is rejected
   * `user`
-  * Link tables also use plain stage names: `scan`, `triage`, `promote`.
+  * Link tables also use plain stage names: `scan`, `download`, `triage`, `promote`.
 * Precedence when resolving claims (`works.SOURCE_RANK`):
   `user > api:* > decide:* > llm:* > heuristic:* > pdf:*`.
 
@@ -65,7 +65,7 @@ are required to read it.
 | `page_count`, `pdf_*` | the PDF's own document-info dictionary, verbatim |
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
 | `triage_status` | `pending`, `done` or `error` (LLM triage) |
-| `stored_path` | papyrus's own managed copy, if any (future) |
+| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default `~/.papyrus`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed). |
 
 `file_pages(file_id, page, text)` holds extracted text per page. Scanning
 extracts the first 2 pages; full extraction will fill in the rest. The text is
@@ -129,6 +129,7 @@ WHERE file_pages_fts MATCH 'equality NEAR saturation';
 | kind | locator | occurred_at | actor | text | extra (JSON) |
 |---|---|---|---|---|---|
 | `filesystem` | absolute path | file birth time (≈ download time) | – | – | `filename`, `dir`, `size`, `mtime`, `where_froms`, `download_agent` |
+| `download` | the URL as given to `papyrus download` | time of the first successful download (NULL until then) | – | – | `filename` (Content-Disposition or URL), `where_froms` `[PDF URL after redirects, landing page]`, `content_type`, `size`; on failure `error`, `status` (or `last_error`, `last_status` after an earlier success) |
 | `slack` *(planned)* | message permalink | message ts | poster's display name (`actor_id` = Slack user id) | the message paragraph | `channel_id`, `thread_ts`, `reactions`, `files` |
 | `safari_rl` *(planned)* | bookmark UUID | date added to Reading List | – | preview text | `date_last_viewed`, `site` |
 | `twitter` *(planned)* | tweet URL | tweet time | author handle | tweet text | `thread_root`, `quoted`, `likes` |
@@ -139,12 +140,17 @@ WHERE file_pages_fts MATCH 'equality NEAR saturation';
 * For files, `where_froms` comes from the macOS `kMDItemWhereFroms` extended
   attribute written by the browser: `[download URL, referring page]`.
   `contexts.url` holds the download URL.
+* For downloads, `title` is the link's title where known (e.g. the Safari
+  tab's title, `[2312.00429] Polygraphs: …`), `source` the host, and
+  `contexts.url` the PDF's URL. `where_froms` has the same shape as for files.
 
 `context_refs` connects a context to the documents it mentions. A Slack
 message with three arXiv links has three refs. A ref starts `unresolved`
 (only `url` and/or `mention` are set) and becomes `resolved` once it points to
 a `file_id` and/or `work_id`. A filesystem context has exactly one resolved
-ref, to the file at that path.
+ref, to the file at that path. A download context has one ref: resolved to
+the downloaded file, or `unresolved` (with the URL) while fetching fails;
+the next `papyrus download` of that URL retries it.
 
 ### assertions
 

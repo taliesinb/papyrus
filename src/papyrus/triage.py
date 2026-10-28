@@ -113,14 +113,20 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_C
     f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     lines: list[str] = []
     ctxs = conn.execute(
-        "SELECT c.locator, c.url, c.extra, c.occurred_at FROM context_refs r JOIN contexts c ON c.id=r.context_id"
-        " WHERE r.file_id=? AND c.kind='filesystem' ORDER BY c.missing_at IS NOT NULL, c.occurred_at",
+        "SELECT c.kind, c.locator, c.url, c.title, c.extra, c.occurred_at FROM context_refs r"
+        " JOIN contexts c ON c.id=r.context_id"
+        " WHERE r.file_id=? AND c.kind IN ('filesystem', 'download')"
+        " ORDER BY c.missing_at IS NOT NULL, c.occurred_at",
         (file_id,),
     ).fetchall()
     for c in ctxs[:3]:
         extra = json.loads(c["extra"] or "{}")
-        lines.append(f"Filename: {extra.get('filename')}")
-        lines.append(f"Found at: {c['locator']}")
+        if extra.get("filename"):
+            lines.append(f"Filename: {extra.get('filename')}")
+        if c["kind"] == "filesystem":
+            lines.append(f"Found at: {c['locator']}")
+        elif c["title"]:  # download: the browser tab's title
+            lines.append(f"Link title: {c['title']}")
         froms = extra.get("where_froms") or []
         if froms:
             lines.append(f"Downloaded from: {froms[0]}" + (f" (via page {froms[1]})" if len(froms) > 1 else ""))
@@ -152,7 +158,8 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_C
 def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     """Identifiers of *this* document, not of papers it cites.
 
-    Trusted, in order: filename and download URLs; then page 1 (arXiv stamp in
+    Trusted, in order: filename, download URLs and the title of the link it was downloaded
+    from; then page 1 (arXiv stamp in
     the margin, DOI/ISBN in the header or footer). Later pages are ignored
     because they are full of references.
     """
@@ -160,10 +167,12 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
 
     names_urls = []
     for r in conn.execute(
-        "SELECT c.extra FROM context_refs r JOIN contexts c ON c.id=r.context_id"
-        " WHERE r.file_id=? AND c.kind='filesystem'", (file_id,)):
+        "SELECT c.kind, c.title, c.extra FROM context_refs r JOIN contexts c ON c.id=r.context_id"
+        " WHERE r.file_id=? AND c.kind IN ('filesystem', 'download')", (file_id,)):
         extra = json.loads(r["extra"] or "{}")
         names_urls += [extra.get("filename") or "", *(extra.get("where_froms") or [])]
+        if r["kind"] == "download" and r["title"]:  # e.g. '[2312.00429] Polygraphs: …' from arXiv
+            names_urls.append(r["title"])
     page1 = conn.execute("SELECT text FROM file_pages WHERE file_id=? AND page=1", (file_id,)).fetchone()
     page1 = page1["text"] if page1 else ""
 

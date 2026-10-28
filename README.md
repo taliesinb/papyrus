@@ -15,7 +15,9 @@ Early. What works today:
 
 | stage | command | what it does |
 |---|---|---|
-| scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms`. Re-scans are idempotent, and paths that have gone are marked missing. |
+| scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms`. New files are copied into the managed store (an APFS clone, so free). Re-scans are idempotent, and paths that have gone are marked missing. |
+| download | `papyrus download URL...`, `-c`/`--clipboard`, `-`/`--stdin`, `-f`/`--file FILE` | Fetches PDFs into the store and ingests them like `scan`. Takes tabs copied from Safari (titles included), or URLs separated by newlines, commas or spaces, markdown links and arXiv ids. arXiv/OpenReview pages map to their PDF; other landing pages are followed via `citation_pdf_url`. Each URL is a `download` context; URLs already in the library are skipped. `--dry-run` shows what would happen; `--process` then runs triage, promote and enrich on the new files. |
+| store | `papyrus store [--check]` | Copies files scanned before the store existed into it; `--check` re-hashes the stored copies. |
 | triage | `papyrus triage [--backend B] [--decider D]` | Asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
 | promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. |
 | enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
@@ -26,7 +28,8 @@ Early. What works today:
 Next on the list:
 
 * Open Library for books
-* Slack, Safari Reading List and Twitter contexts
+* Slack, Safari Reading List and Twitter contexts (the shared resolver can
+  reuse `download.fetch` for PDF links)
 * embeddings with `sqlite-vec`
 * a managed file store
 
@@ -65,6 +68,10 @@ Two LM Studio notes:
 ## Data
 
 * Database: `~/.papyrus/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
+* Managed store: `~/.papyrus/store/ab/<sha256>.pdf` (under `PAPYRUS_HOME`),
+  read-only copies named by content hash; `files.stored_path` points there.
+  Copies of local files are APFS clones (no extra space while the original
+  exists; plain `cp` would not clone).
 * Schema: [`src/papyrus/schema.sql`](src/papyrus/schema.sql), explained in
   [`docs/schema.md`](docs/schema.md).
 
@@ -72,7 +79,7 @@ Two LM Studio notes:
 
 | variable | purpose |
 |---|---|
-| `PAPYRUS_DB`, `PAPYRUS_HOME` | database location |
+| `PAPYRUS_DB`, `PAPYRUS_HOME` | database location; `PAPYRUS_HOME` (default `~/.papyrus`) also holds the store |
 | `PAPYRUS_LMSTUDIO_URL`, `PAPYRUS_LMSTUDIO_MODEL` | extraction via LM Studio |
 | `PAPYRUS_DECIDER`, `PAPYRUS_DECIDE_MODEL` | decider via LM Studio |
 | `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible decider server |

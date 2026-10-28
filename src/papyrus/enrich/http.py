@@ -44,6 +44,7 @@ DEFAULT_INTERVALS: dict[str, float] = {
     "api.semanticscholar.org": 1.05,  # 1 rps with a key; shared pool without
     "api.openalex.org": 0.11,  # 10 rps keyless, 30 rps with a key
     "api.crossref.org": 0.35,  # polite pool advertises 3 rps (x-rate-limit-*)
+    "arxiv.org": 1.0,  # PDF downloads (papyrus download)
 }
 
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -97,6 +98,14 @@ class Response:
 
     def json(self) -> Any:
         return json.loads(self.text)
+
+
+@dataclass
+class Download:
+    status: int
+    url: str  # final URL, after redirects
+    headers: dict[str, str]  # lower-case names
+    size: int
 
 
 class _HostLimiter:
@@ -268,6 +277,51 @@ class HttpClient:
             if use_cache and r.status_code in cache_statuses:
                 self._cache_put(key, resp)
             return resp
+
+    def download(
+        self,
+        url: str,
+        dest: Path,
+        *,
+        headers: Mapping[str, str] | None = None,
+        max_retries: int | None = None,
+        max_bytes: int | None = None,
+    ) -> Download:
+        """Stream a GET into `dest` (overwritten), with the rate limiting and retries of `request`
+        but no cache. Raises HttpError unless the final status is 200."""
+        host = urlsplit(url).hostname or ""
+        limiter = self._limiter(host)
+        retries = self.max_retries if max_retries is None else max_retries
+        attempt = 0
+        while True:
+            limiter.wait()
+            delay = None
+            try:
+                with self._client.stream("GET", url, headers=dict(headers or {})) as r:
+                    if r.status_code in RETRY_STATUSES and attempt < retries:
+                        delay = self._backoff(attempt, r.headers.get("Retry-After"))
+                        log.info("GET %s -> %d; retrying in %.1fs", redact_url(url), r.status_code, delay)
+                        limiter.penalise(delay)
+                    elif r.status_code != 200:
+                        body = r.read()[:2000].decode("utf-8", "replace")
+                        raise HttpError(r.status_code, url, body)
+                    else:
+                        size = 0
+                        with open(dest, "wb") as fh:
+                            for chunk in r.iter_bytes(1 << 16):
+                                fh.write(chunk)
+                                size += len(chunk)
+                                if max_bytes is not None and size > max_bytes:
+                                    raise HttpError(200, url, f"larger than {max_bytes} bytes")
+                        return Download(r.status_code, redact_url(str(r.url)),
+                                        {k.lower(): v for k, v in r.headers.items()}, size)
+            except httpx.TransportError as e:  # includes connections dropped mid-body
+                if attempt >= retries:
+                    raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
+                delay = self._backoff(attempt, None)
+                log.info("GET %s: %s; retrying in %.1fs", redact_url(url), e, delay)
+            self._sleep(delay)
+            attempt += 1
 
     def _backoff(self, attempt: int, retry_after: str | None, cap: float | None = None) -> float:
         cap = self.backoff_cap if cap is None else cap

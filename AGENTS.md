@@ -17,24 +17,32 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | triage | promote | enrich | works | work | files | show | search | stats | mcp
+uv run papyrus --help                  # scan | download | store | triage | promote | enrich | works | work | files | show | search | stats | mcp
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 ```
 
-The usual pipeline is `scan → triage → promote → enrich`. Every stage is
-idempotent and processes only what is pending (see `--all` / `--reset`).
+The usual pipeline is `scan` (or `download`) `→ triage → promote → enrich`.
+Every stage is idempotent and processes only what is pending (see `--all` /
+`--reset`).
 
 ## Data safety (read before running anything)
 
 * **`~/.papyrus/papyrus.sqlite` is the user's real library.**
   * Experiment against a scratch copy:
-    `sqlite3 ~/.papyrus/papyrus.sqlite ".backup /tmp/p.sqlite"`, then set
-    `PAPYRUS_DB=/tmp/p.sqlite`.
+    `mkdir /tmp/ph && sqlite3 ~/.papyrus/papyrus.sqlite ".backup /tmp/ph/papyrus.sqlite"`,
+    then set `PAPYRUS_HOME=/tmp/ph` (this moves the managed store too; with
+    only `PAPYRUS_DB` set, `scan`/`download` would still write into
+    `~/.papyrus/store`). Tests do this automatically (`tests/conftest.py`).
   * Before any bulk change to the real database, take a dated `.backup` next
     to it (`~/.papyrus/papyrus.backup-YYYY-MM-DD-<why>.sqlite`).
 * **Never modify, move or delete the user's files on disk.** papyrus only
   reads them. Report odd files instead. For example, a PDF whose filename
   suggests a textbook may turn out to be an unrelated document.
+* **The managed store** (`~/.papyrus/store/ab/<sha256>.pdf`) is papyrus's
+  own: content-addressed, read-only, written only through `store.commit`.
+  Never rewrite or delete a stored file; `files.stored_path` points there.
+  Copy local files in with `store.snapshot` (an APFS clone, falling back to a
+  copy), never `shutil.copy`/`cp`, which duplicate the bytes.
 * **Never delete rows that carry knowledge:**
   * works are rejected (`status='rejected'`, ids released by
     `works.reject_work`) or merged, never deleted;
@@ -74,7 +82,9 @@ idempotent and processes only what is pending (see `--all` / `--reset`).
    Enrichment never merges a candidate whose ids belong to another live work
    (`pipeline._conflict`).
 5. **This document's ids, not cited ones.** `triage.detect_ids` trusts:
-   * the filename and the download URLs (`kMDItemWhereFroms`);
+   * the filename and the download URLs (`kMDItemWhereFroms`, or the
+     `where_froms` of a `download` context) and the title of the link it was
+     downloaded from;
    * on page 1 only, arXiv's margin stamp
      (`arXiv:2412.06464v3 [cs.CL] 6 Mar 2025`).
 
@@ -166,6 +176,18 @@ idempotent and processes only what is pending (see `--all` / `--reset`).
 * Set `PAPYRUS_MAILTO`. Responses are cached in `~/.cache/papyrus/http` for
   30 days (`PAPYRUS_HTTP_CACHE=0` turns that off).
 
+**Downloads and the clipboard** (`download.py`):
+
+* Safari's copied tabs are on the clipboard as RTF (`HYPERLINK` fields, with
+  titles) and as plain text (`title\nURL\n\n`; a PDF tab's title is its URL,
+  hence the doubled lines). `pbpaste -Prefer rtf` falls back to the plain text
+  whenever there is any, so the RTF is read with
+  `osascript -e 'the clipboard as «class RTF »'` (hex, ~0.1 s).
+* Decide "is it a PDF" by the first bytes: some servers send PDFs as
+  `Content-Type: application/json`.
+* arXiv's PDF responses carry `filename="<id>v<N>.pdf"`, which is where the
+  version of a downloaded preprint comes from.
+
 **uv:** `~/pyproject.toml` defines a uv workspace. This project declares its
 own `[tool.uv.workspace]` so that uv never adds it there. Don't remove that
 table, and never edit `~/pyproject.toml`.
@@ -180,6 +202,9 @@ with the same decorators.
   generated PDFs (`test_core._make_pdf`).
 * **No network:** record API responses as fixtures under `tests/fixtures/`,
   and monkeypatch `match.resolve` for pipeline tests.
+* **Downloads:** `tests/test_download.py::_web` serves PDFs, redirects and
+  landing pages through `httpx.MockTransport`; pass the client to
+  `download.download` (or `http.set_default_client` for CLI tests).
 * **Live tests** must skip themselves when the service isn't reachable
   (LM Studio, the AFM bridge, `PAPYRUS_LIVE` for the network).
 * **Regressions found by reviewing real data** go into

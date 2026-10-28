@@ -36,10 +36,15 @@ def main(ctx: click.Context, db_path: Path | None) -> None:
 @click.argument("roots", nargs=-1, type=click.Path(exists=True, path_type=Path))
 @click.option("-r", "--recursive", is_flag=True, help="Descend into subdirectories.")
 @click.option("--max-depth", default=4, show_default=True)
+@click.option("--no-store", is_flag=True, help="Don't copy new files into the managed store.")
 @click.option("-v", "--verbose", is_flag=True)
 @click.pass_context
-def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth: int, verbose: bool) -> None:
-    """Find PDFs under ROOTS, hash them, read their first pages and record where they were found."""
+def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth: int, no_store: bool,
+         verbose: bool) -> None:
+    """Find PDFs under ROOTS, hash them, read their first pages and record where they were found.
+
+    New files are also copied into the managed store (~/.papyrus/store, named by hash); on APFS
+    the copy is a clone, which takes no extra space."""
     from .scan import ScanOptions, scan as do_scan
 
     roots = roots or (Path("~/Desktop").expanduser(), Path("~/Downloads").expanduser())
@@ -48,8 +53,109 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
         if verbose:
             click.echo(f"  {state:4} {path}")
 
-    stats = do_scan(_conn(ctx), list(roots), ScanOptions(recursive=recursive, max_depth=max_depth), progress)
+    opts = ScanOptions(recursive=recursive, max_depth=max_depth, store=not no_store)
+    stats = do_scan(_conn(ctx), list(roots), opts, progress)
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
+
+
+@main.command()
+@click.argument("urls", nargs=-1)
+@click.option("-c", "--clipboard", is_flag=True,
+              help="Read links from the clipboard (e.g. tabs copied in Safari, which keep their titles).")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read links from standard input (also: a lone '-').")
+@click.option("-f", "--file", "files", multiple=True, type=click.File("r"), metavar="FILE",
+              help="Read links from FILE (repeatable).")
+@click.option("-n", "--dry-run", is_flag=True, help="Only show the parsed links and what would be fetched.")
+@click.option("--refetch", is_flag=True, help="Fetch even URLs that are already in the library.")
+@click.option("-j", "--jobs", default=4, show_default=True, help="Hosts fetched in parallel.")
+@click.option("--process", is_flag=True, help="Then triage, promote and enrich the new files.")
+@click.pass_context
+def download(ctx: click.Context, urls: tuple[str, ...], clipboard: bool, from_stdin: bool,
+             files: tuple, dry_run: bool, refetch: bool, jobs: int, process: bool) -> None:
+    """Download documents from URLs into the library's store.
+
+    Links can be given as arguments, with -c/--clipboard, - or --stdin, and -f/--file; as
+    URLs separated by newlines, commas or spaces, markdown links, or arXiv ids. arXiv and
+    OpenReview pages map to their PDF, and other HTML landing pages are followed through
+    their citation_pdf_url. Each URL is recorded as a 'download' context.
+
+    \b
+    papyrus download -c                 # tabs copied from Safari
+    papyrus download https://arxiv.org/abs/2312.00429 1903.05848
+    pbpaste | papyrus download -
+    """
+    import sys
+
+    from .download import Link, dedupe, download as do_download, known_file, parse_text, read_clipboard, resolve
+
+    from_stdin = from_stdin or "-" in urls
+    links: list[Link] = []
+    for u in urls:
+        if u == "-":
+            continue
+        found = parse_text(u)
+        if not found:
+            click.echo(f"(ignoring {u!r}: not a URL or arXiv id)", err=True)
+        links += found
+    for fh in files:
+        links += parse_text(fh.read())
+    if from_stdin:
+        links += parse_text(sys.stdin.read())
+    if clipboard:
+        found, flavour = read_clipboard()
+        click.echo(f"clipboard ({flavour}): {len(found)} links", err=True)
+        links += found
+    if not (urls or files or from_stdin or clipboard):
+        raise click.UsageError("give URLs, or use -c/--clipboard, -/--stdin or -f/--file")
+    links = dedupe(links)
+    if not links:
+        raise click.ClickException("no links found")
+    conn = _conn(ctx)
+    if dry_run:
+        for link in links:
+            target, _ = resolve(link.url)
+            known = None if refetch else known_file(conn, link.url)
+            state = f"known [{known[0]}]" if known else "fetch"
+            click.echo(f"{state:12} {link.url}" + (f"\n{'':13}-> {target}" if target != link.url else "")
+                       + (f"\n{'':13}“{link.title}”" if link.title else ""))
+        return
+
+    def progress(o) -> None:
+        label = f"[{o.file_id}]" if o.file_id else ""
+        line = f"{o.state:6} {label:>6} {o.link.title or o.link.url}"
+        if o.state == "failed":
+            line += f"\n{'':14}{o.link.url}\n{'':14}{o.detail[:300]}"
+        click.echo(line, err=o.state == "failed")
+
+    stats, outcomes = do_download(conn, links, jobs=jobs, refetch=refetch, progress=progress)
+    click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
+    new_ids = sorted({o.file_id for o in outcomes if o.state == "new" and o.file_id})
+    if process and new_ids:
+        ctx.invoke(triage, file_ids=tuple(new_ids))
+        ctx.invoke(promote)
+        pending = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT fw.work_id FROM file_works fw JOIN works w ON w.id=fw.work_id"
+            f" WHERE fw.file_id IN ({','.join('?' * len(new_ids))}) AND w.status IN ('candidate','confirmed')"
+            " AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
+            " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates')) ORDER BY 1", new_ids)]
+        if pending:
+            ctx.invoke(enrich, work_ids=tuple(pending))
+
+
+@main.command("store")
+@click.option("--check", is_flag=True, help="Re-hash stored files instead, and report mismatches.")
+@click.option("-v", "--verbose", is_flag=True)
+@click.pass_context
+def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
+    """Copy known files that aren't in the managed store yet (clones on APFS)."""
+    from . import store
+
+    def progress(state: str, file_id: int, where: str) -> None:
+        if verbose or state in ("no_source", "missing", "corrupt"):
+            click.echo(f"  {state:12} [{file_id}] {where}")
+
+    stats = (store.check if check else store.backfill)(_conn(ctx), progress)
+    click.echo(f"store: {store.root()}\n" + " ".join(f"{k}={v}" for k, v in sorted(stats.items())))
 
 
 @main.command()
@@ -203,16 +309,18 @@ def show_work(ctx: click.Context, work_id: int) -> None:
 def list_files(ctx: click.Context, status: str | None, as_json: bool) -> None:
     """List known files with their current locations."""
     conn = _conn(ctx)
-    q = """SELECT f.id, f.page_count, f.text_status, f.triage_status, f.size,
+    q = """SELECT f.id, f.page_count, f.text_status, f.triage_status, f.size, f.stored_path,
                   (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
-                    WHERE r.file_id=f.id AND c.kind='filesystem' AND c.missing_at IS NULL) AS paths
+                    WHERE r.file_id=f.id AND c.kind='filesystem' AND c.missing_at IS NULL) AS paths,
+                  (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
+                    WHERE r.file_id=f.id AND c.kind='download') AS urls
            FROM files f""" + (" WHERE f.triage_status=?" if status else "") + " ORDER BY f.id"
     rows = [dict(r) for r in conn.execute(q, (status,) if status else ())]
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
     for r in rows:
-        first = (r["paths"] or "(no current path)").split("\n")[0]
+        first = (r["paths"] or r["urls"] or r["stored_path"] or "(no current path)").split("\n")[0]
         click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {r['text_status']:8} {r['triage_status']:8} {first}")
 
 
@@ -250,7 +358,7 @@ def show(ctx: click.Context, file_id: int, text: bool) -> None:
     out["contexts"] = [
         {k: (json.loads(r[k]) if k == "extra" and r[k] else r[k]) for k in r.keys() if r[k] is not None}
         for r in conn.execute(
-            "SELECT c.kind, c.locator, c.occurred_at, c.url, c.missing_at, c.extra FROM context_refs r"
+            "SELECT c.kind, c.locator, c.title, c.occurred_at, c.url, c.missing_at, c.extra FROM context_refs r"
             " JOIN contexts c ON c.id=r.context_id WHERE r.file_id=? ORDER BY c.occurred_at", (file_id,))
     ]
     out["assertions"] = db.current_assertions(conn, "file", file_id)

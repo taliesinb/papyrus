@@ -22,7 +22,8 @@ formatting.
  sources                 papyrus stages                                 outputs
  ───────                 ──────────────                                 ───────
  ~/Desktop, ~/Downloads ─▶ scan ──▶ files, file_pages(+FTS), contexts(filesystem), context_refs
-                               │       filename_hint assertion
+ URLs, copied tabs ─────▶ download ─▶ … the same, with contexts(download); filename_hint assertion
+                               │       both keep a copy in ~/.papyrus/store (files.stored_path)
                                ▼
                            triage ─▶ assertions on files: kind(+probs), is_library_material(+probs),
                                │       title, authors, year, venue, abstract, summary, topics,
@@ -49,6 +50,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | stage | module | pending means | notes |
 |---|---|---|---|
 | scan | `scan.py`, `pdf.py`, `macos.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
+| download | `download.py`, `store.py`, `enrich/http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. |
 | triage | `triage.py`, `llm/*`, `textspan.py` | `files.triage_status <> 'done'` | One extraction call per file, plus one decider call per question. The state sent to the model holds the filename(s), path, download URL, PDF metadata, filename hint and ≤4000 characters of page text. |
 | promote | `works.py` | the file has no `file_works` row | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. |
 | enrich | `enrich/*` | the work has no `api:*` claims and no `enrich_candidates` | `match.resolve` (ids first, then title search) → exclude conflicting candidates → `cluster` → `merge` → write. The score threshold is 0.85. |
@@ -58,7 +60,9 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | module | role |
 |---|---|
 | `schema.sql`, `db.py` | DDL; connect/init; `tx`, `assert_`, `current_assertions`, `recorded_run` |
-| `scan.py`, `pdf.py`, `macos.py`, `filenames.py` | file discovery, hashing, PDF info and text, macOS provenance (xattrs via ctypes), hints from hand-made filenames |
+| `scan.py`, `pdf.py`, `macos.py`, `filenames.py` | file discovery, hashing, PDF info and text, macOS provenance (xattrs and `clonefile` via ctypes), hints from hand-made filenames |
+| `store.py` | the managed store: `snapshot` (clone or copy into `store/tmp`), `commit` (rename to `store/ab/<sha256>.pdf`, read-only), `backfill`, `check` |
+| `download.py` | link parsing (RTF / HTML / text, Safari's copied tabs), URL → PDF resolution, `fetch`, recording `download` contexts |
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
 | `textspan.py` | find spans from anchors (`locate`), the `heuristic_abstract` regex, and `best_abstract`, which reconciles the two |
 | `works.py` | `SOURCE_RANK`/`best` resolution, `is_library`, `promote_file`, `reject_work`, `reindex_work`, `work_json` |
@@ -129,6 +133,8 @@ Backend specs: `--backend auto|lmstudio[:model]|apple` and
 | reject, never delete; rejected works release their ids | Ids are globally unique: a rejected CV holding a paper's arXiv id would capture the real paper later. |
 | exclude candidates that are provably other works | A thesis and the journal paper sharing its title prefix were merged (score 0.93), which gave the thesis the paper's co-authors and venue. |
 | decider/model calls outside write transactions | A decider call inside `tx()` held the write lock for seconds and blocked other writers. |
+| a content-addressed store, filled by APFS clones | Files in `~/Downloads` get moved or deleted; the library should outlive them. Naming by sha256 needs no naming scheme and makes writes idempotent. Measured on this machine: `cp` and `shutil.copy*` duplicate a 2 GB file, `clonefile(2)` (`cp -c`) costs 0 MB; backfilling 64 files cost 0 MB. Scan hashes the clone, so the stored bytes are exactly the hashed bytes. |
+| downloads: sniff bytes, not Content-Type | A journal API serves its PDFs as `application/json`. |
 
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
 
@@ -149,7 +155,8 @@ command `papyrus import-slack`):
    refs into works:
    * arXiv/DOI links → `enrich.ids` → `find_work`, or create a candidate
      work from `match.resolve_best`;
-   * PDF links can be downloaded, then go through scan → triage;
+   * PDF links can be fetched with `download.fetch`/`download.record`, then
+     go through triage;
    * on success, set `status='resolved'` and `work_id`/`file_id`, with
      `confidence` and `source`.
 4. **Record a run** (`db.recorded_run(conn, "import-slack", …)`), and add an
@@ -184,8 +191,9 @@ Roughly by value:
   correctly separate but unlinked.
 * **Review workflow:** confirm, merge or reject works from the CLI/MCP; MCP
   write tools (tags, notes, status).
-* **A managed file store** (`files.stored_path`): copy PDFs into the
-  library, keyed by hash.
+* **Downloads:** publisher pages that need cookies or JavaScript (no
+  `citation_pdf_url` in the HTML) fail and stay unresolved; DOIs given
+  directly could go through Unpaywall/OpenAlex `best_oa_location`.
 * **Decider calibration:** fit a temperature on labelled triage data. 64
   labelled files exist now.
 * Thesis venue: S2 gives "arXiv: Combinatorics" where an institution is

@@ -204,6 +204,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS works_fts USING fts5(
 --   kind        locator              occurred_at          actor        text
 --   ----------- -------------------- -------------------- ------------ -----------------
 --   filesystem  absolute path        file birth time      -            -
+--   download    URL as given         first download time  -            -   (title = link/tab title)
 --   slack       message permalink    message ts           poster       message paragraph
 --   safari_rl   bookmark UUID / URL  date added           -            preview text
 --   twitter     tweet URL            tweet time           tweet author tweet text

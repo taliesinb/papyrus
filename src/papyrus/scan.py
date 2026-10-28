@@ -3,6 +3,9 @@
 Idempotent: a path whose (size, mtime) hasn't changed since the last scan is
 only touched (last_seen_at); files are deduplicated by sha256; contexts under a
 scanned root that no longer exist get `missing_at`.
+
+New or changed files are snapshotted into the managed store (`store.py`, an
+APFS clone where possible) and hashed from the snapshot.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import db, macos
+from . import db, macos, store
 from .filenames import parse_filename
 from .pdf import looks_like_pdf, read_pdf, sha256_file
 
@@ -29,6 +32,7 @@ class ScanOptions:
     recursive: bool = False
     max_depth: int = 4
     follow_symlinks: bool = False
+    store: bool = True  # keep a copy in the managed store
 
 
 def iter_pdfs(root: Path, opts: ScanOptions) -> Iterable[Path]:
@@ -49,12 +53,30 @@ def iter_pdfs(root: Path, opts: ScanOptions) -> Iterable[Path]:
                 yield Path(dirpath) / fn
 
 
-def _upsert_file(conn: sqlite3.Connection, path: Path, sha: str, size: int) -> tuple[int, bool]:
+def _upsert_file(conn: sqlite3.Connection, sha: str, size: int) -> tuple[int, bool]:
     row = conn.execute("SELECT id FROM files WHERE sha256=?", (sha,)).fetchone()
     if row:
         return row["id"], False
     cur = conn.execute("INSERT INTO files(sha256, size) VALUES (?, ?)", (sha, size))
     return cur.lastrowid, True
+
+
+def add_file(conn: sqlite3.Connection, path: Path, sha: str, size: int, *, name: str | None,
+             stored_rel: str | None, run_id: int | None, stats: Counter) -> tuple[int, bool]:
+    """The `files` row for these bytes (call inside a transaction). A new file gets its first
+    pages read from `path` and a filename hint from `name`. Returns (file_id, new)."""
+    file_id, new = _upsert_file(conn, sha, size)
+    stats["new_files" if new else "known_files"] += 1
+    if new:
+        stats["text_" + extract_first_pages(conn, file_id, path)] += 1
+        hint = parse_filename(Path(name).stem) if name else None
+        if hint:
+            db.assert_(conn, "file", file_id, "filename_hint",
+                       {"title": hint.title, "surnames": hint.surnames, "year": hint.year},
+                       source="heuristic:filename", run_id=run_id)
+    if stored_rel:
+        store.set_stored_path(conn, file_id, stored_rel)
+    return file_id, new
 
 
 def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = TRIAGE_PAGES) -> str:
@@ -122,6 +144,8 @@ def _record_context(conn: sqlite3.Connection, path: Path, st: os.stat_result, fi
 def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None = None,
          progress: Callable[[str, Path], None] | None = None) -> Counter:
     opts = opts or ScanOptions()
+    if opts.store:
+        store.clean_tmp()
     host = socket.gethostname()
     stats: Counter = Counter()
     run_id = db.start_run(conn, "scan", {"roots": [str(r) for r in roots], "recursive": opts.recursive})
@@ -148,17 +172,24 @@ def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None =
             if not looks_like_pdf(path):
                 stats["not_pdf"] += 1
                 continue
+            # hash (and store) a snapshot, so the stored bytes are exactly the hashed ones
+            rel, src, size = None, path, st.st_size
+            try:
+                if opts.store:
+                    tmp, method = store.snapshot(path)
+                    sha = sha256_file(tmp)
+                    rel, created = store.commit(tmp, sha)
+                    src, size = store.abs_path(rel), store.abs_path(rel).stat().st_size
+                    if created:
+                        stats[f"stored_{method}"] += 1
+                else:
+                    sha = sha256_file(path)
+            except OSError:
+                stats["unreadable"] += 1
+                continue
             with db.tx(conn):
-                sha = sha256_file(path)
-                file_id, new = _upsert_file(conn, path, sha, st.st_size)
-                stats["new_files" if new else "known_files"] += 1
-                if new:
-                    stats["text_" + extract_first_pages(conn, file_id, path)] += 1
-                    hint = parse_filename(path.stem)
-                    if hint:
-                        db.assert_(conn, "file", file_id, "filename_hint",
-                                   {"title": hint.title, "surnames": hint.surnames, "year": hint.year},
-                                   source="heuristic:filename", run_id=run_id)
+                file_id, new = add_file(conn, src, sha, size, name=path.name, stored_rel=rel,
+                                        run_id=run_id, stats=stats)
                 _record_context(conn, path, st, file_id, host, now)
             if progress:
                 progress("new" if new else "dup", path)
