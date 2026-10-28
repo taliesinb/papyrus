@@ -27,7 +27,7 @@ export const FACETS: { key: string; label: string; limit: number }[] = [
 	{ key: 'found', label: 'Found', limit: 4 }, // when it was first found (FOUND_WINDOWS)
 	{ key: 'arxiv', label: 'arXiv category', limit: 12 },
 	{ key: 'subject', label: 'Subject', limit: 12 },
-	{ key: 'field', label: 'Field (model)', limit: 12 },
+	{ key: 'field', label: 'Field', limit: 12 }, // assigned by the local model
 	{ key: 'author', label: 'Author', limit: 10 },
 	{ key: 'folder', label: 'Folder', limit: 8 },
 	{ key: 'origin', label: 'Site', limit: 8 }, // the host it was downloaded from
@@ -68,8 +68,9 @@ export function parseFilters(url: URL): Filters {
 
 /**
  * The Found facet: windows back from now over a work's earliest discovery (addedAt).
- * They overlap (a work found ten minutes ago is in all four), and the facet always
- * lists all four, in this order. "today" is since local midnight on the server.
+ * They overlap (a work found ten minutes ago is in all of them), so the facet is
+ * single-choice, and it always lists every window, in this order. "today" is since
+ * local midnight on the server.
  */
 const FOUND_WINDOWS: { value: string; label: string; hint: string; since: (now: Date) => number }[] = [
 	{
@@ -79,6 +80,7 @@ const FOUND_WINDOWS: { value: string; label: string; hint: string; since: (now: 
 		since: (now) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
 	},
 	{ value: 'hour', label: '< hour', hint: 'in the last hour', since: (now) => now.getTime() - 3600e3 },
+	{ value: 'week', label: '< week', hint: 'in the last 7 days', since: (now) => now.getTime() - 7 * 86400e3 },
 	{ value: 'day', label: '< day', hint: 'in the last 24 hours', since: (now) => now.getTime() - 86400e3 },
 	{ value: 'month', label: '< month', hint: 'in the last 30 days', since: (now) => now.getTime() - 30 * 86400e3 }
 ];
@@ -304,7 +306,7 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 		const values = [...entries.values()]
 			.sort((a, b) => (fd.key === 'found' ? 0 : b.total - a.total || a.label.localeCompare(b.label)))
 			.map(({ total: _total, ...v }) => v);
-		return { key: fd.key, label: fd.label, values, ...(fd.key === 'found' ? { fixed: true } : {}) };
+		return { key: fd.key, label: fd.label, values, ...(fd.key === 'found' ? { fixed: true, single: true } : {}) };
 	});
 
 	// Year bars: counts follow the other filters, but the axis spans the universe.

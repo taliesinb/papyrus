@@ -96,6 +96,8 @@ export interface Facet {
 	values: FacetValue[];
 	/** A fixed list (Found): every value is shown, in this order, even with a zero count. */
 	fixed?: boolean;
+	/** Single-choice (Found): selecting a value replaces the selection. */
+	single?: boolean;
 }
 
 export interface ContextInfo {

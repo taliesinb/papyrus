@@ -78,7 +78,9 @@
 							class="row"
 							class:selected={v.selected}
 							class:empty={v.count === 0}
-							href={hrefToggle(url, facet.key, v.value)}
+							href={facet.single
+								? hrefWith(url, { [facet.key]: v.selected ? null : v.value })
+								: hrefToggle(url, facet.key, v.value)}
 							aria-current={v.selected ? 'true' : undefined}
 							title={v.hint ? `${v.label} (${v.hint})` : v.label}
 						>

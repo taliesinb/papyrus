@@ -17,7 +17,7 @@
 	const url = $derived({ pathname: page.url.pathname, search: page.url.search });
 	const view = $derived((page.url.searchParams.get('view') ?? 'list') as 'list' | 'strip' | 'compact');
 	const like = $derived(data.filters.like);
-	const facetLimits: Record<string, number> = { kind: 12, status: 4, folder: 6, origin: 6 };
+	const facetLimits: Record<string, number> = { kind: 12, status: 4, folder: 6, origin: 6, field: 16 };
 
 	const SORTS: { value: string; label: string; title: string }[] = [
 		{ value: 'auto', label: 'Best', title: '' },
@@ -39,7 +39,9 @@
 	// Year leads column A and Kind leads column B. arXiv category is hidden,
 	// except while one is selected (from a cs.LG-style chip on a card), so
 	// that selection stays visible and can be undone.
-	const COL_A = ['subject', 'field', 'author'];
+	// Subject (OpenAlex subfields) is hidden for now (Field covers it), except while
+	// a subject is selected (an old link), so that selection can be seen and undone.
+	const COL_A = $derived(data.filters.facets.subject?.length ? ['subject', 'field', 'author'] : ['field', 'author']);
 	const COL_B = ['kind', 'found', 'folder', 'origin', 'status'];
 	const showArxiv = $derived(!!data.filters.facets.arxiv?.length);
 	const facetByKey = $derived(new Map(data.facets.map((f) => [f.key, f])));
