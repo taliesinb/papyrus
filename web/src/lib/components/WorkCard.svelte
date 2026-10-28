@@ -132,10 +132,9 @@
 			{#if hit.year}<span class="dot">·</span><span class="fixed">{hit.year}</span>{/if}
 			{#if hit.venue && hit.venue !== 'arXiv'}<span class="dot">·</span><span class="venue" class:long={hit.venue.length > 12} title={hit.venue}>{hit.venue}</span>{/if}
 			{#if hit.pageCount}<span class="dot">·</span><span class="muted fixed">{hit.pageCount} pp</span>{/if}
-			{#if hit.citations}<span class="dot">·</span><span class="muted fixed" title="citations (max over sources)">{hit.citations.toLocaleString()} cites</span>{/if}
 			{#if hit.addedAt}
 				<span class="added" title="Found {formatDate(hit.addedAt, true)} in {hit.folders.join(', ')}"
-					>{formatDate(hit.addedAt)}{#if hit.origins.length}&nbsp;· {hit.origins[0]}{/if}</span
+					>{#if hit.origins.length}{hit.origins[0]}&nbsp;· {/if}{formatDate(hit.addedAt)}</span
 				>
 			{/if}
 			{#if view === 'compact'}<span class="actions">{@render actions()}</span>{/if}
