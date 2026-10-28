@@ -68,10 +68,11 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
 @click.option("-n", "--dry-run", is_flag=True, help="Only show the parsed links and what would be fetched.")
 @click.option("--refetch", is_flag=True, help="Fetch even URLs that are already in the library.")
 @click.option("-j", "--jobs", default=4, show_default=True, help="Hosts fetched in parallel.")
-@click.option("--process", is_flag=True, help="Then triage, promote and enrich the new files.")
+@click.option("--process", "and_process", is_flag=True,
+              help="Then triage, promote and enrich the new files (see `papyrus process`).")
 @click.pass_context
 def download(ctx: click.Context, urls: tuple[str, ...], clipboard: bool, from_stdin: bool,
-             files: tuple, dry_run: bool, refetch: bool, jobs: int, process: bool) -> None:
+             files: tuple, dry_run: bool, refetch: bool, jobs: int, and_process: bool) -> None:
     """Download documents from URLs into the library's store.
 
     Links can be given as arguments, with -c/--clipboard, - or --stdin, and -f/--file; as
@@ -130,16 +131,8 @@ def download(ctx: click.Context, urls: tuple[str, ...], clipboard: bool, from_st
     stats, outcomes = do_download(conn, links, jobs=jobs, refetch=refetch, progress=progress)
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
     new_ids = sorted({o.file_id for o in outcomes if o.state == "new" and o.file_id})
-    if process and new_ids:
-        ctx.invoke(triage, file_ids=tuple(new_ids))
-        ctx.invoke(promote)
-        pending = [r[0] for r in conn.execute(
-            f"SELECT DISTINCT fw.work_id FROM file_works fw JOIN works w ON w.id=fw.work_id"
-            f" WHERE fw.file_id IN ({','.join('?' * len(new_ids))}) AND w.status IN ('candidate','confirmed')"
-            " AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
-            " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates')) ORDER BY 1", new_ids)]
-        if pending:
-            ctx.invoke(enrich, work_ids=tuple(pending))
+    if and_process and new_ids:
+        ctx.invoke(process, file_ids=tuple(new_ids))
 
 
 @main.command("store")
@@ -252,12 +245,11 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
         raise click.UsageError("--reset needs explicit WORK_IDS")
     if work_ids:
         ids = list(work_ids)
+    elif redo_all:
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM works WHERE status IN ('candidate','confirmed') ORDER BY id")]
     else:
-        q = "SELECT id FROM works w WHERE status IN ('candidate','confirmed')"
-        if not redo_all:
-            q += (" AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
-                  " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates'))")
-        ids = [r[0] for r in conn.execute(q + " ORDER BY id")]
+        ids = _unenriched_works(conn)
     ids = ids[:limit] if limit else ids
     with db.recorded_run(conn, "enrich", {"works": len(ids), "reset": reset}) as (run_id, stats):
         for wid in ids:
@@ -274,6 +266,40 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
                       if r["status"] != "error" else r["error"][:120])
             click.echo(f"{wid:5} {r['status']:9} {title[:60]:60} {detail}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
+
+
+def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
+    """Live works with no API claims or candidates yet; only those of `file_ids` if given."""
+    q = ("SELECT DISTINCT w.id FROM works w" + (" JOIN file_works fw ON fw.work_id=w.id" if file_ids else "")
+         + " WHERE w.status IN ('candidate','confirmed')"
+         + (f" AND fw.file_id IN ({','.join('?' * len(file_ids))})" if file_ids else "")
+         + " AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
+           " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates')) ORDER BY w.id")
+    return [r[0] for r in conn.execute(q, file_ids)]
+
+
+@main.command()
+@click.argument("file_ids", nargs=-1, type=int)
+@click.option("--backend", default=None,
+              help="Extraction model for triage: auto | lmstudio[:model] | apple  [default: from config, else auto]")
+@click.option("--decider", "decider_spec", default=None,
+              help="Decider for triage: auto | none | lmstudio[:model] | jev:<url>  [default: from config, else auto]")
+@click.option("-n", "--limit", type=int, help="Triage at most N pending files.")
+@click.pass_context
+def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
+            limit: int | None) -> None:
+    """Triage, promote and enrich whatever is pending: `triage && promote && enrich`.
+
+    With FILE_IDS, triages those files and enriches only their works. Stops before promoting
+    if triage can't run (e.g. no decider available)."""
+    click.echo("== triage")
+    ctx.invoke(triage, file_ids=file_ids, backend=backend, decider_spec=decider_spec, limit=limit)
+    click.echo("== promote")
+    ctx.invoke(promote)
+    pending = _unenriched_works(_conn(ctx), file_ids)
+    click.echo(f"== enrich ({len(pending)} works)")
+    if pending:
+        ctx.invoke(enrich, work_ids=tuple(pending))
 
 
 @main.command("works")

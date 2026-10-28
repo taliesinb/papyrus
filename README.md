@@ -20,6 +20,7 @@ Early. What works today:
 | store | `papyrus store [--check]` | Copies files scanned before the store existed into it; `--check` re-hashes the stored copies. |
 | triage | `papyrus triage [--backend B] [--decider D]` | Asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
 | promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. |
+| process | `papyrus process [FILE_IDS] [--backend B] [--decider D]` | Shorthand for `triage && promote && enrich` over whatever is pending (with FILE_IDS: those files and their works). Stops before promoting if triage can't run. |
 | enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus search QUERY`, `papyrus stats` | |
 | web | `cd web && pnpm dev` | Read-only SvelteKit browser: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
