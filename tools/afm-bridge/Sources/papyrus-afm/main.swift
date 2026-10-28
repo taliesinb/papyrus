@@ -15,6 +15,8 @@
 //    "guardrail_fallback":bool? (default true)}
 //     -> {"ok":true, "result":{...}, "usage":{...}, "elapsed_ms":int, ...}
 //     -> {"ok":false, "error":str, "kind":"context_overflow|guardrail|unavailable|other", ...}
+//   {"op":"ocr", "path":str, "pages":[int], ...}   (Vision text recognition; see OCR.swift)
+//     -> {"ok":true, "pages":[{"page":int, "text":str, "confidence":float}], ...}
 //
 // Every response echoes the request's "id" field if present. The process exits 0 even on
 // model errors; only malformed invocations produce a non-zero exit.
@@ -522,6 +524,8 @@ final class Bridge {
             }
         case "extract":
             out = await extract(req)
+        case "ocr":
+            out = await OCR.run(req)  // OCR.swift
         case let op:
             out = ["ok": false, "error": "unknown op: \(op ?? "<missing>")", "kind": "other"]
         }

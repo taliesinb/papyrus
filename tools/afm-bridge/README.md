@@ -54,6 +54,29 @@ echo '{"op":"extract","instructions":"Extract metadata.","prompt":"Attention Is 
 
 Errors look like `{"ok":false,"error":"…","kind":"context_overflow|guardrail|unavailable|other","detail":…}`.
 
+### `ocr`
+
+OCR of PDF pages (`OCR.swift`, used by `src/papyrus/ocr.py`): each page is rendered with
+CoreGraphics (grey, 2× = 144 dpi, at most 4096 px a side) and read with Vision's
+`RecognizeDocumentsRequest` (macOS 26), which keeps reading order across columns. The pages of
+one request are recognised concurrently.
+
+```sh
+echo '{"op":"ocr","path":"/path/to/scan.pdf","pages":[1,2]}' | .build/release/papyrus-afm
+# {"ok":true,"pages":[{"page":1,"text":"…","confidence":0},{"page":2,…}],"elapsed_ms":…}
+```
+
+| key | meaning |
+|---|---|
+| `path`, `pages` | the PDF and its 1-based pages. With no pages the answer is `{"ok":true,"pages":[]}`, which papyrus uses to check that the binary has this op. |
+| `scale` [2], `max_side` [4096] | rendering resolution |
+| `languages` [detect] | e.g. `["en-US", "fr-FR"]` |
+| `mode` ["paragraphs"] | `paragraphs` (blank line between paragraphs), `text` (the document transcript) or `lines` (`RecognizeTextRequest`, one line per observation) |
+
+A page that fails comes back as `{"page":n,"error":"…"}`. Document recognition reports
+`confidence` 0. Speed on the base M4: ~57 ms a page once warm, after ~25 s of warm-up in a new
+process.
+
 Supported schema subset:
 
 * `type`: object, array, string, integer, number or boolean. A `["T","null"]` type is treated as T.
