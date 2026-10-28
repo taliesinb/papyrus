@@ -1,15 +1,16 @@
 <script lang="ts">
 	import { idLabel, idLink } from '#lib/util.ts';
-	let { scheme, value }: { scheme: string; value: string } = $props();
+	// `short`: the scheme only (arXiv, DOI); the value is in the tooltip.
+	let { scheme, value, short = false }: { scheme: string; value: string; short?: boolean } = $props();
 	const href = $derived(idLink(scheme, value));
 </script>
 
 {#if href}
 	<a class="chip" {href} target="_blank" rel="noreferrer" title="{idLabel(scheme)} {value}">
-		<span class="s">{idLabel(scheme)}</span><span class="v">{value}</span>
+		<span class="s">{idLabel(scheme)}</span>{#if !short}<span class="v">{value}</span>{/if}
 	</a>
 {:else}
-	<span class="chip"><span class="s">{idLabel(scheme)}</span><span class="v">{value}</span></span>
+	<span class="chip" title="{idLabel(scheme)} {value}"><span class="s">{idLabel(scheme)}</span>{#if !short}<span class="v">{value}</span>{/if}</span>
 {/if}
 
 <style>

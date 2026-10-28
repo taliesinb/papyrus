@@ -6,7 +6,7 @@
 
 import { homedir } from 'node:os';
 import { basename, dirname } from 'node:path';
-import type { Author, FileRef, Ident, Topic, WorkSummary } from '#lib/types.ts';
+import type { Author, FileRef, Ident, Topic, WorkSource, WorkSummary } from '#lib/types.ts';
 import { all, dataVersion, parseJson } from './db.ts';
 import { buildTfidf, type TfidfIndex } from './similar.ts';
 import { fileAvailable } from './files.ts';
@@ -153,7 +153,7 @@ function build(version: number): Library {
 	// Discovery contexts per file (filesystem paths, download URLs).
 	const fileCtx = new Map<
 		number,
-		{ locator: string; occurredAt: string | null; missing: boolean; whereFroms: string[] }[]
+		{ locator: string; occurredAt: string | null; missing: boolean; whereFroms: string[]; url: string | null }[]
 	>();
 	for (const r of all<{
 		file_id: number;
@@ -173,7 +173,9 @@ function build(version: number): Library {
 			locator: r.kind === 'filesystem' ? r.locator : '',
 			occurredAt: r.occurred_at,
 			missing: r.missing_at != null,
-			whereFroms: extra.where_froms ?? []
+			whereFroms: extra.where_froms ?? [],
+			// Where it came from: the link given to `papyrus download`, else the file's download URL.
+			url: r.kind === 'download' ? r.locator : (extra.where_froms?.[0] ?? null)
 		});
 		fileCtx.set(r.file_id, list);
 	}
@@ -242,7 +244,16 @@ function build(version: number): Library {
 				(RELATION_RANK[a.relation] ?? 9) - (RELATION_RANK[b.relation] ?? 9) ||
 				(b.pageCount ?? 0) - (a.pageCount ?? 0)
 		);
-		const ctxs = fs.flatMap((f) => fileCtx.get(f.id) ?? []);
+		const ctxs = fs.flatMap((f) => (fileCtx.get(f.id) ?? []).map((c) => ({ ...c, fileId: f.id })));
+		// The earliest discovery: its URL, else its path.
+		const first = ctxs
+			.filter((c) => c.url || c.locator)
+			.sort((a, b) => (a.occurredAt ?? '\uffff').localeCompare(b.occurredAt ?? '\uffff'))[0];
+		const source: WorkSource | null = !first
+			? null
+			: first.url
+				? { url: first.url, path: null, label: hostOf(first.url) ?? first.url, fileId: first.fileId }
+				: { url: null, path: first.locator, label: folderOf(first.locator), fileId: first.fileId };
 		const dates = ctxs.map((c) => c.occurredAt).filter((d): d is string => !!d).sort();
 		const folders = [...new Set(ctxs.filter((c) => c.locator).map((c) => folderOf(c.locator)))];
 		const origins = [
@@ -266,6 +277,7 @@ function build(version: number): Library {
 			addedAt: dates[0] ?? null,
 			folders,
 			origins,
+			source,
 			citations: citations.get(w.id) ?? null
 		};
 	});

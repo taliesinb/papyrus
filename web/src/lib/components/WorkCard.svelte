@@ -55,24 +55,9 @@
 	// Collapsed: start the excerpt near the first match so it is visible within the 3-line clamp.
 	const blurbMatch = $derived(m && blurb ? (expanded ? markAll(blurb, m) : markExcerpt(blurb, m)) : null);
 	const authorText = (name: string) => (m ? markAll(name, m) : name);
+	// The id chips sit right of the title, before the kind badge: scheme only, value in the tooltip.
 	const ids = $derived(primaryIds(hit.ids).slice(0, 3));
-
-	// The id chips sit right of the title, before the kind badge. They show their value
-	// (arXiv 1903.05848) only while the title still fits on one line beside them;
-	// otherwise just the scheme (arXiv), so they never push the title onto another line.
-	// The title is inline, so its client rects are its line boxes.
-	function fitIds(row: HTMLElement) {
-		const title = row.querySelector<HTMLElement>('a.title');
-		if (!title) return;
-		const fit = () => {
-			row.classList.remove('ids-short');
-			if (title.getClientRects().length > 1) row.classList.add('ids-short');
-		};
-		const observer = new ResizeObserver(fit);
-		observer.observe(row);
-		fit();
-		return () => observer.disconnect();
-	}
+	const source = $derived(hit.source);
 </script>
 
 {#snippet actions()}
@@ -103,7 +88,7 @@
 		</a>
 	{/if}
 	<div class="body">
-		<div class="title-row ids-short" {@attach fitIds}>
+		<div class="title-row">
 			<div class="title-text">
 				<a class="title" href={workHref()}>
 					{#if titleText}<Hl text={titleText} />{:else}{hit.title ?? 'Untitled'}{/if}
@@ -111,7 +96,7 @@
 			</div>
 			<div class="badges">
 				{#each ids as id (id.scheme + id.value)}
-					<IdChip scheme={id.scheme} value={id.value} />
+					<IdChip scheme={id.scheme} value={id.value} short />
 				{/each}
 				<KindBadge kind={hit.kind} small />
 			</div>
@@ -132,10 +117,24 @@
 			{#if hit.year}<span class="dot">·</span><span class="fixed">{hit.year}</span>{/if}
 			{#if hit.venue && hit.venue !== 'arXiv'}<span class="dot">·</span><span class="venue" class:long={hit.venue.length > 12} title={hit.venue}>{hit.venue}</span>{/if}
 			{#if hit.pageCount}<span class="dot">·</span><span class="muted fixed">{hit.pageCount} pp</span>{/if}
-			{#if hit.addedAt}
-				<span class="added" title="Found {formatDate(hit.addedAt, true)} in {hit.folders.join(', ')}"
-					>{#if hit.origins.length}{hit.origins[0]}&nbsp;· {/if}{formatDate(hit.addedAt)}</span
-				>
+			{#if source || hit.addedAt}
+				<span class="prov">
+					{#if source}
+						<!-- A URL opens where it came from; a path opens the PDF itself. -->
+						<a
+							class="lz src"
+							href={source.url ?? href(`/api/files/${source.fileId}/pdf`)}
+							target="_blank"
+							rel="noreferrer"
+							title={source.url ?? source.path}>{source.label}</a
+						>
+					{/if}
+					{#if hit.addedAt}
+						<span class="lz" title="Found {formatDate(hit.addedAt, true)}{hit.folders.length ? ` in ${hit.folders.join(', ')}` : ''}"
+							>{formatDate(hit.addedAt)}</span
+						>
+					{/if}
+				</span>
 			{/if}
 			{#if view === 'compact'}<span class="actions">{@render actions()}</span>{/if}
 		</div>
@@ -243,9 +242,6 @@
 	}
 	.v-compact .badges {
 		height: 19.5px;
-	}
-	.title-row.ids-short :global(.chip .v) {
-		display: none;
 	}
 	.badges :global(.chip) {
 		line-height: 16px;
@@ -399,11 +395,34 @@
 		text-decoration: none;
 		background: var(--panel-2);
 	}
-	.added {
+	/* Provenance, far right of the author line: [where it came from] [date found]. */
+	.meta > .prov {
 		margin-left: auto;
 		padding-left: 12px;
-		font-size: 11.5px;
-		color: var(--faint);
+		display: flex;
+		gap: 4px;
+		align-self: center;
+	}
+	.lz {
+		font-size: 11px;
+		line-height: 17px;
+		padding: 0 6px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--muted);
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	a.lz {
+		text-decoration: underline;
+		text-decoration-color: var(--faint);
+		text-underline-offset: 2px;
+	}
+	a.lz:hover {
+		color: var(--accent);
+		border-color: var(--border-strong);
+		text-decoration-color: currentColor;
 	}
 	.score {
 		font-family: var(--mono);

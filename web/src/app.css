@@ -180,6 +180,32 @@ kbd {
 	font-size: 12px;
 }
 
+/* Tooltips for every `title` (#lib/tooltip.ts). */
+.tip {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 1000;
+	max-width: min(440px, calc(100vw - 8px));
+	padding: 4px 8px;
+	border: 1px solid var(--border-strong);
+	border-radius: 6px;
+	background: #20242c;
+	color: var(--text);
+	font: 12px/1.4 var(--sans);
+	white-space: pre-line;
+	overflow-wrap: anywhere;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+	pointer-events: none;
+	visibility: hidden;
+	opacity: 0;
+	transition: opacity 0.08s;
+}
+.tip.on {
+	visibility: visible;
+	opacity: 1;
+}
+
 ::-webkit-scrollbar {
 	width: 10px;
 	height: 10px;

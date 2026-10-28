@@ -59,7 +59,17 @@ export interface WorkSummary {
 	addedAt: string | null; // earliest discovery (file birth time)
 	folders: string[]; // e.g. Desktop, Downloads
 	origins: string[]; // download hosts from kMDItemWhereFroms
+	source: WorkSource | null; // the earliest discovery
 	citations: number | null;
+}
+
+/** Where a work was first found: a URL (download link), else a path on disk. */
+export interface WorkSource {
+	url: string | null;
+	path: string | null;
+	/** The URL's host, or the path's folder relative to home. */
+	label: string;
+	fileId: number;
 }
 
 /** A work as shown in a result list, plus search/similarity annotations. */

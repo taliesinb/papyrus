@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { asset } from '$app/paths';
 	import { href } from '#lib/paths.ts';
+	import { installTooltips } from '#lib/tooltip.ts';
 	import type { PipelineStatus } from '#lib/types.ts';
 	import { hrefWith, relativeTime } from '#lib/util.ts';
 	import type { LayoutProps } from './$types';
@@ -37,6 +38,8 @@
 		if (immediate) run();
 		else timer = setTimeout(run, 220);
 	}
+
+	onMount(installTooltips);
 
 	onMount(() => {
 		const poll = async () => {
