@@ -2,6 +2,7 @@
 	// The browser's own PDF viewer in an iframe, plus an arxiv-sanity style
 	// strip of page thumbnails. Jumping to a page uses the #page= fragment.
 	import { onMount } from 'svelte';
+	import { href } from '#lib/paths.ts';
 	import Thumb from './Thumb.svelte';
 
 	let {
@@ -26,7 +27,7 @@
 
 	const total = $derived(pageCount ?? 1);
 	const stripPages = $derived(Array.from({ length: Math.min(total, STRIP_MAX) }, (_, i) => i + 1));
-	const src = $derived(`/api/files/${fileId}/pdf#page=${page}&navpanes=0&view=FitH`);
+	const src = $derived(href(`/api/files/${fileId}/pdf#page=${page}&navpanes=0&view=FitH`));
 
 	function go(p: number) {
 		page = Math.max(1, Math.min(total, p));
@@ -65,8 +66,8 @@
 			title="Invert page colours for reading in the dark">◐ Dark pages</button
 		>
 		<span class="spacer"></span>
-		<a class="btn" href="/api/files/{fileId}/pdf#page={page}" target="_blank" rel="noreferrer">Open ↗</a>
-		<a class="btn" href="/api/files/{fileId}/pdf?download">Download</a>
+		<a class="btn" href={href(`/api/files/${fileId}/pdf#page=${page}`)} target="_blank" rel="noreferrer">Open ↗</a>
+		<a class="btn" href={href(`/api/files/${fileId}/pdf?download`)}>Download</a>
 	</div>
 
 	{#if showStrip && available}

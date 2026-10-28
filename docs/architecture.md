@@ -79,6 +79,8 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `mcp_server.py` | MCP tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only connection), `library_stats`; resource `papyrus://schema` |
 | `config.py` | `~/.papyrus/config.toml`: default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
+| `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` |
+| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`); `build.py` |
 
 ## Model layer
 
@@ -205,3 +207,8 @@ Roughly by value:
   labelled files exist now.
 * Thesis venue: S2 gives "arXiv: Combinatorics" where an institution is
   better.
+* **The apps write nothing yet.** Adding to the library (dropping PDFs on
+  the window or the menu-bar icon, pasting links, "download these tabs")
+  needs a write path. The likely shape is that Papyrus Server runs
+  `papyrus download`/`scan`/`process` as recorded runs, rather than the web
+  server opening the database for writing.

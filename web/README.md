@@ -5,10 +5,20 @@ A read-only browser for the papyrus library, built with SvelteKit 3 and Svelte 5
 ```sh
 cd web
 pnpm install
-pnpm dev                 # http://localhost:5181
+pnpm dev                 # http://localhost:5181/papyrus/
 # or
-pnpm build && pnpm start # node adapter, 127.0.0.1:5181
+pnpm build && pnpm start # node adapter, http://127.0.0.1:5181/papyrus/
 ```
+
+The app lives under `/papyrus` (`paths.base` in `vite.config.ts`). That is
+the path `Papyrus Server.app` publishes it at on the tailnet, so one build
+serves loopback and `https://<mac>.<tailnet>.ts.net/papyrus/` alike. Every
+link, `goto` and `fetch` goes through `href()` from `#lib/paths.ts`. Set
+`PAPYRUS_WEB_BASE=` (empty) at dev or build time to serve the app at the
+root instead.
+
+The macOS apps (a window, plus a menu-bar server that also runs
+`tailscale serve`) are in [`apps/macos`](../apps/macos/README.md).
 
 It reads `~/.papyrus/papyrus.sqlite`. Override this with `PAPYRUS_DB`, or with
 `PAPYRUS_HOME`, as the CLI does.
@@ -51,7 +61,9 @@ src/lib/server/query.ts    URL filters → facets, FTS search, sorting
 src/lib/server/similar.ts  TF-IDF vectors, centroid similarity, shared/top terms
 src/lib/server/detail.ts   work detail, contexts, assertions, pipeline status
 src/lib/server/files.ts    path resolution, pdftoppm thumbnails (3 at a time)
+src/lib/paths.ts           href(): app paths under the base path
 src/routes/                /  /work/[id]  /files  /api/files/[id]/{pdf,thumb/[page],reveal}  /api/version
+static/                    favicon.svg (boxicons "scroll", MIT), apple-touch-icon.png (apps/macos/build.py --touch-icon)
 ```
 
 ## Ideas for later

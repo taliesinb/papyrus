@@ -6,6 +6,7 @@
 	import FacetGroup from '#lib/components/FacetGroup.svelte';
 	import WorkCard from '#lib/components/WorkCard.svelte';
 	import YearHistogram from '#lib/components/YearHistogram.svelte';
+	import { href } from '#lib/paths.ts';
 	import { hrefWith, matchesText } from '#lib/util.ts';
 	import type { PageProps } from './$types';
 
@@ -104,7 +105,7 @@
 				break;
 			case 'o':
 			case 'Enter':
-				if (hit) goto(`/work/${hit.id}${data.filters.q ? `?q=${encodeURIComponent(data.filters.q)}` : ''}`);
+				if (hit) goto(href(`/work/${hit.id}${data.filters.q ? `?q=${encodeURIComponent(data.filters.q)}` : ''}`));
 				break;
 			case 's':
 				if (hit) goto(hrefWith(url, { like: hit.id, sort: null }));
@@ -223,7 +224,7 @@
 				<span class="muted">{data.seeds.length === 1 ? 'Similar to' : 'More like these'}:</span>
 				{#each data.seeds as s (s.id)}
 					<span class="seed">
-						<a href="/work/{s.id}">{s.title ?? `#${s.id}`}</a>
+						<a href={href(`/work/${s.id}`)}>{s.title ?? `#${s.id}`}</a>
 						<a class="x" href={hrefWith(url, { like: like.filter((x) => x !== s.id).join(',') || null })} title="Remove">×</a>
 					</span>
 				{/each}

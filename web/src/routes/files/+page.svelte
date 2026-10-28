@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { href } from '#lib/paths.ts';
 	import KindBadge from '#lib/components/KindBadge.svelte';
 	import Thumb from '#lib/components/Thumb.svelte';
 	import { formatDate, formatSize } from '#lib/util.ts';
@@ -82,7 +83,7 @@
 					<td class="th"><Thumb fileId={r.available ? r.id : null} width={160} /></td>
 					<td class="name">
 						{#if r.available}
-							<a href="/api/files/{r.id}/pdf" target="_blank" rel="noreferrer">{r.filename ?? `#${r.id}`}</a>
+							<a href={href(`/api/files/${r.id}/pdf`)} target="_blank" rel="noreferrer">{r.filename ?? `#${r.id}`}</a>
 						{:else}
 							{r.filename ?? `#${r.id}`}
 						{/if}
@@ -98,7 +99,7 @@
 					<td class="date">{formatDate(r.addedAt)}</td>
 					<td class="works">
 						{#each r.works as w (w.id)}
-							<a href="/work/{w.id}" class:rejected={w.status === 'rejected'}>{w.title ?? `#${w.id}`}</a>
+							<a href={href(`/work/${w.id}`)} class:rejected={w.status === 'rejected'}>{w.title ?? `#${w.id}`}</a>
 						{:else}
 							<span class="faint">—</span>
 						{/each}

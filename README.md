@@ -23,7 +23,8 @@ Early. What works today:
 | process | `papyrus process [FILE_IDS] [--backend B] [--decider D]` | Shorthand for `triage && promote && enrich` over whatever is pending (with FILE_IDS: those files and their works). Stops before promoting if triage can't run. |
 | enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus search QUERY`, `papyrus stats` | |
-| web | `cd web && pnpm dev` | Read-only SvelteKit browser: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
+| web | `cd web && pnpm dev` | Read-only SvelteKit browser at `/papyrus/`: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
+| apps | `python3 apps/macos/build.py --install` | `Papyrus.app`, a window on the web browser, and `Papyrus Server.app`, a menu-bar app that runs the server and publishes it with `tailscale serve` at `https://<mac>.<tailnet>.ts.net/papyrus/`. See [`apps/macos/README.md`](apps/macos/README.md). |
 | MCP | `papyrus mcp` | stdio MCP server with these tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only), `library_stats`. Resource: `papyrus://schema`. |
 
 Next on the list:

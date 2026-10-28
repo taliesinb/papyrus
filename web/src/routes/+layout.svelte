@@ -3,6 +3,8 @@
 	import { goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { asset } from '$app/paths';
+	import { href } from '#lib/paths.ts';
 	import type { PipelineStatus } from '#lib/types.ts';
 	import { hrefWith, relativeTime } from '#lib/util.ts';
 	import type { LayoutProps } from './$types';
@@ -26,10 +28,10 @@
 	function submit(immediate = false) {
 		clearTimeout(timer);
 		const run = () => {
-			const onLibrary = page.url.pathname === '/';
+			const onLibrary = page.route.id === '/';
 			const target = onLibrary
 				? hrefWith(page.url, { q: query.trim() || null })
-				: hrefWith({ pathname: '/', search: '' }, { q: query.trim() || null });
+				: hrefWith({ pathname: href('/'), search: '' }, { q: query.trim() || null });
 			goto(target, { replace: onLibrary, reset: !onLibrary });
 		};
 		if (immediate) run();
@@ -39,7 +41,7 @@
 	onMount(() => {
 		const poll = async () => {
 			try {
-				const r = await fetch('/api/version');
+				const r = await fetch(href('/api/version'));
 				if (r.ok) live = await r.json();
 			} catch {
 				/* server restarting */
@@ -71,17 +73,15 @@
 
 <svelte:head>
 	<title>papyrus</title>
-	<link
-		rel="icon"
-		href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📜</text></svg>"
-	/>
+	<link rel="icon" type="image/svg+xml" href={asset('favicon.svg')} />
+	<link rel="apple-touch-icon" href={asset('apple-touch-icon.png')} />
 </svelte:head>
 
 <header class="top">
-	<a class="brand" href="/">papyrus</a>
+	<a class="brand" href={href('/')}>papyrus</a>
 	<nav>
-		<a href="/" class:current={page.url.pathname === '/'}>Library</a>
-		<a href="/files" class:current={page.url.pathname === '/files'}>Files</a>
+		<a href={href('/')} class:current={page.route.id === '/'}>Library</a>
+		<a href={href('/files')} class:current={page.route.id === '/files'}>Files</a>
 	</nav>
 	<form class="search" role="search" onsubmit={(e) => (e.preventDefault(), submit(true))}>
 		<input

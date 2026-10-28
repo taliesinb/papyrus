@@ -6,6 +6,7 @@
 	import PdfViewer from '#lib/components/PdfViewer.svelte';
 	import Provenance from '#lib/components/Provenance.svelte';
 	import Thumb from '#lib/components/Thumb.svelte';
+	import { href } from '#lib/paths.ts';
 	import { authorLine, formatDate, formatSize, hostOf } from '#lib/util.ts';
 	import type { PageProps } from './$types';
 
@@ -29,7 +30,7 @@
 	});
 
 	const currentFile = $derived(w.files.find((f) => f.id === viewFile) ?? w.files[0]);
-	const backHref = $derived(data.q ? `/?q=${encodeURIComponent(data.q)}` : '/');
+	const backHref = $derived(href(data.q ? `/?q=${encodeURIComponent(data.q)}` : '/'));
 	const topicGroups = $derived.by(() => {
 		const arxiv = w.topics.filter((t) => t.scheme === 'arxiv' && t.level === 'topic');
 		const openalex = w.topics.filter((t) => t.scheme === 'openalex');
@@ -46,7 +47,7 @@
 	async function reveal(fileId: number) {
 		revealing = true;
 		try {
-			await fetch(`/api/files/${fileId}/reveal`, { method: 'POST' });
+			await fetch(href(`/api/files/${fileId}/reveal`), { method: 'POST' });
 		} finally {
 			setTimeout(() => (revealing = false), 600);
 		}
@@ -78,7 +79,7 @@
 			<ul class="authors">
 				{#each w.authors as a, i (i)}
 					<li>
-						<a href="/?author={a.personId != null ? `p${a.personId}` : encodeURIComponent(`n:${a.name}`)}" title="Everything by {a.name}"
+						<a href={href(`/?author=${a.personId != null ? `p${a.personId}` : encodeURIComponent(`n:${a.name}`)}`)} title="Everything by {a.name}"
 							>{a.name}</a
 						>
 						{#if a.orcid}<a class="ext orcid" href="https://orcid.org/{a.orcid}" target="_blank" rel="noreferrer" title="ORCID {a.orcid}">iD</a>{/if}
@@ -102,7 +103,7 @@
 		{/if}
 
 		<div class="actions">
-			<a class="btn" href="/?like={w.id}">≈ Similar in library</a>
+			<a class="btn" href={href(`/?like=${w.id}`)}>≈ Similar in library</a>
 			{#if currentFile?.available}
 				<button class="btn" type="button" onclick={() => reveal(currentFile.id)}>{revealing ? 'Revealed' : 'Reveal in Finder'}</button>
 			{/if}
@@ -128,7 +129,7 @@
 				{#if topicGroups.arxiv.length}
 					<div class="tgroup">
 						<span class="tlabel">arXiv</span>
-						{#each topicGroups.arxiv as t (t.id)}<a class="tag cat" href="/?arxiv={encodeURIComponent(t.name)}">{t.name}</a>{/each}
+						{#each topicGroups.arxiv as t (t.id)}<a class="tag cat" href={href(`/?arxiv=${encodeURIComponent(t.name)}`)}>{t.name}</a>{/each}
 					</div>
 				{/if}
 				{#if topicGroups.openalex.length}
@@ -212,7 +213,7 @@
 				<ul class="similar">
 					{#each data.similar as s (s.work.id)}
 						<li>
-							<a href="/work/{s.work.id}" class="stitle">{s.work.title ?? 'Untitled'}</a>
+							<a href={href(`/work/${s.work.id}`)} class="stitle">{s.work.title ?? 'Untitled'}</a>
 							<span class="score">{s.score.toFixed(2)}</span>
 							<div class="smeta">
 								{authorLine(s.work.authors, 3)}{s.work.year ? ` · ${s.work.year}` : ''}
@@ -221,7 +222,7 @@
 						</li>
 					{/each}
 				</ul>
-				<a class="more" href="/?like={w.id}">Rank whole library by similarity →</a>
+				<a class="more" href={href(`/?like=${w.id}`)}>Rank whole library by similarity →</a>
 			</section>
 		{/if}
 
@@ -231,7 +232,7 @@
 				<div class="terms">
 					{#each data.terms as t (t.term)}
 						<a
-							href="/?q={encodeURIComponent(t.term.includes(' ') ? `"${t.term}"` : t.term)}"
+							href={href(`/?q=${encodeURIComponent(t.term.includes(' ') ? `"${t.term}"` : t.term)}`)}
 							style:opacity={0.45 + 0.55 * (t.weight / maxTerm)}
 							style:font-size="{11 + 4 * (t.weight / maxTerm)}px">{t.term}</a
 						>

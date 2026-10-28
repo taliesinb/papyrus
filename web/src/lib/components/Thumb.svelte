@@ -1,5 +1,7 @@
 <script lang="ts">
 	// A lazily loaded page thumbnail rendered server-side by pdftoppm.
+	import { href } from '#lib/paths.ts';
+
 	let {
 		fileId,
 		page = 1,
@@ -15,7 +17,7 @@
 <div class="thumb" class:loaded class:active>
 	{#if fileId != null && !failed}
 		<img
-			src="/api/files/{fileId}/thumb/{page}?w={width}"
+			src={href(`/api/files/${fileId}/thumb/${page}?w=${width}`)}
 			{alt}
 			loading="lazy"
 			decoding="async"

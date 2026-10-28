@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { href } from '#lib/paths.ts';
 	import type { WorkHit } from '#lib/types.ts';
 	import { formatDate, hrefToggle, hrefWith, markAll, markExcerpt, primaryIds } from '#lib/util.ts';
 	import Hl from './Hl.svelte';
@@ -33,14 +34,14 @@
 		if (q) sp.set('q', q);
 		for (const [k, v] of Object.entries(extra)) sp.set(k, String(v));
 		const s = sp.toString();
-		return `/work/${hit.id}${s ? `?${s}` : ''}`;
+		return href(`/work/${hit.id}${s ? `?${s}` : ''}`);
 	};
 	const inLike = $derived(like.includes(hit.id));
 	const likeHref = $derived(
 		hrefWith(url, {
 			like: (inLike ? like.filter((x) => x !== hit.id) : [...like, hit.id]).join(',') || null,
 			sort: null
-		}, '/')
+		}, href('/'))
 	);
 	const arxivCats = $derived(hit.topics.filter((t) => t.scheme === 'arxiv' && t.level === 'topic').slice(0, 4));
 	const llmTopics = $derived(hit.topics.filter((t) => t.scheme === 'llm' && t.level === 'topic').slice(0, 5));
@@ -140,7 +141,7 @@
 					>{formatDate(hit.addedAt)}{#if hit.origins.length}&nbsp;· {hit.origins[0]}{/if}</span
 				>
 			{/if}
-			<a class="btn ghost small" href={hrefWith(url, { like: hit.id, sort: null }, '/')} title="Rank the library by similarity to this (s)">similar</a>
+			<a class="btn ghost small" href={hrefWith(url, { like: hit.id, sort: null }, href('/'))} title="Rank the library by similarity to this (s)">similar</a>
 			<a class="btn ghost small" class:active={inLike} href={likeHref} title={inLike ? 'Remove from the “more like these” set (x)' : 'Add to the “more like these” set (x)'}
 				>{inLike ? '− like' : '+ like'}</a
 			>
