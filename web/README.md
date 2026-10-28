@@ -37,7 +37,7 @@ It reads `~/.papyrus/papyrus.sqlite`. Override this with `PAPYRUS_DB`, or with
   `/opt/homebrew/bin`.
 * The UI polls `/api/version`, which reports `PRAGMA data_version`. When the
   pipeline commits something, a "library updated" button appears, and a
-  running `triage` or `enrich` run is shown in the header.
+  running `triage` or `enrich` run is shown in the results toolbar (`PipelineStatus.svelte`).
 
 ## Features
 
@@ -49,7 +49,6 @@ It reads `~/.papyrus/papyrus.sqlite`. Override this with `PAPYRUS_DB`, or with
 | **Views** | List, Pages (strips of the first 8 pages, as in the original arxiv-sanity) and Compact. Sorts: best (relevance or similarity, depending on context), recently added (file birth time), year, most cited, title and random (seeded, with reshuffle). |
 | **Reading** | The browser's own PDF viewer runs inline, with Range requests, a page-thumbnail strip, a dark-pages toggle (inverted colours) and a wider-PDF mode. "Reveal in Finder" is also available. |
 | **Provenance** | Shows where each file was found (path, birth time, browser, download URL and referrer from `kMDItemWhereFroms`), the files with their relations and versions, and every assertion grouped by field. Superseded claims can be shown on request. |
-| **Files** | Lists every scanned PDF, including those triage rejected, along with the decider's `kind` and whether each is library material. |
 | **Keyboard** | `/` search · `j`/`k` move · `o` open · `s` similar · `x` add to "more like these" · `v` cycle view |
 
 ## Layout
@@ -62,7 +61,7 @@ src/lib/server/similar.ts  TF-IDF vectors, centroid similarity, shared/top terms
 src/lib/server/detail.ts   work detail, contexts, assertions, pipeline status
 src/lib/server/files.ts    path resolution, pdftoppm thumbnails (3 at a time)
 src/lib/paths.ts           href(): app paths under the base path
-src/routes/                /  /work/[id]  /files  /api/files/[id]/{pdf,thumb/[page],reveal}  /api/version
+src/routes/                /  /work/[id]  /api/files/[id]/{pdf,thumb/[page],reveal}  /api/version
 static/                    favicon.svg (boxicons "scroll", MIT), apple-touch-icon.png (apps/macos/build.py --touch-icon)
 ```
 

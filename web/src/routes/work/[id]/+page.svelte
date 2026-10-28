@@ -262,7 +262,7 @@
 	.work {
 		display: grid;
 		grid-template-columns: minmax(380px, 40%) 1fr;
-		height: calc(100vh - 52px);
+		height: 100vh; /* no header above */
 	}
 	.work.wide {
 		grid-template-columns: minmax(320px, 26%) 1fr;

@@ -4,6 +4,7 @@
 	import { onMount, tick } from 'svelte';
 	import { collapsed } from '#lib/collapse.svelte.ts';
 	import FacetGroup from '#lib/components/FacetGroup.svelte';
+	import PipelineStatus from '#lib/components/PipelineStatus.svelte';
 	import WorkCard from '#lib/components/WorkCard.svelte';
 	import YearHistogram from '#lib/components/YearHistogram.svelte';
 	import { href } from '#lib/paths.ts';
@@ -54,6 +55,22 @@
 	);
 
 	onMount(() => collapsed.load());
+
+	// The library search (full text, ?q=), over the filter columns; debounced into the URL.
+	let query = $state(page.url.searchParams.get('q') ?? '');
+	let searchEl: HTMLInputElement | undefined = $state();
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		// Keep the box in sync when navigating (back/forward, clicking a chip).
+		const q = page.url.searchParams.get('q') ?? '';
+		if (document.activeElement !== searchEl) query = q;
+	});
+	function submitSearch(immediate = false) {
+		clearTimeout(searchTimer);
+		const run = () => goto(hrefWith(page.url, { q: query.trim() || null }), { replace: true, reset: false });
+		if (immediate) run();
+		else searchTimer = setTimeout(run, 220);
+	}
 
 	// Results sub-filter: applied instantly to the loaded hits, then (debounced)
 	// written to ?match= so the server applies it to the whole result set.
@@ -126,6 +143,10 @@
 		if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
 		const hit = focused >= 0 ? hits[focused] : undefined;
 		switch (e.key) {
+			case '/':
+				searchEl?.focus();
+				searchEl?.select();
+				break;
 			case 'j':
 				move(1);
 				break;
@@ -162,8 +183,22 @@
 </svelte:head>
 
 <div class="layout">
+	<!-- The left column: the search (one more filter, spanning both filter columns, level
+	     with the results toolbar), then the filter panels, which scroll on their own. -->
+	<div class="side">
+	<form class="search" role="search" onsubmit={(e) => (e.preventDefault(), submitSearch(true))}>
+		<input
+			bind:this={searchEl}
+			type="search"
+			placeholder="Search titles, authors, abstracts, text…"
+			bind:value={query}
+			oninput={() => submitSearch()}
+			onkeydown={(e) => e.key === 'Escape' && searchEl?.blur()}
+			aria-label="Search titles, authors, abstracts and the text of every page"
+		/>
+		<kbd class="hint">/</kbd>
+	</form>
 	<aside {@attach autoHideScrollbar}>
-		<!-- No global "clear filters": each panel has its own clear, and the panels' tops line up with the toolbar. -->
 		<div class="cards">
 			<div class="col">
 				<YearHistogram years={data.years} range={data.yearRange} from={data.filters.yearFrom} to={data.filters.yearTo} {url} />
@@ -186,6 +221,7 @@
 			</div>
 		</div>
 	</aside>
+	</div>
 
 	<section class="results">
 		<div class="toolbar">
@@ -199,6 +235,7 @@
 				{/if}
 				{#if data.filters.q}matching <q>{data.filters.q}</q>{/if}
 				{#if matchText.trim()}containing <q>{matchText.trim()}</q>{/if}
+				<span class="pipe"><PipelineStatus /></span>
 			</div>
 			<div class="controls">
 				<div class="match" class:active={!!matchText.trim()}>
@@ -292,8 +329,13 @@
 	   --card is 196px at ~1500px and below, 252px from ~1940px; the results
 	   take the rest. */
 	.layout {
-		/* --card, --card-b, --card-gap, --page-x: app.css (the header's search spans the filters). */
+		/* --card, --card-b, --card-gap, --filters, --page-x: app.css. */
 		--scrollbar: 10px; /* the aside's always-shown track (app.css) */
+		/* The search box and the results toolbar's row share this height, and the space
+		   under the search is the panels' own gap, so the first filter panel and the
+		   first result start level. */
+		--bar: 32px;
+		--panel-gap: 12px;
 		display: grid;
 		/* Left-aligned; the results column takes all remaining width (capped
 		   only on very wide screens, where lines would get unreadably long). */
@@ -301,14 +343,38 @@
 		justify-content: start;
 		/* Small: the results' own 16px inset (cards, toolbar, dividers) does the separating. */
 		gap: 5px;
-		/* Right: the results' own 16px inset brings toolbar and text to the header's edge. */
+		/* Right: the results' own 16px inset brings toolbar and text in by --header-x. */
 		padding: 18px calc(var(--header-x) - 16px) 40px var(--page-x);
 	}
-	aside {
+	.side {
 		position: sticky;
-		top: 70px;
+		top: 18px;
 		align-self: start;
-		max-height: calc(100vh - 88px);
+		display: flex;
+		flex-direction: column;
+		max-height: calc(100vh - 36px);
+	}
+	.search {
+		position: relative;
+		flex: none;
+		width: var(--filters);
+		margin-bottom: var(--panel-gap);
+	}
+	.search input {
+		width: 100%;
+		height: var(--bar);
+		padding: 0 34px 0 12px;
+		background: var(--panel);
+	}
+	.hint {
+		position: absolute;
+		right: 10px;
+		top: 50%;
+		transform: translateY(-50%);
+		pointer-events: none;
+	}
+	aside {
+		min-height: 0;
 		/* Always show the scrollbar track (scrollbar-gutter alone is not
 		   honoured everywhere), so cards never narrow when the list grows. */
 		overflow-y: scroll;
@@ -366,8 +432,20 @@
 		gap: 8px 12px;
 		/* Inset like the cards' text and dividers, so the divider starts where the text does. */
 		margin: 0 16px;
-		padding: 0 0 10px;
+		/* Level with the search box; with the divider it ends where the filter panels start. */
+		min-height: calc(var(--bar) + var(--panel-gap));
+		padding: 0 0 calc(var(--panel-gap) - 1px);
 		border-bottom: 1px solid var(--border);
+	}
+	.pipe {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		margin-left: 10px;
+		vertical-align: middle;
+	}
+	.pipe:empty {
+		display: none;
 	}
 	.count {
 		color: var(--muted);
@@ -436,7 +514,8 @@
 	.list {
 		display: flex;
 		flex-direction: column;
-		margin-top: 6px;
+		/* The first result starts level with the first filter panel. */
+		margin-top: 0;
 	}
 	.empty {
 		padding: 40px 16px;
