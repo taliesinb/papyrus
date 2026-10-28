@@ -11,7 +11,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def library_home() -> Path:
@@ -46,14 +46,21 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def init(conn: sqlite3.Connection) -> None:
-    sql = resources.files("papyrus").joinpath("schema.sql").read_text()
-    conn.executescript(sql)
-    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    """Create the schema in a new database; refuse one made by another schema version.
+
+    The version is checked before the DDL runs, so an old database is never half-upgraded
+    (CREATE ... IF NOT EXISTS would add new tables but not new columns). There are no automatic
+    migrations: papyrus has one user, who migrates by hand when SCHEMA_VERSION changes."""
+    row = None
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if row is not None and int(row[0]) != SCHEMA_VERSION:
+        newer = int(row[0]) > SCHEMA_VERSION
+        raise RuntimeError(f"database schema v{row[0]} is {'newer' if newer else 'older'} than this "
+                           f"papyrus (v{SCHEMA_VERSION})" + ("" if newer else "; migrate it first"))
+    conn.executescript(resources.files("papyrus").joinpath("schema.sql").read_text())
     if row is None:
         conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
-    elif int(row[0]) > SCHEMA_VERSION:
-        raise RuntimeError(f"database schema v{row[0]} is newer than this papyrus (v{SCHEMA_VERSION})")
-    # future: elif int(row[0]) < SCHEMA_VERSION: run migrations in order
 
 
 @contextmanager

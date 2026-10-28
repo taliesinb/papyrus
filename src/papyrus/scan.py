@@ -21,9 +21,9 @@ from typing import Callable, Iterable
 
 from . import db, macos, store
 from .filenames import parse_filename
-from .pdf import looks_like_pdf, read_pdf, sha256_file
+from .fulltext import page_kind
+from .pdf import TRIAGE_PAGES, looks_like_pdf, read_pdf, sha256_file
 
-TRIAGE_PAGES = 2
 SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".Trash", "Library"}
 
 
@@ -96,9 +96,10 @@ def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, page
     )
     for i, text in enumerate(info.pages, start=1):
         conn.execute(
-            "INSERT INTO file_pages(file_id, page, text) VALUES (?,?,?)"
-            " ON CONFLICT(file_id, page) DO UPDATE SET text=excluded.text",
-            (file_id, i, text),
+            "INSERT INTO file_pages(file_id, page, text, kind) VALUES (?,?,?,?)"
+            " ON CONFLICT(file_id, page) DO UPDATE SET text=excluded.text, kind=excluded.kind"
+            " WHERE file_pages.source = 'pdfium'",
+            (file_id, i, text, page_kind(text, i, info.page_count)),
         )
     return "ok" if has_text else "no_text"
 

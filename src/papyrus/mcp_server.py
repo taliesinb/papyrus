@@ -20,7 +20,8 @@ server = MCPServer(
     instructions=(
         "Personal library of papers, books, slides and notes, with where each was found "
         "(disk paths, download URLs; later Slack, Safari Reading List, Twitter). Use search_library "
-        "for titles/authors/abstracts/topics, fulltext_search for words inside PDFs, get_work for a "
+        "for titles/authors/abstracts/topics, fulltext_search for words anywhere inside the documents "
+        "(every page), get_file with include_text to read pages, get_work for a "
         "full record with discovery contexts, and sql for anything else (schema in resource "
         "papyrus://schema; database is SQLite, opened read-only)."
     ),
@@ -54,18 +55,29 @@ def search_library(query: str, kind: str | None = None, limit: int = 20) -> list
 
 
 @server.tool()
-def fulltext_search(query: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Search the extracted text of PDF pages (FTS5 syntax). Returns file id, page, snippet and the
-    work it belongs to if known."""
+def fulltext_search(query: str, limit: int = 20, pages_per_work: int = 3) -> list[dict[str, Any]]:
+    """Search inside the documents: the text of every page of every work (free text, or FTS5
+    syntax: "phrases", OR, NOT, prefix*, NEAR(a b, 5)). Returns works ranked by their best
+    matching pages, each with how many pages match and the best few (page number, section from
+    the PDF's outline, page kind, snippet with [matches]). References, index and contents pages
+    rank lower. Read a page in full with get_file(file_id, page_from=..., page_to=...)."""
+    from dataclasses import asdict
+
+    from .search import fill_snippets, rank_files
+
     conn = _conn()
-    rows = conn.execute(
-        """SELECT p.file_id, p.page, snippet(file_pages_fts, 0, '[', ']', '…', 16) AS snippet,
-                  (SELECT fw.work_id FROM file_works fw WHERE fw.file_id=p.file_id LIMIT 1) AS work_id,
-                  (SELECT w.title FROM file_works fw JOIN works w ON w.id=fw.work_id
-                    WHERE fw.file_id=p.file_id LIMIT 1) AS title
-           FROM file_pages_fts JOIN file_pages p ON p.id = file_pages_fts.rowid
-           WHERE file_pages_fts MATCH ? ORDER BY bm25(file_pages_fts) LIMIT ?""", (query, limit))
-    return [dict(r) for r in rows]
+    files = rank_files(conn, query, limit=limit, per_file=pages_per_work)
+    fill_snippets(conn, query, [h for f in files for h in f.hits])
+    out = []
+    for f in files:
+        w = conn.execute("SELECT w.id, w.kind, w.year, w.title FROM file_works fw JOIN works w ON w.id=fw.work_id"
+                         " WHERE fw.file_id=? AND w.status IN ('candidate', 'confirmed') LIMIT 1",
+                         (f.file_id,)).fetchone()
+        out.append({"work_id": w["id"], "title": w["title"], "kind": w["kind"], "year": w["year"],
+                    "file_id": f.file_id, "matching_pages": f.pages,
+                    "hits": [{k: v for k, v in asdict(h).items() if k != "file_id" and v is not None}
+                             for h in f.hits]})
+    return out
 
 
 @server.tool()
@@ -76,9 +88,10 @@ def get_work(work_id: int) -> dict[str, Any]:
 
 
 @server.tool()
-def get_file(file_id: int, include_text: bool = False) -> dict[str, Any]:
+def get_file(file_id: int, include_text: bool = False, page_from: int = 1, page_to: int | None = None
+             ) -> dict[str, Any]:
     """A PDF file: PDF metadata, locations on disk, model/heuristic assertions, linked works;
-    optionally the extracted text of its first pages."""
+    with include_text, the text of pages page_from..page_to (default: the first 2; at most 30)."""
     conn = _conn()
     f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if not f:
@@ -90,8 +103,12 @@ def get_file(file_id: int, include_text: bool = False) -> dict[str, Any]:
     out["assertions"] = db.current_assertions(conn, "file", file_id)
     out["works"] = [r[0] for r in conn.execute("SELECT work_id FROM file_works WHERE file_id=?", (file_id,))]
     if include_text:
+        page_to = min(page_to or page_from + 1, page_from + 29)
         out["pages"] = [dict(r) for r in conn.execute(
-            "SELECT page, text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,))]
+            "SELECT page, kind, source, text FROM file_pages WHERE file_id=? AND page BETWEEN ? AND ?"
+            " ORDER BY page", (file_id, page_from, page_to))]
+        out["outline"] = [dict(r) for r in conn.execute(
+            "SELECT level, title, page FROM file_outline WHERE file_id=? ORDER BY position LIMIT 300", (file_id,))]
     return out
 
 

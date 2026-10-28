@@ -1,4 +1,4 @@
--- papyrus schema, version 1.
+-- papyrus schema, version 2.
 --
 -- Design notes (see docs/schema.md for the long form):
 --
@@ -62,18 +62,25 @@ CREATE TABLE IF NOT EXISTS files (
     text_error    TEXT,
     -- triage state: pending | done | error
     triage_status TEXT NOT NULL DEFAULT 'pending',
+    -- full-text state: pending (only the first pages are in file_pages) | done (every page) |
+    -- error (text_error says why). Only files of live works are extracted in full.
+    fulltext_status TEXT NOT NULL DEFAULT 'pending',
     -- where papyrus keeps its own copy, relative to the library root (NULL = not copied)
     stored_path   TEXT,
     first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Extracted text, one row per page (1-based). Only the first pages are
--- extracted during triage; full extraction fills the rest later.
+-- Extracted text, one row per page (1-based). Scanning extracts the first
+-- pages; `papyrus extract` fills in the rest for files of live works.
 CREATE TABLE IF NOT EXISTS file_pages (
     id      INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     page    INTEGER NOT NULL,
     text    TEXT NOT NULL,
+    -- how the text was obtained: pdfium (the PDF's text layer) | ocr:vision (Apple Vision)
+    source  TEXT NOT NULL DEFAULT 'pdfium',
+    -- body | references | index | contents; non-body pages rank lower in search
+    kind    TEXT NOT NULL DEFAULT 'body',
     UNIQUE (file_id, page)
 );
 
@@ -90,10 +97,21 @@ END;
 CREATE TRIGGER IF NOT EXISTS file_pages_ad AFTER DELETE ON file_pages BEGIN
     INSERT INTO file_pages_fts(file_pages_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
-CREATE TRIGGER IF NOT EXISTS file_pages_au AFTER UPDATE ON file_pages BEGIN
+CREATE TRIGGER IF NOT EXISTS file_pages_au AFTER UPDATE OF text ON file_pages BEGIN
     INSERT INTO file_pages_fts(file_pages_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO file_pages_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+-- The PDF's outline (bookmarks), in document order: labels search hits with
+-- their section. A page belongs to the last entry that starts on or before it.
+CREATE TABLE IF NOT EXISTS file_outline (
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,     -- 0-based, document order
+    level    INTEGER NOT NULL,     -- 0 = top level
+    title    TEXT NOT NULL,
+    page     INTEGER NOT NULL,     -- 1-based
+    PRIMARY KEY (file_id, position)
+);
 
 ------------------------------------------------------------------------------
 -- Works, identifiers, people

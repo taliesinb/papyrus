@@ -17,15 +17,15 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | enrich | process | works | work | files | show | search | stats | config | mcp
+uv run papyrus --help                  # scan | download | store | triage | promote | extract | enrich | process | works | work | files | show | search | stats | config | mcp
 uv run papyrus config                  # config file path and the backend/decider in effect
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
 python3 apps/macos/build.py [--install]   # Papyrus.app + Papyrus Server.app (menu bar, tailscale serve /papyrus)
 ```
 
-The usual pipeline is `scan` (or `download`) `→ triage → promote → enrich`;
-`papyrus process` runs the last three. Every stage is idempotent and processes
+The usual pipeline is `scan` (or `download`) `→ triage → promote → extract → enrich`;
+`papyrus process` runs the last four. Every stage is idempotent and processes
 only what is pending (see `--all` / `--reset`).
 
 ## Data safety (read before running anything)
@@ -94,7 +94,9 @@ only what is pending (see `--all` / `--reset`).
    arXiv URLs elsewhere on page 1 are citations.
 6. **Schema changes:**
    * edit `schema.sql`;
-   * bump `db.SCHEMA_VERSION` and add a migration step in `db.init`;
+   * bump `db.SCHEMA_VERSION` (`db.init` then refuses older databases);
+   * migrate the user's database once, by hand, after a dated `.backup`
+     (one user, so no migration code is kept);
    * update `docs/schema.md` in the same commit.
 
    The schema is a public contract: users and agents query it with SQL over
@@ -168,8 +170,25 @@ only what is pending (see `--all` / `--reset`).
 * PDFium marks soft hyphens with `\x02`, which splits words in full-text
   search. `pdf.clean_text` strips control characters and zero-width
   characters.
-* About 5 of 64 PDFs have no text layer (`text_status='no_text'`); there is
-  no OCR yet.
+* About 5 of 81 PDFs have no text layer (`text_status='no_text'`, judged on
+  the first 2 pages). `papyrus extract` OCRs pages without one through the
+  bridge's `ocr` op (Apple Vision). Rebuild the bridge after pulling
+  (`swift build -c release`); an old binary answers "unknown op" and OCR is
+  skipped with a message.
+* `text_status='no_text'` can be wrong both ways: AIMA's first pages are
+  scanned images but the other 2,100 have a text layer.
+
+**Full text and search** (`fulltext.py`, `search.py`, `web/src/lib/server/query.ts`):
+
+* **Privacy:** only files of live works are extracted past page 2, and every
+  search path filters to live works. Keep it that way in new search tools:
+  the first pages of payslips and CVs are in `file_pages`.
+* **The ranking exists twice**, in `search.py` and `query.ts`. Change both.
+* **FTS5:** `bm25()`/`snippet()` can't go in an aggregate query, even in a
+  subquery (SQLite flattens it): use a `MATERIALIZED` CTE. `MATCH ? AND
+  rowid IN (…)` reruns the MATCH per rowid (1.7 s for 180 snippets of `t*`);
+  write `+rowid IN (…)` (24 ms).
+* **Triage reads pages ≤ `TRIAGE_PAGES` only**, whatever `file_pages` holds.
 
 **Abstracts:**
 

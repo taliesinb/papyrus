@@ -20,6 +20,7 @@ from typing import Any
 
 from . import db
 from .llm.base import Backend, Decider, Question
+from .pdf import TRIAGE_PAGES
 from .textspan import best_abstract
 
 # triage-1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
@@ -142,7 +143,8 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_C
         lines.append(f"Filename suggests: {hint['value']}")
     header = "\n".join(lines)
     budget = max(500, max_chars - len(header))
-    pages = conn.execute("SELECT page, text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,)).fetchall()
+    pages = conn.execute("SELECT page, text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page",
+                         (file_id, TRIAGE_PAGES)).fetchall()
     body = []
     for p in pages:
         if budget <= 0:
@@ -211,8 +213,8 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
     # paperwork never gets copied into the database as an "abstract".
     extracted["abstract"], abstract_source = None, None
     if extracted.get("has_abstract") and extracted.get("is_library_material") is not False:
-        pages = "\n".join(r[0] for r in conn.execute(
-            "SELECT text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,)))
+        pages = "\n".join(r[0] for r in conn.execute(  # the first pages, even once the full text is in
+            "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
         text, method = best_abstract(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
         if text:
             extracted["abstract"] = text

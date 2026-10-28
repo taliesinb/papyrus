@@ -230,6 +230,33 @@ def promote(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.argument("file_ids", nargs=-1, type=int)
+@click.option("--all", "redo_all", is_flag=True, help="Re-read the text layer of files already extracted.")
+@click.option("--no-ocr", is_flag=True, help="Skip OCR of pages without a text layer.")
+@click.option("-v", "--verbose", is_flag=True)
+@click.pass_context
+def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_ocr: bool, verbose: bool) -> None:
+    """Read every page of the files of live works into the full-text index.
+
+    Scanning reads only the first pages (for triage). This reads the rest, labels references,
+    index and contents pages (they rank lower in search), keeps the PDF outline (to label hits
+    with their section), and OCRs pages without a text layer with Apple Vision (needs the bridge
+    in tools/afm-bridge). Files of personal paperwork are not extracted unless given as FILE_IDS."""
+    from .fulltext import run
+
+    def progress(state: str, file_id: int, detail: str) -> None:
+        if state == "no-ocr":
+            click.echo(f"OCR unavailable: {detail}", err=True)
+        elif state == "error":
+            click.echo(f"{file_id:5} error {detail}", err=True)
+        elif verbose or state == "ocr":
+            click.echo(f"{file_id:5} {state:12} {detail}")
+
+    stats = run(_conn(ctx), file_ids, redo=redo_all, ocr=not no_ocr, progress=progress)
+    click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())) or "nothing to extract")
+
+
+@main.command()
 @click.argument("work_ids", nargs=-1, type=int)
 @click.option("--all", "redo_all", is_flag=True, help="Also re-enrich works that already have API data.")
 @click.option("--reset", is_flag=True, help="Undo previous enrichment of the given works first (keeps it as history).")
@@ -288,7 +315,7 @@ def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) 
 @click.pass_context
 def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
             limit: int | None) -> None:
-    """Triage, promote and enrich whatever is pending: `triage && promote && enrich`.
+    """Triage, promote, extract and enrich whatever is pending: `triage && promote && extract && enrich`.
 
     With FILE_IDS, triages those files and enriches only their works. Stops before promoting
     if triage can't run (e.g. no decider available)."""
@@ -296,6 +323,8 @@ def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, 
     ctx.invoke(triage, file_ids=file_ids, backend=backend, decider_spec=decider_spec, limit=limit)
     click.echo("== promote")
     ctx.invoke(promote)
+    click.echo("== extract")
+    ctx.invoke(extract)  # everything pending: new works' files, whether or not they were in FILE_IDS
     pending = _unenriched_works(_conn(ctx), file_ids)
     click.echo(f"== enrich ({len(pending)} works)")
     if pending:
@@ -363,24 +392,56 @@ def list_files(ctx: click.Context, status: str | None, as_json: bool) -> None:
         click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {r['text_status']:8} {r['triage_status']:8} {first}")
 
 
+def _page_line(h) -> str:
+    where = f"p.{h.page}" + (f" {h.kind}" if h.kind != "body" else "") + (f" · {h.section[:40]}" if h.section else "")
+    return f"{'':6}{where}\n{'':10}{h.snippet}"
+
+
 @main.command()
 @click.argument("query")
 @click.option("-n", "--limit", default=20, show_default=True)
+@click.option("--kind", help="Only works of this kind.")
+@click.option("--files", "by_file", is_flag=True,
+              help="Rank files by their pages instead, including files that aren't (live) works, "
+                   "such as personal paperwork.")
+@click.option("--json", "as_json", is_flag=True)
 @click.pass_context
-def search(ctx: click.Context, query: str, limit: int) -> None:
-    """Full-text search (SQLite FTS5 syntax) over extracted page text and work metadata."""
+def search(ctx: click.Context, query: str, limit: int, kind: str | None, by_file: bool, as_json: bool) -> None:
+    """Search works by title, authors, abstract, topics and the text of their pages.
+
+    QUERY is free text (every word must match) or SQLite FTS5 syntax: "phrases", OR, NOT,
+    prefix*, NEAR(a b, 5)."""
+    from dataclasses import asdict
+
+    from .search import fill_snippets, rank_files, search_works
+
     conn = _conn(ctx)
-    rows = conn.execute(
-        """SELECT p.file_id, p.page, snippet(file_pages_fts, 0, '[', ']', ' … ', 12) AS snip,
-                  bm25(file_pages_fts) AS score,
-                  (SELECT c.title FROM context_refs r JOIN contexts c ON c.id=r.context_id
-                    WHERE r.file_id=p.file_id ORDER BY c.missing_at IS NOT NULL LIMIT 1) AS name
-           FROM file_pages_fts JOIN file_pages p ON p.id = file_pages_fts.rowid
-           WHERE file_pages_fts MATCH ? ORDER BY score LIMIT ?""",
-        (query, limit),
-    ).fetchall()
-    for r in rows:
-        click.echo(f"[{r['file_id']}] p{r['page']} {r['name']}\n    {r['snip'].replace(chr(10), ' ')}")
+    if by_file:
+        files = rank_files(conn, query, live_only=False, limit=limit)
+        fill_snippets(conn, query, [h for f in files for h in f.hits])
+        if as_json:
+            click.echo(json.dumps([asdict(f) for f in files], indent=2, ensure_ascii=False))
+            return
+        for f in files:
+            name = conn.execute("SELECT c.title FROM context_refs r JOIN contexts c ON c.id=r.context_id"
+                                " WHERE r.file_id=? ORDER BY c.missing_at IS NOT NULL LIMIT 1", (f.file_id,)).fetchone()
+            click.echo(f"[{f.file_id}] {name[0] if name else ''}  ({f.pages} pages match)")
+            for h in f.hits:
+                click.echo(_page_line(h))
+        return
+    works = search_works(conn, query, limit=limit, kind=kind)
+    if as_json:
+        click.echo(json.dumps([{**w, "page_hits": [asdict(h) for h in w["page_hits"]]} for w in works],
+                              indent=2, ensure_ascii=False))
+        return
+    for w in works:
+        click.echo(f"{w['id']:5} {w['kind'] or '?':8} {w['year'] or '':4}  {(w['title'] or '')[:80]}")
+        if w["authors"]:
+            click.echo(f"{'':20}{w['authors'][:80]}")
+        for h in w["page_hits"]:
+            click.echo(_page_line(h))
+        if w["matching_pages"] > len(w["page_hits"]):
+            click.echo(f"{'':6}+{w['matching_pages'] - len(w['page_hits'])} more pages")
 
 
 @main.command()
@@ -449,8 +510,10 @@ def stats(ctx: click.Context) -> None:
     conn = _conn(ctx)
     for table in ["files", "works", "people", "contexts", "context_refs", "assertions", "runs"]:
         click.echo(f"{table:14} {conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]}")
-    for r in conn.execute("SELECT text_status, triage_status, count(*) n FROM files GROUP BY 1, 2"):
-        click.echo(f"  files text={r[0]} triage={r[1]}: {r[2]}")
+    for r in conn.execute("SELECT text_status, triage_status, fulltext_status, count(*) n FROM files GROUP BY 1, 2, 3"):
+        click.echo(f"  files text={r[0]} triage={r[1]} fulltext={r[2]}: {r[3]}")
+    for r in conn.execute("SELECT source, kind, count(*) FROM file_pages GROUP BY 1, 2 ORDER BY 1, 2"):
+        click.echo(f"  pages {r[0]}/{r[1]}: {r[2]}")
 
 
 if __name__ == "__main__":

@@ -6,13 +6,17 @@ One SQLite file (default `~/.papyrus/papyrus.sqlite`, override with
 the model. Everything is plain SQLite (FTS5 for text search); no extensions
 are required to read it.
 
+The schema version is `meta.schema_version` (now 2). papyrus refuses to open
+a database of another version, and there are no automatic migrations: a
+version change is migrated once, by hand.
+
 ## The four ideas
 
 ```
             contexts ──< context_refs >── files ──< file_works >── works ──< work_authors >── people
  (where/how it was found)    (links)    (bytes)                (the thing)            (who wrote it)
                                           │                      │
-                                       file_pages             work_ids, work_topics
+                                file_pages, file_outline      work_ids, work_topics
                                        (+ FTS5)               (+ works_fts)
 
             assertions: provenance-tracked claims about any file / work / person / context
@@ -65,22 +69,47 @@ are required to read it.
 | `page_count`, `pdf_*` | the PDF's own document-info dictionary, verbatim |
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
 | `triage_status` | `pending`, `done` or `error` (LLM triage) |
+| `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
 | `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default `~/.papyrus`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed). |
 
-`file_pages(file_id, page, text)` holds extracted text per page. Scanning
-extracts the first 2 pages; full extraction will fill in the rest. The text is
-cleaned:
+`file_pages(file_id, page, text, source, kind)` holds extracted text per page.
 
-* PDFium's soft-hyphen marker `\x02` and other control and zero-width
-  characters are stripped;
-* end-of-line hyphenation is joined back together.
-`file_pages_fts` is an FTS5 external-content index over it, kept in sync by
-triggers. Example query:
+* **Which pages:** scanning extracts the first 2 pages of every file (all that
+  triage reads). `papyrus extract` adds the rest for files of live works
+  (`candidate` or `confirmed`); personal paperwork stays at 2 pages.
+* **`source`:** `pdfium` (the PDF's text layer) or `ocr:vision` (Apple
+  Vision, for pages without one). OCR'd pages are never overwritten by the
+  text layer.
+* **`kind`:** `body`, `references`, `index` or `contents`, from the page's
+  text (`fulltext.page_kind`). Search ranks non-body pages lower.
+* **Cleaning:** PDFium's soft-hyphen marker `\x02` and other control and
+  zero-width characters are stripped, and end-of-line hyphenation is joined
+  back together.
+
+`file_pages_fts` is an FTS5 external-content index over the text, kept in sync
+by triggers. Example query:
 
 ```sql
-SELECT file_id, page, snippet(file_pages_fts, 0, '[', ']', '…', 12)
+SELECT file_id, page, kind, snippet(file_pages_fts, 0, '[', ']', '…', 12)
 FROM file_pages_fts JOIN file_pages p ON p.id = file_pages_fts.rowid
 WHERE file_pages_fts MATCH 'equality NEAR saturation';
+```
+
+Two FTS5 gotchas:
+
+* `bm25()` and `snippet()` can't be used in an aggregate query (`GROUP BY
+  file_id`), not even inside a subquery, which SQLite flattens. Compute them
+  in a `WITH h AS MATERIALIZED (…)` CTE first (see `search.page_sql`).
+* `MATCH ? AND rowid IN (…)` reruns the whole MATCH once per rowid. Write
+  `+rowid IN (…)`.
+
+`file_outline(file_id, position, level, title, page)` is the PDF's outline
+(bookmarks) in document order. A page belongs to the last entry that starts
+on or before it, which is how search labels hits with their section:
+
+```sql
+SELECT title FROM file_outline WHERE file_id = ? AND page <= ?
+ORDER BY page DESC, position DESC LIMIT 1;
 ```
 
 ### works, work_ids, file_works

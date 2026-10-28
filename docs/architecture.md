@@ -32,6 +32,9 @@ formatting.
                            promote ─▶ works, work_ids, work_authors(raw), topics(llm), file_works,
                                │        works_fts; rejects works whose files are personal
                                ▼
+                           extract ─▶ every page of live works' files (+FTS), page kinds, file_outline;
+                               │        OCR (Apple Vision) of pages without a text layer
+                               ▼
                            enrich ──▶ assertions api:*, people (ORCID/OpenAlex/S2 ids),
                                         work_ids, venue/date/abstract, topics(openalex, arxiv)
  (planned) Slack, Safari RL, Twitter ─▶ contexts + unresolved context_refs ─▶ resolver ─▶ works
@@ -53,6 +56,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | download | `download.py`, `store.py`, `enrich/http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. |
 | triage | `triage.py`, `llm/*`, `textspan.py` | `files.triage_status <> 'done'` | One extraction call per file, plus one decider call per question. The state sent to the model holds the filename(s), path, download URL, PDF metadata, filename hint and ≤4000 characters of page text. |
 | promote | `works.py` | the file has no `file_works` row | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. |
+| extract | `fulltext.py`, `ocr.py`, `tools/afm-bridge` | text layer: a file of a live work with `fulltext_status='pending'`; OCR: a page with < 40 characters and `source='pdfium'` (all such pages of extracted files, the first 2 of image-only files) | Reads every page (pypdfium2), labels its kind, stores the outline. OCR is written every 32 pages, so an interrupted run keeps its work; an image-only file that is no work yet goes back to triage once OCR finds text. Whole library (81 PDFs, 6,500 pages): 26 s, most of it Vision's warm-up. |
 | enrich | `enrich/*` | the work has no `api:*` claims and no `enrich_candidates` | `match.resolve` (ids first, then title search) → exclude conflicting candidates → `cluster` → `merge` → write. The score threshold is 0.85. |
 
 ## Module map
@@ -66,9 +70,12 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
 | `textspan.py` | find spans from anchors (`locate`), the `heuristic_abstract` regex, and `best_abstract`, which reconciles the two |
 | `works.py` | `SOURCE_RANK`/`best` resolution, `is_library`, `promote_file`, `reject_work`, `reindex_work`, `work_json` |
+| `fulltext.py` | the `extract` stage: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `run` |
+| `ocr.py` | `VisionOCR`: page OCR through the bridge's `ocr` op (Vision `RecognizeDocumentsRequest`) |
+| `search.py` | ranking shared by the CLI and MCP: `rank_files` (pages → files), `search_works` (RRF with metadata), `fill_snippets`; mirrored in `web/src/lib/server/query.ts` |
 | `llm/base.py` | contracts: `Backend.extract` (JSON-schema output) and `Decider.decide` (Jev-style typed questions → probabilities) |
 | `llm/lmstudio.py` | extraction through any OpenAI-compatible server (the LM Studio quirks are handled here) |
-| `llm/apple.py` + `tools/afm-bridge` | extraction through Apple Foundation Models (a Swift CLI speaking NDJSON; guided generation via `DynamicGenerationSchema`) |
+| `llm/apple.py` + `tools/afm-bridge` | extraction through Apple Foundation Models (a Swift CLI speaking NDJSON; guided generation via `DynamicGenerationSchema`); the same bridge does OCR (`OCR.swift`) |
 | `llm/decide.py` | `JevHTTPDecider` (`/v1/systemone`: TypeSafe, Ollama `tev1`, …) and `OpenAICompatDecider` (logprobs over lettered options) |
 | `llm/schema_lite.py` | JSON extraction and coercion for a JSON Schema subset; all model output passes through it |
 | `enrich/http.py` | polite shared HTTP client: per-host rate limits, retries, disk cache |
@@ -144,6 +151,11 @@ and a CV to works.
 | decider/model calls outside write transactions | A decider call inside `tx()` held the write lock for seconds and blocked other writers. |
 | a content-addressed store, filled by APFS clones | Files in `~/Downloads` get moved or deleted; the library should outlive them. Naming by sha256 needs no naming scheme and makes writes idempotent. Measured on this machine: `cp` and `shutil.copy*` duplicate a 2 GB file, `clonefile(2)` (`cp -c`) costs 0 MB; backfilling 64 files cost 0 MB. Scan hashes the clone, so the stored bytes are exactly the hashed bytes. |
 | downloads: sniff bytes, not Content-Type | A journal API serves its PDFs as `application/json`. |
+| full text in FTS5, page rows in the main database | Every page of 81 PDFs (13M characters) adds 25 MB and indexes in 0.2 s; queries take 1–15 ms. Pages keep hits citable by page number. A separate index (Tantivy, Meilisearch) would be invisible to SQL and MCP. At ~50k documents the text may reach a few GB: then consider moving `file_pages` to an `ATTACH`ed file. |
+| extract only live works' files | Personal paperwork sits next to papers in `~/Downloads`; its first 2 pages are needed for triage, the rest aren't needed at all. Search also filters to live works, since those 2 pages are indexed. |
+| rank works by Reciprocal Rank Fusion of metadata and pages | bm25 from `works_fts` and `file_pages_fts` aren't on one scale (adding them, as before, let either swamp the other). RRF needs only ranks, and an embedding ranking can join later. |
+| page kinds from the text, not the outline | Outlines were wrong as often as right (a book's "Index" entry spanning its references, "2.1.2 Bibliography" a manual's section about bibliographies). Bibliography-entry density ≥ 0.5 marks 86% of reference pages and 1% of body pages; the body pages were mostly unlabelled reference pages. |
+| OCR with Vision `RecognizeDocumentsRequest` in the existing bridge | On-device, no new dependency, reading order across columns; ~57 ms a page warm, ~25 s warm-up per process. |
 
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
 
@@ -191,8 +203,10 @@ Roughly by value:
   * chunk level: full text;
   * storage: `sqlite-vec`;
   * an MCP `semantic_search` tool.
-* **Full-text extraction of all pages** (today only pages 1–2), and OCR for
-  the `no_text` files (Apple Vision, or a VLM).
+* **Full text, next steps:** a PDF.js viewer that opens a hit at
+  `#page=N&search=…` with the words highlighted; chunk embeddings for hybrid
+  search (above), fused into the same RRF. OCR quality on maths is untested;
+  Vision reads formulas as text.
 * **Context importers:** Slack, Safari Reading List, Twitter (see the recipe
   above), and the shared resolver.
 * **Relations between works:** thesis ↔ paper, slides_for, versions. There
