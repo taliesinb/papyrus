@@ -160,33 +160,46 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
 
 @main.command()
 @click.argument("file_ids", nargs=-1, type=int)
-@click.option("--backend", default="auto", show_default=True,
-              help="Extraction model: auto | lmstudio[:model] | apple")
-@click.option("--decider", "decider_spec", default="auto", show_default=True,
-              help="Jev-style decider for kind/is-library: none | auto | lmstudio[:model] | jev:<url>")
+@click.option("--backend", default=None,
+              help="Extraction model: auto | lmstudio[:model] | apple  [default: from config, else auto]")
+@click.option("--decider", "decider_spec", default=None,
+              help="Jev-style decider for kind/is-library: auto | none | lmstudio[:model] | jev:<url>  "
+                   "[default: from config, else auto]")
 @click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str, decider_spec: str,
+def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
            redo_all: bool, limit: int | None) -> None:
-    """Ask a local model what each file is (kind, title, authors, abstract, topics...)."""
+    """Ask a local model what each file is (kind, title, authors, abstract, topics...).
+
+    The backend and decider come from --backend/--decider, else PAPYRUS_BACKEND/PAPYRUS_DECIDER,
+    else ~/.papyrus/config.toml (see `papyrus config`), else auto. LM Studio's server is started
+    if it is off. Triage stops if no decider is available, unless the decider is 'none'."""
+    from . import config
     from .llm import get_backend
+    from .llm.base import BackendUnavailable
     from .triage import PROMPT_VERSION, triage_file
 
     conn = _conn(ctx)
-    be = get_backend(backend)
+    try:
+        backend, decider_spec = config.backend(backend), config.decider(decider_spec)
+        be = get_backend(backend)
+    except (config.ConfigError, BackendUnavailable) as e:
+        raise click.ClickException(str(e)) from e
     dec = None
     if decider_spec != "none":
-        from .llm.base import BackendUnavailable
         from .llm.decide import get_decider
         try:
             dec = get_decider(None if decider_spec == "auto" else decider_spec)
-            if decider_spec == "auto" and not dec.available():
-                dec = None
+            if not dec.available():
+                raise BackendUnavailable(f"decider {dec.info().tag} is not available")
         except BackendUnavailable as e:
-            if decider_spec != "auto":
-                raise
-            click.echo(f"(no decider: {e})", err=True)
+            # Without a decider, kind and library-vs-personal rest on the extraction model's own
+            # answers, which proved unreliable (exam papers and a CV promoted to works).
+            raise click.ClickException(
+                f"no decider: {e}.\nTriage without one misjudges personal vs library documents. "
+                f"Start LM Studio, or pass --decider none (or set decider = \"none\" in "
+                f"{config.path()}) to triage anyway.") from e
     if file_ids:
         ids = list(file_ids)
     else:
@@ -369,6 +382,31 @@ def show(ctx: click.Context, file_id: int, text: bool) -> None:
     if text:
         for r in conn.execute("SELECT page, text FROM file_pages WHERE file_id=? ORDER BY page", (file_id,)):
             click.echo(f"\n----- page {r['page']} -----\n{r['text']}")
+
+
+@main.command("config")
+@click.option("--init", is_flag=True, help="Write a commented config file if there is none.")
+def config_cmd(init: bool) -> None:
+    """Show where the config file is and the settings in effect (and where each comes from)."""
+    from . import config
+    from .llm.lmstudio import default_url, lms_path, server_up
+
+    if init:
+        p, written = config.init()
+        click.echo(f"{'wrote' if written else 'already exists:'} {p}")
+    p = config.path()
+    click.echo(f"config file: {p}{'' if p.exists() else '  (not present; using defaults)'}")
+    try:
+        for name in ("backend", "decider"):
+            value, source = config.setting(name)
+            click.echo(f"  {name:18} {value:28} ({source})")
+        auto, source = config.lmstudio_autostart()
+        click.echo(f"  {'lmstudio.autostart':18} {str(auto).lower():28} ({source})")
+    except config.ConfigError as e:
+        raise click.ClickException(str(e)) from e
+    url = default_url()
+    click.echo(f"LM Studio: {url} {'up' if server_up(url) else 'not running'}; "
+               f"lms CLI: {lms_path() or 'not found'}")
 
 
 @main.command("mcp")

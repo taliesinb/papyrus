@@ -50,8 +50,10 @@ All models run locally.
 | decisions | LM Studio emulation of the Jev `/v1/systemone` API, using logprobs over option letters | `--decider lmstudio:qwen3.5-4b-mlx` |
 | decisions | any Jev-compatible server (TypeSafe, Ollama `tev1`, decider, Lichen…) | `--decider jev:http://host:port` |
 
-`--backend auto` picks LM Studio if it is running, otherwise Apple FM. Build
-the Apple bridge once with:
+`--backend auto` picks LM Studio, starting its server (`lms server start`) if it
+is off, otherwise Apple FM. Triage stops if no decider is available rather than
+relying on the extraction model's own kind and "library material" answers;
+pass `--decider none` to triage anyway. Build the Apple bridge once with:
 
 ```sh
 cd tools/afm-bridge && swift build -c release
@@ -64,6 +66,24 @@ Two LM Studio notes:
   do this.
 * The JSON answer may also arrive in `reasoning_content` and is not
   schema-enforced, so every result is parsed and validated (`llm/schema_lite.py`).
+
+## Configuration
+
+`~/.papyrus/config.toml` (under `PAPYRUS_HOME`; `PAPYRUS_CONFIG` points
+elsewhere). Every key is optional. `papyrus config` shows the file's path and
+the settings in effect with where each comes from; `papyrus config --init`
+writes a commented template.
+
+```toml
+backend = "auto"      # auto | lmstudio[:model] | apple
+decider = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url
+
+[lmstudio]
+autostart = true      # start LM Studio's server when it is off
+```
+
+Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
+`PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`) > config file > `auto`.
 
 ## Data
 
@@ -81,7 +101,10 @@ Two LM Studio notes:
 |---|---|
 | `PAPYRUS_DB`, `PAPYRUS_HOME` | database location; `PAPYRUS_HOME` (default `~/.papyrus`) also holds the store |
 | `PAPYRUS_LMSTUDIO_URL`, `PAPYRUS_LMSTUDIO_MODEL` | extraction via LM Studio |
-| `PAPYRUS_DECIDER`, `PAPYRUS_DECIDE_MODEL` | decider via LM Studio |
+| `PAPYRUS_BACKEND`, `PAPYRUS_DECIDER` | override `backend` / `decider` from the config |
+| `PAPYRUS_DECIDE_MODEL` | decider model via LM Studio |
+| `PAPYRUS_LMSTUDIO_AUTOSTART` | `0` stops papyrus starting LM Studio's server |
+| `PAPYRUS_CONFIG` | config file (default `$PAPYRUS_HOME/config.toml`) |
 | `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible decider server |
 | `PAPYRUS_AFM_BIN` | Apple bridge binary |
 | `OPENALEX_API_KEY`, `S2_API_KEY`, `PAPYRUS_MAILTO` | enrichment APIs |

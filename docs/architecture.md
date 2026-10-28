@@ -77,6 +77,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `enrich/match.py` | `resolve`, `score`, `cluster`, `merge` |
 | `enrich/pipeline.py` | `enrich_work` writes to the database (`_conflict`, authors → people, topics, ids); `reset_enrichment` |
 | `mcp_server.py` | MCP tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only connection), `library_stats`; resource `papyrus://schema` |
+| `config.py` | `~/.papyrus/config.toml`: default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
 
 ## Model layer
@@ -97,7 +98,13 @@ Two question types, kept deliberately separate:
     `--decider jev:http://…`.
 
 Backend specs: `--backend auto|lmstudio[:model]|apple` and
-`--decider auto|none|lmstudio[:model]|jev:<url>`.
+`--decider auto|none|lmstudio[:model]|jev:<url>`. Defaults come from
+`config.py` (`~/.papyrus/config.toml`, then `auto`). Selecting LM Studio
+starts its server if it is off (`lmstudio.ensure_server`, local URLs only,
+once per process). Triage refuses to run without a decider unless it is
+explicitly `none`: when LM Studio was off, `auto` used to fall back silently
+to Apple FM with no decider, the combination that once promoted exam papers
+and a CV to works.
 
 ## Resolving conflicting claims
 

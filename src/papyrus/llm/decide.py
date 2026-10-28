@@ -526,6 +526,7 @@ def get_decider(
     *,
     env: dict[str, str] | None = None,
     probe: Callable[[str], list[str] | None] = _lmstudio_models,
+    start: Callable[[str], bool] | None = None,
 ) -> Decider:
     """Build a decider from a spec.
 
@@ -540,7 +541,12 @@ def get_decider(
     * ``None`` -> ``PAPYRUS_DECIDER`` if set; else ``PAPYRUS_JEV_URL`` if set;
       else LM Studio if reachable, with ``PAPYRUS_DECIDE_MODEL`` or the first of
       `DEFAULT_DECIDE_MODELS` it serves. Raises `BackendUnavailable` otherwise.
+
+    For LM Studio, `start(url)` is called to start a server that is off (default
+    `lmstudio.ensure_server`, which honours the `lmstudio.autostart` setting).
     """
+    if start is None:
+        from .lmstudio import ensure_server as start
     env = dict(os.environ if env is None else env)
     jev_key = env.get("PAPYRUS_JEV_API_KEY") or env.get("TYPESAFE_API_KEY")
     jev_model = env.get("PAPYRUS_JEV_MODEL", "jev-latest")
@@ -552,8 +558,10 @@ def get_decider(
         if env.get("PAPYRUS_JEV_URL"):
             return JevHTTPDecider(env["PAPYRUS_JEV_URL"], api_key=jev_key, model=jev_model)
         ids = probe(lm_url)
+        if ids is None and start(lm_url):
+            ids = probe(lm_url)
         if ids is None:
-            raise BackendUnavailable(f"no decider: PAPYRUS_JEV_URL unset and LM Studio not reachable at {lm_url}")
+            raise BackendUnavailable(f"PAPYRUS_JEV_URL unset and LM Studio not reachable at {lm_url}")
         wanted = [env["PAPYRUS_DECIDE_MODEL"]] if env.get("PAPYRUS_DECIDE_MODEL") else []
         model = _pick_model(ids, [*wanted, *DEFAULT_DECIDE_MODELS])
         if model is None:
@@ -566,6 +574,7 @@ def get_decider(
         return JevHTTPDecider(rest or env.get("PAPYRUS_JEV_URL") or TYPESAFE_URL, api_key=jev_key, model=jev_model)
     if kind == "lmstudio":
         model = rest or env.get("PAPYRUS_DECIDE_MODEL") or DEFAULT_DECIDE_MODELS[0]
+        start(lm_url)
         return OpenAICompatDecider(lm_url, model)
     if kind in ("openai", "openai-compat"):
         model, sep, url = rest.partition("@")

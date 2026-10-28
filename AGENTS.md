@@ -17,7 +17,8 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | enrich | works | work | files | show | search | stats | mcp
+uv run papyrus --help                  # scan | download | store | triage | promote | enrich | works | work | files | show | search | stats | config | mcp
+uv run papyrus config                  # config file path and the backend/decider in effect
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 ```
 
@@ -106,6 +107,19 @@ Every stage is idempotent and processes only what is pending (see `--all` /
 ## Gotchas (all learned the hard way)
 
 **LM Studio** (0.4.x, `localhost:1234`, shared with the user and other agents):
+
+* **The server is separate from the app** and is often off.
+  `lmstudio.ensure_server` starts it with `~/.lmstudio/bin/lms server start`
+  (not on PATH) when the backend or decider selects LM Studio; turn that off
+  with `lmstudio.autostart = false` or `PAPYRUS_LMSTUDIO_AUTOSTART=0`. Tests
+  set the latter (`tests/conftest.py`).
+* **Live tests load models:** once the server is up, `test_live_lmstudio_decides`
+  runs and loads the 4B model (1 h idle timeout). Unload it afterwards
+  (`lms unload qwen3.5-4b-mlx`) unless the user is using it.
+* **No silent downgrade:** `triage` exits if no decider is available unless
+  the decider is explicitly `none` (option, `PAPYRUS_DECIDER` or the
+  config). Without one, library-ness rests on the extraction model's biased
+  yes/no.
 
 * **Thinking:** Qwen3.5 MLX models ignore `enable_thinking`,
   `reasoning_effort` and `/no_think`. The only way to switch thinking off is

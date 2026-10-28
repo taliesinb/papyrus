@@ -286,10 +286,16 @@ def test_get_decider_auto():
     d = get_decider(None, env={"PAPYRUS_DECIDE_MODEL": "qwen3.5-9b-mlx"}, probe=lambda u: ["qwen3.5-9b-mlx", "qwen3.5-4b-mlx"])
     assert d.model == "qwen3.5-9b-mlx"
     assert get_decider(None, env={"PAPYRUS_DECIDER": "jev:http://x"}, probe=lambda u: None).base_url == "http://x"
+    started = []
     with pytest.raises(BackendUnavailable):
-        get_decider(None, env={}, probe=lambda u: None)
+        get_decider(None, env={}, probe=lambda u: None, start=lambda u: started.append(u) or False)
+    assert started == ["http://localhost:1234/v1"]  # tried to start LM Studio's server first
     with pytest.raises(BackendUnavailable):
-        get_decider(None, env={}, probe=lambda u: ["something-else"])
+        get_decider(None, env={}, probe=lambda u: ["something-else"], start=lambda u: False)
+    # the server was off, starting it worked, and the second probe sees the model
+    answers = iter([None, ["qwen3.5-4b-mlx"]])
+    d = get_decider(None, env={}, probe=lambda u: next(answers), start=lambda u: True)
+    assert d.model == "qwen3.5-4b-mlx"
 
 
 # ---------------------------------------------------------------------------- live
