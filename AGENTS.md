@@ -20,6 +20,8 @@ PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAle
 uv run papyrus --help                  # scan | download | store | triage | promote | enrich | process | works | work | files | show | search | stats | config | mcp
 uv run papyrus config                  # config file path and the backend/decider in effect
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
+cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
+python3 apps/macos/build.py [--install]   # Papyrus.app + Papyrus Server.app (menu bar, tailscale serve /papyrus)
 ```
 
 The usual pipeline is `scan` (or `download`) `→ triage → promote → enrich`;
