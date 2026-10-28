@@ -198,8 +198,8 @@
 		gap: 16px;
 		padding: 14px 16px;
 		border: 1px solid transparent;
-		border-bottom-color: var(--border);
 		border-radius: var(--radius);
+		position: relative;
 		transition: background 0.1s;
 	}
 	.card.v-strip {
@@ -215,6 +215,20 @@
 	.card.v-compact {
 		grid-template-columns: 1fr;
 		padding: 8px 16px;
+	}
+	/* The divider between cards is inset to the text's 16px, like the toolbar's. */
+	.card::after {
+		content: '';
+		position: absolute;
+		left: 16px;
+		right: 16px;
+		bottom: -1px;
+		height: 1px;
+		background: var(--border);
+		pointer-events: none;
+	}
+	.card.focused::after {
+		display: none;
 	}
 	.card:hover {
 		background: var(--bg-raised);

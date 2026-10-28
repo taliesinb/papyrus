@@ -280,7 +280,8 @@
 		   only on very wide screens, where lines would get unreadably long). */
 		grid-template-columns: calc(var(--card) + var(--card-gap) + var(--card-b) + var(--scrollbar)) minmax(0, 1fr);
 		justify-content: start;
-		gap: 24px;
+		/* Small: the results' own 16px inset (cards, toolbar, dividers) does the separating. */
+		gap: 5px;
 		padding: 18px 22px 40px;
 	}
 	aside {
@@ -338,7 +339,9 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 8px 12px;
-		padding: 0 16px 10px;
+		/* Inset like the cards' text and dividers, so the divider starts where the text does. */
+		margin: 0 16px;
+		padding: 0 0 10px;
 		border-bottom: 1px solid var(--border);
 	}
 	.count {
