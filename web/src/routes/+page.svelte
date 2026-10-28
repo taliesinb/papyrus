@@ -292,10 +292,8 @@
 	   --card is 196px at ~1500px and below, 252px from ~1940px; the results
 	   take the rest. */
 	.layout {
-		/* --card, --page-x: app.css (the header centres the name over column A). */
-		--card-b: max(150px, calc(var(--card) * 0.62));
+		/* --card, --card-b, --card-gap, --page-x: app.css (the header's search spans the filters). */
 		--scrollbar: 10px; /* the aside's always-shown track (app.css) */
-		--card-gap: 10px;
 		display: grid;
 		/* Left-aligned; the results column takes all remaining width (capped
 		   only on very wide screens, where lines would get unreadably long). */

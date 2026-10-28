@@ -6,6 +6,11 @@
 	--header-x: 18px;
 	--page-x: 22px;
 	--card: clamp(196px, 13vw, 252px);
+	/* The second filter column (kind, folder, site, status) and the gap between them;
+	   --filters spans both, which the header's search box lines up with. */
+	--card-b: max(150px, calc(var(--card) * 0.62));
+	--card-gap: 10px;
+	--filters: calc(var(--card) + var(--card-gap) + var(--card-b));
 	--bg: #0d0f12;
 	--bg-raised: #13161b;
 	--panel: #171a20;

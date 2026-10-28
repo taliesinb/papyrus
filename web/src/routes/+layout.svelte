@@ -89,23 +89,21 @@
 	<link rel="apple-touch-icon" href={asset('apple-touch-icon.png')} />
 </svelte:head>
 
-<!-- Three cells: the name centred over the first filter column, the search centred in the
-     window, the pipeline status and the Library / Files switch at the right. -->
+<!-- Three cells: the search over the filter columns (it is one more filter), the name
+     centred in the window, the pipeline status and the Library / Files switch at the right. -->
 <header class="top">
-	<div class="left">
-		<a class="brand" href={href('/')}>papyrus</a>
-	</div>
 	<form class="search" role="search" onsubmit={(e) => (e.preventDefault(), submit(true))}>
 		<input
 			bind:this={searchEl}
 			type="search"
-			placeholder="Search titles, authors, abstracts and page text…"
+			placeholder="Search titles, authors, abstracts, text…"
 			bind:value={query}
 			oninput={() => submit()}
-			aria-label="Search"
+			aria-label="Search titles, authors, abstracts and the text of every page"
 		/>
 		<kbd class="hint">/</kbd>
 	</form>
+	<a class="brand" href={href('/')}>papyrus</a>
 	<div class="right">
 		{#if changed}
 			<button class="btn active" type="button" onclick={refresh} title="The pipeline wrote to the database"
@@ -134,9 +132,9 @@
 		top: 0;
 		z-index: 20;
 		display: grid;
-		/* The sides share the spare width equally, so the search sits in the middle (unless
+		/* The sides share the spare width equally, so the name sits in the middle (unless
 		   a side's content needs more, e.g. a running pipeline and "library updated"). */
-		grid-template-columns: minmax(max-content, 1fr) minmax(0, 640px) minmax(max-content, 1fr);
+		grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
 		align-items: center;
 		gap: 20px;
 		height: 52px;
@@ -145,14 +143,7 @@
 		backdrop-filter: blur(10px);
 		border-bottom: 1px solid var(--border);
 	}
-	/* Spans the first filter column of the Library page (app.css: --page-x, --card). */
-	.left {
-		padding-left: calc(var(--page-x) - var(--header-x));
-	}
 	.brand {
-		display: block;
-		width: var(--card);
-		text-align: center;
 		font-family: var(--serif);
 		font-size: 20px;
 		font-weight: 700;
@@ -183,8 +174,12 @@
 		color: var(--text-strong);
 		background: var(--panel);
 	}
+	/* Exactly over the Library page's two filter columns (app.css: --page-x, --filters). */
 	.search {
 		position: relative;
+		justify-self: start;
+		width: var(--filters);
+		margin-left: calc(var(--page-x) - var(--header-x));
 	}
 	.search input {
 		width: 100%;
