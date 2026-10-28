@@ -205,6 +205,13 @@
 	.card.v-strip {
 		grid-template-columns: 1fr;
 	}
+	/* A window under two thirds of the screen (+layout.svelte): no cover thumbnail. */
+	:global(html.narrow) .card.v-list {
+		grid-template-columns: 1fr;
+	}
+	:global(html.narrow) .cover {
+		display: none;
+	}
 	.card.v-compact {
 		grid-template-columns: 1fr;
 		padding: 8px 16px;

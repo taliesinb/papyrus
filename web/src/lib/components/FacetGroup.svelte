@@ -78,10 +78,10 @@
 							class:selected={v.selected}
 							class:empty={v.count === 0}
 							href={hrefToggle(url, facet.key, v.value)}
+							aria-current={v.selected ? 'true' : undefined}
 							title={v.hint ? `${v.label} (${v.hint})` : v.label}
 						>
 							<span class="bar" style:width="{(v.count / max) * 100}%"></span>
-							<span class="check" aria-hidden="true">{v.selected ? '✓' : ''}</span>
 							<span class="label">{v.label}</span>
 							<span class="count">{v.count}</span>
 						</a>
@@ -161,9 +161,16 @@
 		background: var(--panel);
 		text-decoration: none;
 	}
+	/* Selected: the highlight alone (no tick column), so rows are just label and count. */
 	.row.selected {
-		color: var(--accent);
-		background: var(--accent-dim);
+		color: #a9c8ff;
+		background: #1d3150;
+	}
+	.row.selected .count {
+		color: #a9c8ff;
+	}
+	.row.selected .bar {
+		background: color-mix(in srgb, var(--accent) 16%, transparent);
 	}
 	.row.empty {
 		color: var(--faint);
@@ -183,15 +190,9 @@
 		border-radius: 0;
 		pointer-events: none;
 	}
-	.check,
 	.label,
 	.count {
 		position: relative;
-	}
-	.check {
-		width: 10px;
-		font-size: 10px;
-		flex: none;
 	}
 	.label {
 		flex: 1;

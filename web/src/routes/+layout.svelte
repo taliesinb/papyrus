@@ -41,6 +41,15 @@
 
 	onMount(installTooltips);
 
+	// <html class="narrow"> while the window is under two thirds of the screen's width:
+	// the List view then drops its cover thumbnails (WorkCard).
+	onMount(() => {
+		const fit = () => document.documentElement.classList.toggle('narrow', innerWidth < (screen.width * 2) / 3);
+		fit();
+		addEventListener('resize', fit);
+		return () => removeEventListener('resize', fit);
+	});
+
 	onMount(() => {
 		const poll = async () => {
 			try {
