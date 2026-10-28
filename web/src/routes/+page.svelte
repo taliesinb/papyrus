@@ -266,18 +266,19 @@
 </div>
 
 <style>
-	/* Two columns of filter cards, narrower in narrower windows (196px at
-	   ~1500px and below, 252px from ~1940px); the results take the rest. */
+	/* Two columns of filter cards: A (subjects, fields, authors: long names)
+	   at --card, B (kind, folder, site, status: short ones) at 62% of it.
+	   --card is 196px at ~1500px and below, 252px from ~1940px; the results
+	   take the rest. */
 	.layout {
 		--card: clamp(196px, 13vw, 252px);
+		--card-b: max(150px, calc(var(--card) * 0.62));
+		--scrollbar: 10px; /* the aside's always-shown track (app.css) */
 		--card-gap: 10px;
-		--cols: 2;
 		display: grid;
 		/* Left-aligned; the results column takes all remaining width (capped
 		   only on very wide screens, where lines would get unreadably long). */
-		grid-template-columns:
-			calc(var(--cols) * var(--card) + (var(--cols) - 1) * var(--card-gap))
-			minmax(0, 1fr);
+		grid-template-columns: calc(var(--card) + var(--card-gap) + var(--card-b) + var(--scrollbar)) minmax(0, 1fr);
 		justify-content: start;
 		gap: 24px;
 		padding: 18px 22px 40px;
@@ -296,7 +297,7 @@
 	   happens to the others. One column = A stacked above B. */
 	.cards {
 		display: grid;
-		grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+		grid-template-columns: minmax(0, var(--card)) minmax(0, var(--card-b));
 		column-gap: var(--card-gap);
 		align-items: start;
 	}

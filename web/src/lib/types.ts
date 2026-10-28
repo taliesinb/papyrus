@@ -5,6 +5,8 @@ export interface Author {
 	personId: number | null;
 	orcid: string | null;
 	openalexId: string | null;
+	/** Linked to the person only by an unambiguous name match, on the read side (library.ts). */
+	byName?: boolean;
 }
 
 export interface Ident {

@@ -29,7 +29,7 @@ export const FACETS: { key: string; label: string; limit: number }[] = [
 	{ key: 'field', label: 'Field (model)', limit: 12 },
 	{ key: 'author', label: 'Author', limit: 10 },
 	{ key: 'folder', label: 'Folder', limit: 8 },
-	{ key: 'origin', label: 'Downloaded from', limit: 8 },
+	{ key: 'origin', label: 'Site', limit: 8 }, // the host it was downloaded from
 	{ key: 'status', label: 'Status', limit: 8 }
 ];
 

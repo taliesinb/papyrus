@@ -82,7 +82,7 @@
 							title={v.hint ? `${v.label} (${v.hint})` : v.label}
 						>
 							<span class="bar" style:width="{(v.count / max) * 100}%"></span>
-							<span class="label">{v.label}</span>
+							<span class="label" class:from-end={facet.key === 'origin' || facet.key === 'folder'}>{v.label}</span>
 							<span class="count">{v.count}</span>
 						</a>
 					</li>
@@ -200,6 +200,11 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* Hosts and folders keep their end (…hubusercontent.com): the ellipsis goes on the left. */
+	.label.from-end {
+		direction: rtl;
+		text-align: left;
 	}
 	.count {
 		font-family: var(--mono);

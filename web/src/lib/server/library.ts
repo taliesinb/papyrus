@@ -89,6 +89,19 @@ function build(version: number): Library {
 		 FROM works WHERE status <> 'merged'`
 	);
 
+	// An author row the pipeline left unlinked (its work matched no external record, so no
+	// ORCID/OpenAlex id tied it to a person) is shown as the person whose name it is, when
+	// exactly one person has that name: otherwise the Author facet lists the same name
+	// twice, once per person and once as a bare name. A read-side view only: the database
+	// keeps person_id NULL, and the link carries no ORCID/OpenAlex badge (byName).
+	const nameKey = (s: string) =>
+		s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[.\s]+/g, ' ').trim();
+	const peopleByName = new Map<string, { id: number; name: string }[]>();
+	for (const p of all<{ id: number; display_name: string }>(`SELECT id, display_name FROM people`)) {
+		const k = nameKey(p.display_name);
+		peopleByName.set(k, [...(peopleByName.get(k) ?? []), { id: p.id, name: p.display_name }]);
+	}
+
 	const authors = new Map<number, Author[]>();
 	for (const r of all<{
 		work_id: number;
@@ -103,11 +116,14 @@ function build(version: number): Library {
 		 WHERE wa.role = 'author' ORDER BY wa.work_id, wa.position`
 	)) {
 		const list = authors.get(r.work_id) ?? [];
+		const named = r.person_id == null ? peopleByName.get(nameKey(r.raw_name)) : undefined;
+		const byName = named?.length === 1 ? named[0] : undefined;
 		list.push({
-			name: r.display_name ?? r.raw_name,
-			personId: r.person_id,
+			name: r.display_name ?? byName?.name ?? r.raw_name,
+			personId: r.person_id ?? byName?.id ?? null,
 			orcid: r.orcid,
-			openalexId: r.openalex_id
+			openalexId: r.openalex_id,
+			...(byName ? { byName: true } : {})
 		});
 		authors.set(r.work_id, list);
 	}

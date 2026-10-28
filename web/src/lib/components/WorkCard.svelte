@@ -422,6 +422,8 @@
 		text-overflow: ellipsis;
 	}
 	a.lz {
+		/* A long host keeps its end (…hubusercontent.com). */
+		direction: rtl;
 		text-decoration: underline;
 		text-decoration-color: var(--faint);
 		text-underline-offset: 2px;
