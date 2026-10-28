@@ -36,7 +36,7 @@
 		return hrefWith(url, { sort: value === 'auto' ? null : value, seed: null });
 	}
 
-	// Two fixed columns of filter cards (stacked in one column when narrow).
+	// Two fixed columns of filter cards, at every window width.
 	// Year leads column A and Kind leads column B. arXiv category is hidden,
 	// except while one is selected (from a cs.LG-style chip on a card), so
 	// that selection stays visible and can be undone.
@@ -266,12 +266,12 @@
 </div>
 
 <style>
-	/* The results column is capped at a readable width; on wide windows the
-	   spare width gives the filters a second column. */
+	/* Two columns of filter cards, narrower in narrower windows (196px at
+	   ~1500px and below, 252px from ~1940px); the results take the rest. */
 	.layout {
-		--card: 252px;
-		--card-gap: 12px;
-		--cols: 1;
+		--card: clamp(196px, 13vw, 252px);
+		--card-gap: 10px;
+		--cols: 2;
 		display: grid;
 		/* Left-aligned; the results column takes all remaining width (capped
 		   only on very wide screens, where lines would get unreadably long). */
@@ -279,13 +279,8 @@
 			calc(var(--cols) * var(--card) + (var(--cols) - 1) * var(--card-gap))
 			minmax(0, 1fr);
 		justify-content: start;
-		gap: 28px;
+		gap: 24px;
 		padding: 18px 22px 40px;
-	}
-	@media (min-width: 1720px) {
-		.layout {
-			--cols: 2;
-		}
 	}
 	aside {
 		position: sticky;
@@ -321,8 +316,13 @@
 		min-width: 0;
 		max-width: 2000px;
 	}
+	.match {
+		/* Its 80px basis decides wrapping; then it grows into the spare width, up to 190px. */
+		flex: 1 1 80px;
+		max-width: 190px;
+	}
 	.match input {
-		width: 190px;
+		width: 100%;
 		padding: 4px 10px;
 		font-size: 12.5px;
 		background: var(--panel);
@@ -331,11 +331,12 @@
 		border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 		background: #16233a;
 	}
+	/* One row: the filter box shrinks first; past that the view switch wraps under the sorts. */
 	.toolbar {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 12px;
+		gap: 8px 12px;
 		padding: 0 16px 10px;
 		border-bottom: 1px solid var(--border);
 	}
@@ -346,8 +347,15 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.controls {
+	.count {
 		flex: none;
+	}
+	.controls {
+		flex: 1 1 0;
+		min-width: 0;
+	}
+	.controls .seg :global(.btn) {
+		padding: 3px 8px;
 	}
 	.count strong {
 		color: var(--text-strong);
@@ -357,8 +365,10 @@
 	}
 	.controls {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		align-items: center;
-		gap: 12px;
+		gap: 8px 10px;
 	}
 	.seeds {
 		display: flex;
