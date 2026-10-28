@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { collapsed } from '#lib/collapse.svelte.ts';
+	import { facetFocus } from '#lib/facetFocus.svelte.ts';
 	import FacetGroup from '#lib/components/FacetGroup.svelte';
 	import PipelineStatus from '#lib/components/PipelineStatus.svelte';
 	import WorkCard from '#lib/components/WorkCard.svelte';
@@ -55,6 +56,7 @@
 	);
 
 	onMount(() => collapsed.load());
+	afterNavigate(() => facetFocus.navigated());
 
 	// The library search (full text, ?q=), over the filter columns; debounced into the URL.
 	let query = $state(page.url.searchParams.get('q') ?? '');
