@@ -24,6 +24,7 @@ export interface Filters {
 /** Facet keys, in display order. */
 export const FACETS: { key: string; label: string; limit: number }[] = [
 	{ key: 'kind', label: 'Kind', limit: 20 },
+	{ key: 'found', label: 'Found', limit: 4 }, // when it was first found (FOUND_WINDOWS)
 	{ key: 'arxiv', label: 'arXiv category', limit: 12 },
 	{ key: 'subject', label: 'Subject', limit: 12 },
 	{ key: 'field', label: 'Field (model)', limit: 12 },
@@ -65,8 +66,35 @@ export function parseFilters(url: URL): Filters {
 // ---------------------------------------------------------------------------
 // Facet values of a work
 
-function facetValues(lib: Library, w: WorkSummary, key: string): { value: string; label: string; hint?: string }[] {
+/**
+ * The Found facet: windows back from now over a work's earliest discovery (addedAt).
+ * They overlap (a work found ten minutes ago is in all four), and the facet always
+ * lists all four, in this order. "today" is since local midnight on the server.
+ */
+const FOUND_WINDOWS: { value: string; label: string; hint: string; since: (now: Date) => number }[] = [
+	{
+		value: 'today',
+		label: 'today',
+		hint: 'since midnight',
+		since: (now) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+	},
+	{ value: 'hour', label: '< hour', hint: 'in the last hour', since: (now) => now.getTime() - 3600e3 },
+	{ value: 'day', label: '< day', hint: 'in the last 24 hours', since: (now) => now.getTime() - 86400e3 },
+	{ value: 'month', label: '< month', hint: 'in the last 30 days', since: (now) => now.getTime() - 30 * 86400e3 }
+];
+
+function facetValues(
+	lib: Library,
+	w: WorkSummary,
+	key: string,
+	now: Date
+): { value: string; label: string; hint?: string }[] {
 	switch (key) {
+		case 'found': {
+			const t = w.addedAt ? Date.parse(w.addedAt) : NaN;
+			if (!Number.isFinite(t)) return [];
+			return FOUND_WINDOWS.filter((fw) => t >= fw.since(now)).map(({ value, label, hint }) => ({ value, label, hint }));
+		}
 		case 'kind':
 			return [{ value: w.kind ?? 'unknown', label: w.kind ?? 'unknown' }];
 		case 'status':
@@ -217,10 +245,11 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 	if (!facetSel.status) facetSel.status = ['candidate', 'confirmed'];
 
 	const keys = Object.keys(facetSel);
+	const now = new Date();
 	const valuesOf = new Map<number, Record<string, { value: string; label: string; hint?: string }[]>>();
 	for (const w of lib.works) {
 		const rec: Record<string, { value: string; label: string; hint?: string }[]> = {};
-		for (const fd of FACETS) rec[fd.key] = facetValues(lib, w, fd.key);
+		for (const fd of FACETS) rec[fd.key] = facetValues(lib, w, fd.key, now);
 		valuesOf.set(w.id, rec);
 	}
 
@@ -245,6 +274,11 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 
 	const facets: Facet[] = FACETS.map((fd) => {
 		const entries = new Map<string, FacetValue & { total: number }>();
+		// Found: all four windows, in their own order, whether or not anything falls in them.
+		if (fd.key === 'found')
+			FOUND_WINDOWS.forEach(({ value, label, hint }, i) =>
+				entries.set(value, { value, label, hint, count: 0, total: -i, selected: false })
+			);
 		for (const w of lib.works) {
 			if (!inUniverse(w, fd.key)) continue;
 			for (const v of valuesOf.get(w.id)![fd.key]) {
@@ -268,9 +302,9 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 				entries.set(s, { value: s, label: labelFor(lib, fd.key, s), count: 0, total: 0, selected: true });
 		for (const e of entries.values()) e.selected = sel.includes(e.value);
 		const values = [...entries.values()]
-			.sort((a, b) => b.total - a.total || a.label.localeCompare(b.label))
+			.sort((a, b) => (fd.key === 'found' ? 0 : b.total - a.total || a.label.localeCompare(b.label)))
 			.map(({ total: _total, ...v }) => v);
-		return { key: fd.key, label: fd.label, values };
+		return { key: fd.key, label: fd.label, values, ...(fd.key === 'found' ? { fixed: true } : {}) };
 	});
 
 	// Year bars: counts follow the other filters, but the axis spans the universe.

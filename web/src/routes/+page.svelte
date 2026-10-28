@@ -38,7 +38,7 @@
 	// except while one is selected (from a cs.LG-style chip on a card), so
 	// that selection stays visible and can be undone.
 	const COL_A = ['subject', 'field', 'author'];
-	const COL_B = ['kind', 'folder', 'origin', 'status'];
+	const COL_B = ['kind', 'found', 'folder', 'origin', 'status'];
 	const showArxiv = $derived(!!data.filters.facets.arxiv?.length);
 	const facetByKey = $derived(new Map(data.facets.map((f) => [f.key, f])));
 	// Over the whole library the author distribution is nearly flat (almost

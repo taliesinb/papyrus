@@ -94,6 +94,8 @@ export interface Facet {
 	key: string;
 	label: string;
 	values: FacetValue[];
+	/** A fixed list (Found): every value is shown, in this order, even with a zero count. */
+	fixed?: boolean;
 }
 
 export interface ContextInfo {

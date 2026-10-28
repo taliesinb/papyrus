@@ -25,6 +25,7 @@
 			const keep = new Set(frozen);
 			return facet.values.filter((v) => keep.has(v.value) || v.selected);
 		}
+		if (facet.fixed) return facet.values;
 		return facet.values.filter((v) => v.count > 0 || v.selected);
 	});
 	$effect(() => {
