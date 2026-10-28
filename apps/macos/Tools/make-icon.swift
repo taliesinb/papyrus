@@ -5,7 +5,9 @@
 //   options: --glyph-color #hex --tile-top #hex --tile-bottom #hex
 //
 // Geometry follows Apple's Big Sur template: the tile fills 82.4 % of the
-// canvas with a 22.4 % corner radius; the glyph is centred at 58 % of the tile.
+// canvas with a 22.4 % corner radius. The glyph's viewBox is drawn at
+// --glyph-scale of the tile (default 0.84; boxicons pad their 24-unit box by
+// 2 units a side, so the mark spans 70 % of the tile: as heavy as Chrome's circle).
 import Cocoa
 
 func fail(_ message: String) -> Never {
@@ -23,6 +25,7 @@ func color(_ hex: String) -> NSColor {
 var args = Array(CommandLine.arguments.dropFirst())
 var glyphColor = "#7fb0ff", tileTop = "#232833", tileBottom = "#0d0f12"
 var iconset: String?
+var glyphScale: CGFloat = 0.84
 var png: (size: Int, path: String)?
 var positional: [String] = []
 while !args.isEmpty {
@@ -36,6 +39,9 @@ while !args.isEmpty {
     case "--tile-top": tileTop = value()
     case "--tile-bottom": tileBottom = value()
     case "--iconset": iconset = value()
+    case "--glyph-scale":
+        guard let scale = Double(value()), scale > 0, scale <= 1 else { fail("bad --glyph-scale") }
+        glyphScale = CGFloat(scale)
     case "--png":
         guard let size = Int(value()) else { fail("bad --png size") }
         png = (size, value())
@@ -78,7 +84,7 @@ func render(canvas: Int, fullBleed: Bool) -> NSBitmapImageRep {
         rim.lineWidth = max(1, size * 0.003)
         rim.stroke()
     }
-    let side = tile * 0.58
+    let side = tile * glyphScale
     glyph.draw(in: NSRect(x: (size - side) / 2, y: (size - side) / 2, width: side, height: side), from: .zero, operation: .sourceOver, fraction: 1)
     NSGraphicsContext.restoreGraphicsState()
     return rep
