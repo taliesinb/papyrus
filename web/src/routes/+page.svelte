@@ -16,9 +16,6 @@
 	const view = $derived((page.url.searchParams.get('view') ?? 'list') as 'list' | 'strip' | 'compact');
 	const like = $derived(data.filters.like);
 	const facetLimits: Record<string, number> = { kind: 12, status: 4, folder: 6, origin: 6 };
-	const anyFilter = $derived(
-		Object.keys(data.filters.facets).length > 0 || data.filters.yearFrom != null || data.filters.yearTo != null
-	);
 
 	const SORTS: { value: string; label: string; title: string }[] = [
 		{ value: 'auto', label: 'Best', title: '' },
@@ -166,15 +163,7 @@
 
 <div class="layout">
 	<aside {@attach autoHideScrollbar}>
-		<!-- Always occupies its row, so it never pushes the panels down when it appears. -->
-		<div class="clear-all">
-			<a
-				class:hidden={!anyFilter}
-				tabindex={anyFilter ? 0 : -1}
-				href={hrefWith(url, Object.fromEntries([...Object.keys(data.filters.facets), 'from', 'to'].map((k) => [k, null])))}
-				>× clear filters</a
-			>
-		</div>
+		<!-- No global "clear filters": each panel has its own clear, and the panels' tops line up with the toolbar. -->
 		<div class="cards">
 			<div class="col">
 				<YearHistogram years={data.years} range={data.yearRange} from={data.filters.yearFrom} to={data.filters.yearTo} {url} />
@@ -350,15 +339,6 @@
 	}
 	.col {
 		min-width: 0;
-	}
-	.clear-all {
-		height: 18px;
-		font-size: 12px;
-		margin-bottom: 8px;
-		padding-left: 6px;
-	}
-	.clear-all .hidden {
-		visibility: hidden;
 	}
 	.results {
 		min-width: 0;
