@@ -89,12 +89,12 @@
 	<link rel="apple-touch-icon" href={asset('apple-touch-icon.png')} />
 </svelte:head>
 
+<!-- Three cells: the name centred over the first filter column, the search centred in the
+     window, the pipeline status and the Library / Files switch at the right. -->
 <header class="top">
-	<a class="brand" href={href('/')}>papyrus</a>
-	<nav>
-		<a href={href('/')} class:current={page.route.id === '/'}>Library</a>
-		<a href={href('/files')} class:current={page.route.id === '/files'}>Files</a>
-	</nav>
+	<div class="left">
+		<a class="brand" href={href('/')}>papyrus</a>
+	</div>
 	<form class="search" role="search" onsubmit={(e) => (e.preventDefault(), submit(true))}>
 		<input
 			bind:this={searchEl}
@@ -106,7 +106,7 @@
 		/>
 		<kbd class="hint">/</kbd>
 	</form>
-	<div class="status">
+	<div class="right">
 		{#if changed}
 			<button class="btn active" type="button" onclick={refresh} title="The pipeline wrote to the database"
 				>library updated · refresh</button
@@ -117,12 +117,10 @@
 				><span class="pulse"></span>{r.command} running · {relativeTime(r.startedAt)}</span
 			>
 		{/each}
-		<span
-			class="counts"
-			title="{status.counts.files} files · {status.counts.people} people · {status.counts.pages} pages of text indexed"
-		>
-			{status.counts.works} works · {status.counts.files} files
-		</span>
+		<nav>
+			<a href={href('/')} class:current={page.route.id === '/'}>Library</a>
+			<a href={href('/files')} class:current={page.route.id === '/files'}>Files</a>
+		</nav>
 	</div>
 </header>
 
@@ -135,16 +133,26 @@
 		position: sticky;
 		top: 0;
 		z-index: 20;
-		display: flex;
+		display: grid;
+		/* The sides share the spare width equally, so the search sits in the middle (unless
+		   a side's content needs more, e.g. a running pipeline and "library updated"). */
+		grid-template-columns: minmax(max-content, 1fr) minmax(0, 640px) minmax(max-content, 1fr);
 		align-items: center;
 		gap: 20px;
 		height: 52px;
-		padding: 0 18px;
+		padding: 0 var(--header-x);
 		background: color-mix(in srgb, var(--bg) 88%, transparent);
 		backdrop-filter: blur(10px);
 		border-bottom: 1px solid var(--border);
 	}
+	/* Spans the first filter column of the Library page (app.css: --page-x, --card). */
+	.left {
+		padding-left: calc(var(--page-x) - var(--header-x));
+	}
 	.brand {
+		display: block;
+		width: var(--card);
+		text-align: center;
 		font-family: var(--serif);
 		font-size: 20px;
 		font-weight: 700;
@@ -177,8 +185,6 @@
 	}
 	.search {
 		position: relative;
-		flex: 1;
-		max-width: 640px;
 	}
 	.search input {
 		width: 100%;
@@ -192,9 +198,9 @@
 		transform: translateY(-50%);
 		pointer-events: none;
 	}
-	.status {
-		margin-left: auto;
+	.right {
 		display: flex;
+		justify-content: flex-end;
 		align-items: center;
 		gap: 12px;
 		font-size: 12px;

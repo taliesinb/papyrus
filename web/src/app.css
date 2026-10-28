@@ -1,5 +1,11 @@
 :root {
 	color-scheme: dark;
+	/* Page geometry shared by the header and the Library page: the header's side padding,
+	   the page's left margin, and the first filter column's width (196px at ~1500px
+	   and below, 252px from ~1940px). */
+	--header-x: 18px;
+	--page-x: 22px;
+	--card: clamp(196px, 13vw, 252px);
 	--bg: #0d0f12;
 	--bg-raised: #13161b;
 	--panel: #171a20;

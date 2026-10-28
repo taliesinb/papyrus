@@ -292,7 +292,7 @@
 	   --card is 196px at ~1500px and below, 252px from ~1940px; the results
 	   take the rest. */
 	.layout {
-		--card: clamp(196px, 13vw, 252px);
+		/* --card, --page-x: app.css (the header centres the name over column A). */
 		--card-b: max(150px, calc(var(--card) * 0.62));
 		--scrollbar: 10px; /* the aside's always-shown track (app.css) */
 		--card-gap: 10px;
@@ -303,7 +303,8 @@
 		justify-content: start;
 		/* Small: the results' own 16px inset (cards, toolbar, dividers) does the separating. */
 		gap: 5px;
-		padding: 18px 22px 40px;
+		/* Right: the results' own 16px inset brings toolbar and text to the header's edge. */
+		padding: 18px calc(var(--header-x) - 16px) 40px var(--page-x);
 	}
 	aside {
 		position: sticky;
