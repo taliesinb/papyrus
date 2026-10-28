@@ -92,6 +92,38 @@
 		document.querySelector(`[data-work="${hits[focused].id}"]`)?.scrollIntoView({ block: 'nearest' });
 	}
 
+	// The filters' scrollbar thumb shows only while the pointer is over them or they are
+	// scrolling (and, being a thumb, only when they overflow). Its track is always
+	// reserved (overflow-y: scroll, --scrollbar), so it appearing never moves anything.
+	function autoHideScrollbar(el: HTMLElement) {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const show = () => {
+			clearTimeout(timer);
+			el.classList.add('show-bar');
+		};
+		const hideSoon = (ms: number) => {
+			clearTimeout(timer);
+			timer = setTimeout(() => {
+				if (!el.matches(':hover')) el.classList.remove('show-bar');
+			}, ms);
+		};
+		const enter = () => show();
+		const leave = () => hideSoon(600);
+		const scroll = () => {
+			show();
+			hideSoon(1000);
+		};
+		el.addEventListener('pointerenter', enter);
+		el.addEventListener('pointerleave', leave);
+		el.addEventListener('scroll', scroll, { passive: true });
+		return () => {
+			clearTimeout(timer);
+			el.removeEventListener('pointerenter', enter);
+			el.removeEventListener('pointerleave', leave);
+			el.removeEventListener('scroll', scroll);
+		};
+	}
+
 	function onkeydown(e: KeyboardEvent) {
 		const t = e.target as HTMLElement;
 		if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -133,7 +165,7 @@
 </svelte:head>
 
 <div class="layout">
-	<aside>
+	<aside {@attach autoHideScrollbar}>
 		<!-- Always occupies its row, so it never pushes the panels down when it appears. -->
 		<div class="clear-all">
 			<a
@@ -293,6 +325,20 @@
 		   honoured everywhere), so cards never narrow when the list grows. */
 		overflow-y: scroll;
 		scrollbar-gutter: stable;
+	}
+	/* Thumb hidden unless the pointer is over the filters, or autoHideScrollbar's
+	   .show-bar (while scrolling, and briefly after leaving); the track stays reserved. */
+	aside::-webkit-scrollbar-thumb {
+		background: transparent;
+		border-color: transparent;
+	}
+	aside:hover::-webkit-scrollbar-thumb,
+	aside:global(.show-bar)::-webkit-scrollbar-thumb {
+		background: #2a303a;
+		border-color: var(--bg);
+	}
+	aside::-webkit-scrollbar-thumb:hover {
+		background: #3a414d;
 	}
 	/* Fixed columns, no flowing: each card stays in its column whatever
 	   happens to the others. One column = A stacked above B. */
