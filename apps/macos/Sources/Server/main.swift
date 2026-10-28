@@ -82,8 +82,26 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         refreshIcon()
 
+        installTerminationSignals()
         start()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
+    }
+
+    var signalSources: [DispatchSourceSignal] = []
+
+    /// SIGTERM / SIGINT (`kill`, build.py --install, launchd) quit like Quit does: stop the web server
+    /// and withdraw the tailscale path, instead of dying and leaving both behind.
+    func installTerminationSignals() {
+        for number in [SIGTERM, SIGINT] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler { [weak self] in
+                self?.log.line("signal \(number): quitting")
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            signalSources.append(source)
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

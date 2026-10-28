@@ -28,6 +28,7 @@ import platform
 import plistlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -167,16 +168,36 @@ def assemble(out: Path, name: str, bundle_id: str, executable: Path, plist: byte
     return app
 
 
-def quit_app(bundle_id: str) -> bool:
-    """Ask a running app to quit. Returns whether it was running."""
-    running = run(["/usr/bin/osascript", "-e", f'application id "{bundle_id}" is running']).strip() == "true"
-    if running:
-        subprocess.run(["/usr/bin/osascript", "-e", f'tell application id "{bundle_id}" to quit'], capture_output=True)
-        for _ in range(50):
-            if run(["/usr/bin/osascript", "-e", f'application id "{bundle_id}" is running']).strip() != "true":
-                break
-            time.sleep(0.2)
-    return running
+def quit_app(executable: str) -> bool:
+    """Quit every running copy of one of our apps, wherever its bundle is. Returns whether one was running.
+
+    By process, not bundle id: AppleScript's `application id` fails outright for an id LaunchServices
+    does not know (a bundle that was removed or never opened). Both apps quit cleanly on SIGTERM
+    (the server stops its web server and withdraws its tailscale path first).
+    """
+    found = subprocess.run(["/usr/bin/pgrep", "-x", executable], capture_output=True, text=True).stdout.split()
+    pids = []
+    for pid in map(int, found):
+        path = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        if path.endswith(f".app/Contents/MacOS/{executable}"):
+            pids.append(pid)
+            os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not any(alive(pid) for pid in pids):
+            break
+        time.sleep(0.2)
+    for pid in pids:
+        if alive(pid):
+            os.kill(pid, signal.SIGKILL)
+    return bool(pids)
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def main() -> None:
@@ -234,8 +255,8 @@ def main() -> None:
     if args.install:
         dest = args.install.expanduser().resolve()
         dest.mkdir(parents=True, exist_ok=True)
-        app_was_running = quit_app(APP_ID)
-        server_was_running = quit_app(SERVER_ID)
+        app_was_running = quit_app("Papyrus")
+        server_was_running = quit_app("papyrus-server")
         for bundle in (server, app):
             target = dest / bundle.name
             shutil.rmtree(target, ignore_errors=True)
