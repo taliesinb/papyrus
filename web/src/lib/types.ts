@@ -38,6 +38,10 @@ export interface FileRef {
 export interface PageHit {
 	fileId: number;
 	page: number;
+	/** body | references | index | contents */
+	kind: string;
+	/** The PDF outline entry the page belongs to. */
+	section: string | null;
 	snippet: string; // \u0002 … \u0003 mark highlighted spans
 }
 
@@ -80,6 +84,8 @@ export interface WorkHit extends WorkSummary {
 	titleHl?: string;
 	abstractHl?: string;
 	pageHits?: PageHit[];
+	/** How many pages match in all (pageHits holds the best few). */
+	matchingPages?: number;
 }
 
 export interface FacetValue {

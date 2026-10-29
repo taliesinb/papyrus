@@ -143,12 +143,44 @@ function facetValues(
 // ---------------------------------------------------------------------------
 // Full-text search
 
+// The ranking mirrors src/papyrus/search.py (keep the two in step):
+// * pages: bm25 times a weight for the page's kind (references, index and contents pages match
+//   almost anything); a file scores its best three pages with weights 1, 1/2, 1/4;
+// * works: Reciprocal Rank Fusion of the metadata ranking and the page ranking, since bm25
+//   values from two indexes are not on one scale.
+// bm25() can't be used in an aggregate query, even inside a subquery (SQLite flattens it), hence
+// the MATERIALIZED CTE. Snippets are made only for the hits shown (fillSnippets), and their rowid
+// filter is written `+rowid IN (...)`: plain `rowid IN` makes FTS5 rerun the MATCH once per rowid
+// (1.7 s instead of 24 ms for 180 snippets of "t"*).
+
 interface SearchMatch {
 	score: number;
 	titleHl?: string;
 	abstractHl?: string;
 	pageHits: PageHit[];
+	/** All matching pages of the work's best file. */
+	matchingPages: number;
 }
+
+const RRF_K = 60;
+const KIND_WEIGHT: Record<string, number> = { body: 1.0, references: 0.2, index: 0.1, contents: 0.1 };
+const KIND_CASE =
+	'CASE p.kind ' +
+	Object.entries(KIND_WEIGHT)
+		.map(([k, w]) => `WHEN '${k}' THEN ${w}`)
+		.join(' ') +
+	' ELSE 1.0 END';
+
+const PAGE_SQL = `
+	WITH h AS MATERIALIZED (
+		SELECT rowid AS id, bm25(file_pages_fts) AS r FROM file_pages_fts WHERE file_pages_fts MATCH ?),
+	s AS (SELECT p.id, p.file_id, p.page, p.kind, -h.r * (${KIND_CASE}) AS score
+	      FROM h JOIN file_pages p ON p.id = h.id),
+	k AS (SELECT *, row_number() OVER (PARTITION BY file_id ORDER BY score DESC, page) AS n FROM s)
+	SELECT file_id, sum(score * (CASE n WHEN 1 THEN 1.0 WHEN 2 THEN 0.5 WHEN 3 THEN 0.25 ELSE 0 END)) AS score,
+	       count(*) AS pages,
+	       json_group_array(json_object('page', page, 'kind', kind)) FILTER (WHERE n <= 3) AS top
+	FROM k GROUP BY file_id ORDER BY score DESC`;
 
 const HL_OPEN = '\u0002';
 const HL_CLOSE = '\u0003';
@@ -164,12 +196,13 @@ function looksAdvanced(q: string): boolean {
 	return /["*:()^]|\b(AND|OR|NOT|NEAR)\b/.test(q);
 }
 
-function runFts<T>(sql: string, q: string): T[] {
+/** Run a query whose first parameter is the MATCH expression. */
+function runFts<T>(sql: string, q: string, ...params: (string | number)[]): T[] {
 	const attempts = looksAdvanced(q) ? [q, ftsQuery(q)] : [ftsQuery(q)];
 	for (const a of attempts) {
 		if (!a) continue;
 		try {
-			return all<T>(sql, a);
+			return all<T>(sql, a, ...params);
 		} catch {
 			/* FTS5 syntax error: fall back to the tokenised form */
 		}
@@ -186,34 +219,62 @@ export function search(lib: Library, q: string): Map<number, SearchMatch> {
 		 FROM works_fts WHERE works_fts MATCH ? ORDER BY rank LIMIT 1000`,
 		q
 	);
-	for (const r of meta) {
+	meta.forEach((r, i) => {
 		out.set(r.id, {
-			score: -r.rank,
+			score: 1 / (RRF_K + i + 1),
 			titleHl: r.title_hl?.includes(HL_OPEN) ? r.title_hl : undefined,
 			abstractHl: r.abs?.includes(HL_OPEN) ? r.abs : undefined,
-			pageHits: []
+			pageHits: [],
+			matchingPages: 0
 		});
-	}
-	const pages = runFts<{ file_id: number; page: number; snip: string; rank: number }>(
-		`SELECT p.file_id, p.page, snippet(file_pages_fts, 0, '${HL_OPEN}', '${HL_CLOSE}', '…', 20) AS snip,
-		        bm25(file_pages_fts) AS rank
-		 FROM file_pages_fts JOIN file_pages p ON p.id = file_pages_fts.rowid
-		 WHERE file_pages_fts MATCH ? ORDER BY rank LIMIT 2000`,
-		q
-	);
-	for (const r of pages) {
-		for (const wid of lib.fileToWorks.get(r.file_id) ?? []) {
+	});
+	// Files that belong to no work (unpromoted, personal paperwork) never show up here.
+	const files = runFts<{ file_id: number; score: number; pages: number; top: string }>(PAGE_SQL, q);
+	let rank = 0;
+	const counted = new Set<number>();
+	for (const f of files) {
+		for (const wid of lib.fileToWorks.get(f.file_id) ?? []) {
+			if (counted.has(wid)) continue; // a second file of the same work: its best file counted
+			counted.add(wid);
+			rank++;
 			let m = out.get(wid);
 			if (!m) {
-				m = { score: 0, pageHits: [] };
+				m = { score: 0, pageHits: [], matchingPages: 0 };
 				out.set(wid, m);
 			}
-			if (m.pageHits.length === 0) m.score += -r.rank * 0.5;
-			else m.score += -r.rank * 0.05;
-			if (m.pageHits.length < 4) m.pageHits.push({ fileId: r.file_id, page: r.page, snippet: r.snip });
+			m.score += 1 / (RRF_K + rank);
+			m.matchingPages = f.pages;
+			m.pageHits = (JSON.parse(f.top) as { page: number; kind: string }[])
+				.sort((a, b) => a.page - b.page)
+				.map((t) => ({ fileId: f.file_id, page: t.page, kind: t.kind, section: null, snippet: '' }));
 		}
 	}
 	return out;
+}
+
+/** Snippets and outline sections for the page hits shown (in place). */
+export function fillSnippets(q: string, hits: PageHit[]): void {
+	if (!hits.length) return;
+	const rows = runFts<{ file_id: number; page: number; snip: string; section: string | null }>(
+		`SELECT p.file_id, p.page, snippet(file_pages_fts, 0, ?2, ?3, '…', 20) AS snip,
+		        (SELECT o.title FROM file_outline o WHERE o.file_id = p.file_id AND o.page <= p.page
+		          ORDER BY o.page DESC, o.position DESC LIMIT 1) AS section
+		 FROM file_pages_fts JOIN file_pages p ON p.id = file_pages_fts.rowid
+		 WHERE file_pages_fts MATCH ?1 AND +file_pages_fts.rowid IN (
+		   SELECT p2.id FROM file_pages p2 JOIN json_each(?4) j
+		     ON p2.file_id = j.value ->> '$[0]' AND p2.page = j.value ->> '$[1]')`,
+		q,
+		HL_OPEN,
+		HL_CLOSE,
+		JSON.stringify(hits.map((h) => [h.fileId, h.page]))
+	);
+	const byKey = new Map(rows.map((r) => [`${r.file_id}:${r.page}`, r]));
+	const adjacent = new RegExp(`${HL_CLOSE}(\\s+)${HL_OPEN}`, 'g'); // one highlight for "Monte Carlo"
+	for (const h of hits) {
+		const r = byKey.get(`${h.fileId}:${h.page}`);
+		h.snippet = (r?.snip ?? '').replace(/\s+/g, ' ').replace(adjacent, '$1');
+		h.section = r?.section ?? null;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -367,9 +428,11 @@ export function runQuery(lib: Library, f: Filters): QueryResult {
 			score: sort === 'similar' ? sims?.get(w.id) : m?.score,
 			titleHl: m?.titleHl,
 			abstractHl: m?.abstractHl,
-			pageHits: m?.pageHits
+			pageHits: m?.pageHits.map((h) => ({ ...h })),
+			matchingPages: m?.matchingPages
 		};
 	});
+	if (f.q) fillSnippets(f.q, hits.flatMap((h) => h.pageHits ?? []));
 
 	return {
 		hits,

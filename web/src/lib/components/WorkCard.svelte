@@ -160,9 +160,16 @@
 				{#each hit.pageHits as ph (ph.fileId + ':' + ph.page)}
 					<li>
 						<a href={workHref({ file: ph.fileId, page: ph.page })}>p.{ph.page}</a>
-						<span><Hl text={ph.snippet} /></span>
+						<span class="ph-text">
+							{#if ph.kind !== 'body'}<span class="ph-kind">{ph.kind}</span>{/if}
+							{#if ph.section}<span class="ph-section" title={ph.section}>{ph.section}</span>{/if}
+							<Hl text={ph.snippet} />
+						</span>
 					</li>
 				{/each}
+				{#if (hit.matchingPages ?? 0) > hit.pageHits.length}
+					<li class="ph-more">+{hit.matchingPages! - hit.pageHits.length} more matching pages</li>
+				{/if}
 			</ul>
 		{/if}
 
@@ -373,6 +380,33 @@
 		font-size: 11.5px;
 		min-width: 34px;
 		flex: none;
+	}
+	.ph-text {
+		min-width: 0;
+	}
+	.ph-section {
+		display: inline-block;
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		vertical-align: bottom;
+		color: var(--muted);
+		margin-right: 6px;
+	}
+	.ph-section::after {
+		content: ' ·';
+	}
+	.ph-kind {
+		font-size: 10.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: var(--faint);
+		margin-right: 6px;
+	}
+	.ph-more {
+		color: var(--muted);
+		padding-left: 42px !important;
 	}
 	.strip {
 		display: grid;
