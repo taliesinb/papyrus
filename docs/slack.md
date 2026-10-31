@@ -14,7 +14,7 @@ unresolved `context_refs` row per link.
 
 | field | where it comes from |
 |---|---|
-| `locator`, `url`: permalink | Built locally: `https://<domain>.slack.com/archives/<channel_id>/p<ts without the dot>`, plus `?thread_ts=<parent ts>&cid=<channel_id>` for thread replies. `chat.getPermalink` would cost one call per message. |
+| `locator`, `url`: permalink | The search match's `permalink`: `https://<domain>.slack.com/archives/<channel_id>/p<ts without the dot>`, plus `?thread_ts=<root ts>` for thread replies (checked against local construction for 928 messages). A full scan builds the same URL locally; `chat.getPermalink` would cost one call per message. |
 | `text`: the message as Markdown | Converted from the message's `blocks` (`rich_text`: links with their labels, user and channel mentions, code, lists), falling back to `text` in Slack's mrkdwn (`<url\|label>`, `<@U123>`, `*bold*`). Mentions are rendered with display names. |
 | `actor`, `actor_id` | `user` (`U…`) of the message; display name from `users.list`, cached per run. Bots have `bot_id`/`username` instead. |
 | `occurred_at` | `ts` (epoch seconds) as UTC ISO 8601. `edited.ts` goes in `extra`. |
