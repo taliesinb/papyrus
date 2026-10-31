@@ -160,7 +160,8 @@ and a CV to works.
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
 
 The recipe for an importer, e.g. a new `contexts/slack.py` (module and CLI
-command `papyrus import-slack`):
+command `papyrus import-slack`; Slack's API, auth, filters and link
+recognition are in [slack.md](slack.md)):
 
 1. **One context per message or entry.**
    * Columns: `kind='slack'`, `locator=<permalink>` (unique per kind),
