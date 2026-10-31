@@ -17,7 +17,7 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | extract | enrich | process | works | work | files | show | search | stats | config | mcp
+uv run papyrus --help                  # scan | download | store | triage | promote | extract | enrich | process | works | work | files | show | search | stats | config | mcp | slack
 uv run papyrus config                  # config file path and the backend/decider in effect
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())

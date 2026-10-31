@@ -546,5 +546,10 @@ def stats(ctx: click.Context) -> None:
         click.echo(f"  pages {r[0]}/{r[1]}: {r[2]}")
 
 
+from .contexts.slack_cli import slack_group  # noqa: E402  (kept out of this file: contexts/slack_cli.py)
+
+main.add_command(slack_group)
+
+
 if __name__ == "__main__":
     main()

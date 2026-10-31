@@ -9,6 +9,14 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     [lmstudio]
     autostart = true      # run `lms server start` when LM Studio's server is off
 
+    [slack]               # `papyrus slack links` defaults (contexts/slack.py)
+    workspace = "symbolica"
+    days = 30
+    dms = false
+    channels = []         # allow list (names or ids); empty = all
+    exclude_channels = []
+    domains = []          # extra hosts counted as paper links
+
 Precedence for each setting: command-line option > environment variable
 (`PAPYRUS_BACKEND`, `PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`) > this file > default.
 """
@@ -39,6 +47,15 @@ decider = "auto"
 [lmstudio]
 # Start LM Studio's local server (`lms server start`) when it isn't running.
 autostart = true
+
+# Defaults for `papyrus slack links` (command-line options override them).
+# [slack]
+# workspace = "myco"        # name the token is stored under (papyrus slack login -w myco)
+# days = 30
+# dms = false               # include direct and group messages
+# channels = []             # only these channels (names or ids); empty = all
+# exclude_channels = []
+# domains = []              # extra hosts (or host/path) counted as paper links
 '''
 
 

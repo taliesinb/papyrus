@@ -54,7 +54,7 @@ and handle them in the resolver.
    * `files:read` (optional, to fetch PDFs uploaded to Slack later)
 2. **Install to the workspace.** If the workspace requires app approval, this
    becomes a request to an admin. That is the one step we can't automate, and
-   the main unknown per workspace.
+   the main unknown per workspace (Symbolica needed no approval).
 3. **Hand the token to papyrus.** Two ways:
    * *Paste* (simplest, recommended first): after installing, the app's
      "OAuth & Permissions" page shows the `xoxp-` user token;
@@ -71,51 +71,51 @@ and handle them in the resolver.
 
 ## Credentials
 
-* **macOS Keychain**, via `/usr/bin/security add-generic-password` /
-  `find-generic-password -w` (no new dependency):
-  service `papyrus.slack`, account `<variant>/<team_id>`. Several workspaces
-  and variants can coexist.
+* **macOS Keychain**, via `/usr/bin/security` (no new dependency): service
+  `papyrus.slack`, account `<variant>/<workspace>`, where `<workspace>` is a
+  short name you choose at login (`release/symbolica`). Several workspaces
+  and variants can coexist. `papyrus slack login` writes it through
+  `security -i` on stdin, so the token never appears in a process list.
 * `PAPYRUS_SLACK_TOKEN` overrides it, as `S2_API_KEY` does for Semantic
-  Scholar (tests, CI, one-offs).
-* Never in `config.toml`, the database, logs or run args. `config.toml` keeps
-  the non-secret settings under `[slack]`: workspace, channel lists, days,
-  domain list.
+  Scholar (tests, one-offs).
+* Never in `config.toml`, the database, the API log (redacted) or run args.
 
-## CLI and filters
+## CLI and filters (built 2026-10-30, `contexts/slack.py`, `contexts/slack_cli.py`)
 
 ```sh
-papyrus slack setup                 # manifest + create-app URL
-papyrus slack login [--workspace W] # paste or OAuth, store in Keychain
-papyrus slack channels              # conversations the token sees, for picking filters
-papyrus import-slack --days 30 [--dms | --no-dms] \
-    [--channel NAME ...] [--exclude-channel NAME ...] \
-    [--domains FILE] [--all-links] [--dry-run]
+papyrus slack setup [--open]          # manifest + create-app URL
+papyrus slack login -w symbolica      # paste the xoxp- token (hidden), check it, store it
+papyrus slack whoami                  # user, team, scopes of the stored token
+papyrus slack links --days 30 [--since YYYY-MM-DD] [--dms | --no-dms] \
+    [--channel NAME ...] [--exclude-channel NAME ...] [--domain HOST[/PATH] ...] \
+    [--all-links] [--json] [-o FILE] [-v]
 ```
 
-* `--days N` sets `oldest` on `conversations.history`. A reply posted today to
-  an older thread is missed unless the thread's root is in range;
-  `search.messages … after:<date>` catches those.
-* `--dms/--no-dms` toggles `im,mpim` in `users.conversations types=`. Default
-  off: DMs are the most private part of the workspace.
-* Channels by name or id; `--channel` is an allow list, `--exclude-channel`
-  a deny list.
-* `--dry-run` prints what would be stored (as JSON lines), so we can review
-  real output before writing to the release library.
-* Cost of a full scan: one `users.conversations` page, one
-  `conversations.history` call per channel per 1,000 messages, and one
-  `conversations.replies` per thread with replies, so threads dominate.
-  Measured on Symbolica: 30 days took 215 calls and 41 s; 180 days took 1,004
-  calls and 14.5 min, mostly waiting out 429s on `conversations.replies`
-  (`Retry-After: 10`, about every 50 calls). Two searches do the same job
-  (`has:link after:<date>` and `type:pdf after:<date>`; 16 calls and 4 s for
-  180 days), so the importer searches and filters domains locally, keeping
-  the full scan as an option (`--full-scan`) for audits.
-* Incremental runs: per channel, remember the newest `ts` scanned (in the
-  run's stats, or a small state file next to the database) and pass it as
-  `oldest` next time. Upserting on `(kind, locator)` keeps re-runs harmless
-  either way.
-* One recorded run per import (`db.recorded_run(conn, "import-slack", …)`);
-  all Slack calls happen before the single write transaction.
+`links` reads only: it prints one entry per message (with `-v` the message as
+Markdown; with `--json` the full record, i.e. the future `contexts` row with
+its links) and adds nothing to the library. It is a recorded run
+(`slack-links`), so its API log events carry the run id.
+
+* **How:** `has:link after:<date>` and `type:pdf after:<date>`, all pages,
+  merged by `(channel, ts)`; then `users.list` and `users.conversations`
+  for names. 7 calls for 30 days on Symbolica.
+* `--days` (default `[slack] days`, else 30) or `--since`; `after:` is
+  exclusive, so the query goes a day further back and results are cut at
+  the exact time.
+* `--dms/--no-dms` (default `[slack] dms`, else off): drops matches whose
+  channel `is_im`/`is_mpim`. Search ignores token scopes, so this filter is
+  what keeps DMs out.
+* `--channel` (allow list) and `--exclude-channel`: name, `#name` or id;
+  defaults `[slack] channels` / `exclude_channels`.
+* `--domain` adds allow-list entries to the built-in `links.DEFAULT_DOMAINS`
+  (as does `[slack] domains`); `--all-links` keeps every web link.
+* Slack caps a search at 100 pages of 100. If a period has more, the summary
+  says so; use fewer days.
+* Not covered by search (measured above): a reply in a thread is found, but
+  1 web-link message in 929 was missed. A full scan (`--full-scan`, not built
+  yet) would be the audit for that.
+* Next: write the records as `contexts` (`kind='slack'`, upsert on the
+  permalink) and `context_refs`, in one transaction after the API calls.
 
 ## Which links count
 
