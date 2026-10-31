@@ -106,8 +106,9 @@ papyrus import-slack --days 30 [--dms | --no-dms] \
   `conversations.replies` per thread with replies, so threads dominate.
   Measured on Symbolica: 30 days took 215 calls and 41 s; 180 days took 1,004
   calls and 14.5 min, mostly waiting out 429s on `conversations.replies`
-  (`Retry-After: 10`, about every 50 calls). Search does the same job in one
-  call per domain and 100 results, so the importer searches first and keeps
+  (`Retry-After: 10`, about every 50 calls). Two searches do the same job
+  (`has:link after:<date>` and `type:pdf after:<date>`; 16 calls and 4 s for
+  180 days), so the importer searches and filters domains locally, keeping
   the full scan as an option (`--full-scan`) for audits.
 * Incremental runs: per channel, remember the newest `ts` scanned (in the
   run's stats, or a small state file next to the database) and pass it as
@@ -176,9 +177,34 @@ the scrape.
   nothing found by only one side. The 63 include 20 thread replies, 3 messages
   whose link was only in the unfurl (`attachments`), and links behind labels.
   Search also returned 12 DM matches, which were left out of the comparison.
-  Not yet checked: whether `has:link after:<date>` lists *all* link messages
-  (then the domain filter could run locally, with no per-domain queries), and
-  what a search match carries besides `text` (`blocks`, `attachments`).
+* **Does `has:link after:<date>` list every message with a link?** Yes, for
+  web links (checked 2026-10-30, 180 days, 26 channels; raw responses in the
+  API log, `~/.papyrus/release/api-log/2026-10-30.jsonl`). The full scan read
+  9,294 messages (1,005 calls, 12 min); the search returned 1,415 messages
+  in 15 calls (4 s), 929 of them in those channels and 486 in DMs and group
+  DMs (`channel.is_im` / `is_mpim`: filter locally, since search ignores
+  scopes the token has).
+  * Agreed on 928. All 63 arXiv messages were among them, including the ones
+    whose link was only in the unfurl.
+  * Scan only, but not web links: 847 messages whose only "link" is an
+    uploaded file, 34 `mailto:`/`tel:` links, 5 shares of other Slack
+    messages (`is_msg_unfurl`), 11 bot posts.
+  * Scan only, a real miss: 1 GitHub link in a thread reply.
+  * Search only: 1 reply posted inside the window to a thread whose root is
+    older, which `conversations.history` with `oldest` can't see.
+* **Uploaded PDFs:** `type:pdf after:<date>` found exactly the 20 messages
+  with a PDF upload that the scan found (23 PDFs), in 1 call. `has:pdf` is
+  something else (0 of 20).
+* **What a search match carries:** `text` (mrkdwn), `blocks` (1,411 of 1,416;
+  rich text with typed `link`, `user`, `channel`, `emoji` elements, so
+  faithful Markdown is possible), `attachments` (unfurls, identical to the
+  scan's), `files`, `user`, `username`, `ts`, `channel` (id, name, type
+  flags), and `permalink`. Search's blocks drop `display_url` and
+  `display_team_id` on some elements (36 of 928 messages); nothing else
+  differs.
+* **Permalinks:** search's `permalink` equals the locally built
+  `/archives/<channel>/p<ts>` for all 928, and adds `?thread_ts=<root ts>`
+  for thread replies. Use it as `contexts.locator` as given.
 
 First manifest (user scopes only, read-only, no DMs):
 
