@@ -158,7 +158,36 @@ the scrape.
 
 ## Open questions
 
-* Which workspace, and does it require app approval for installs?
-* DMs: include by default or not (proposed: not)?
-* Does `search.messages` match on link hosts (`arxiv.org`) reliably? To
-  check against a real workspace before relying on the fast path.
+* **Workspace:** Symbolica. Whether it needs admin approval for app
+  installs is unknown; installing the app below answers it (the button says
+  "Request to Install" instead of "Install").
+* **DMs:** off by default, so the first manifest leaves out the `im:*` and
+  `mpim:*` scopes. Adding them later means reinstalling the app, which issues
+  a new token.
+* **Does `search.messages` match link hosts (`arxiv.org`)?** Unknown. The
+  API uses the same engine as the search box, so a first check is in the
+  Slack UI. The definitive check needs the token: scan one channel over 30
+  days with `conversations.history`, run `arxiv.org in:#channel after:<date>`
+  through `search.messages`, and compare the two sets of arXiv messages.
+
+First manifest (user scopes only, read-only, no DMs):
+
+```json
+{
+  "display_information": {
+    "name": "papyrus",
+    "description": "Reads messages for paper links (personal, read-only)."
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": ["channels:history", "channels:read", "groups:history",
+               "groups:read", "users:read", "search:read"]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
+```
