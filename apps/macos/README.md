@@ -114,7 +114,8 @@ Shared by every variant, since they are keyed by content and hold nothing
 of one library's own: the compiled executables (`apps/macos/.build/`), the
 page-thumbnail cache (`~/.cache/papyrus-web/thumbs`, named by the PDF's
 sha256), the enrichment APIs' response cache (`~/.cache/papyrus/http`), the
-Apple Foundation Models bridge and LM Studio.
+Apple Foundation Models bridge and LM Studio. The permanent API log is per
+variant (`<home>/api-log/`), since it can hold one library's Slack messages.
 
 ## Papyrus Server.app
 

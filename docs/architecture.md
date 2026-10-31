@@ -138,6 +138,7 @@ and a CV to works.
 
 | decision | why |
 |---|---|
+| Every API exchange appended to `api-log/<date>.jsonl`, separately from the 30-day cache | Responses hold more than we extract at the time. Re-reading the log costs nothing; re-calling an API costs rate limit (a 180-day Slack scan is ~1,000 calls and 15 min) and may return something different. JSONL files, not a table: append-only, written by several processes, and kept out of the documented schema. |
 | SQLite + FTS5 as the source of truth, with a JSON-in-TEXT `extra` | Single user, one file, zero ops, readable by any tool. Vectors will go in a sidecar table (`sqlite-vec`) or file, so the core stays extension-free. |
 | `assertions` table instead of overwriting fields | Several noisy sources (LLMs, APIs, heuristics) disagree. Keeping every claim lets us re-resolve, audit and undo (`reset_enrichment`). |
 | contexts as their own entity, many per document, `(kind, locator)` unique | Discovery history (who shared it where, when it was downloaded, from which page) is a first-class feature, and Slack/Safari/Twitter importers slot in without schema changes. |

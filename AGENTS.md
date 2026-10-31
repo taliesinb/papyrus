@@ -114,6 +114,20 @@ only what is pending (see `--all` / `--reset`).
 8. **The `Backend` / `Decider` contracts** in `llm/base.py` and the
    `WorkRecord` / `AuthorRecord` types in `models.py` are shared by several
    modules. Change them deliberately, and update every implementation.
+9. **Never throw away an API response.** Every request through
+   `enrich/http.HttpClient` (enrichment, `papyrus download`, Slack) is
+   appended, with its raw response, to `<library home>/api-log/<UTC date>.jsonl`
+   (`apilog.py`; format in its docstring). Later code can trawl old responses
+   for fields nobody extracted at the time. So:
+   * new API clients go through `HttpClient`, never a bare `httpx`/`urllib`
+     call, and one-off experiments too (`uv run python …` with
+     `http.default_client()`);
+   * credentials are redacted before writing (`apilog.SECRET_*`); pass keys as
+     headers;
+   * the log is private data (Slack messages): never copy it into commits,
+     tests or fixtures;
+   * LM Studio and decider calls are *not* logged (`llm/*` uses its own httpx
+     clients): their prompts hold the first pages of personal documents.
 
 ## Gotchas (all learned the hard way)
 

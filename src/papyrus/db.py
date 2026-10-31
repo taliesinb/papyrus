@@ -119,7 +119,10 @@ def finish_run(conn: sqlite3.Connection, run_id: int, stats: dict) -> None:
 def recorded_run(conn: sqlite3.Connection, command: str, args: dict | None = None,
                  backend: str | None = None, prompt_version: str | None = None) -> Iterator[tuple[int, dict]]:
     """A `runs` row that is always closed: stats gets status completed | interrupted | crashed: ..."""
+    from . import apilog
+
     run_id = start_run(conn, command, args, backend, prompt_version)
+    prev_run = apilog.set_run(run_id)  # API log events name the run they belong to
     stats: dict = {}
     status = "completed"
     try:
@@ -131,6 +134,7 @@ def recorded_run(conn: sqlite3.Connection, command: str, args: dict | None = Non
         status = f"crashed: {type(e).__name__}: {e}"[:300]
         raise
     finally:
+        apilog.set_run(prev_run)
         finish_run(conn, run_id, {**stats, "status": status})
 
 

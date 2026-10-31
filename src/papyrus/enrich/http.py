@@ -8,6 +8,9 @@
 * Optional on-disk JSON cache under ``~/.cache/papyrus/http`` keyed by the request
   URL (+ POST body). Secrets are never part of the key or the stored entry: pass API
   keys as headers (or list query params in ``SECRET_PARAMS``).
+* Every attempt (and every cache hit) is appended to the permanent API log
+  (`papyrus.apilog`): the cache expires, the log doesn't. New API clients go through
+  this class so that no response is ever lost.
 
 Environment:
     PAPYRUS_MAILTO        contact address put into the User-Agent / mailto params
@@ -31,6 +34,8 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
+
+from .. import apilog
 
 log = logging.getLogger(__name__)
 
@@ -242,6 +247,8 @@ class HttpClient:
         if use_cache:
             hit = self._cache_get(key)
             if hit is not None and hit.status in ok_statuses:
+                apilog.record({"t": apilog.now_iso(), "method": method.upper(), "url": apilog.redact_url(url),
+                               "from_cache": True, "status": hit.status})
                 return hit
         host = urlsplit(url).hostname or ""
         limiter = self._limiter(host)
@@ -249,14 +256,12 @@ class HttpClient:
         attempt = 0
         while True:
             limiter.wait()
+            req_headers = {**({"Content-Type": "application/json"} if body else {}), **(headers or {})}
+            started = time.time()
             try:
-                r = self._client.request(
-                    method,
-                    url,
-                    content=body.encode() if body else None,
-                    headers={**({"Content-Type": "application/json"} if body else {}), **(headers or {})},
-                )
+                r = self._client.request(method, url, content=body.encode() if body else None, headers=req_headers)
             except httpx.TransportError as e:
+                _log_attempt(method, url, req_headers, body, started, attempt, error=f"{type(e).__name__}: {e}")
                 if attempt >= retries:
                     raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
                 delay = self._backoff(attempt, None, backoff_cap)
@@ -264,6 +269,7 @@ class HttpClient:
                 self._sleep(delay)
                 attempt += 1
                 continue
+            _log_attempt(method, url, req_headers, body, started, attempt, response=r, resp_body=r.text)
             if r.status_code in RETRY_STATUSES and attempt < retries:
                 delay = self._backoff(attempt, r.headers.get("Retry-After"), backoff_cap)
                 log.info("%s %s -> %d; retrying in %.1fs", method, redact_url(url), r.status_code, delay)
@@ -296,26 +302,40 @@ class HttpClient:
         while True:
             limiter.wait()
             delay = None
+            started = time.time()
+            hdrs = dict(headers or {})
+            r = None
             try:
-                with self._client.stream("GET", url, headers=dict(headers or {})) as r:
+                with self._client.stream("GET", url, headers=hdrs) as r:
                     if r.status_code in RETRY_STATUSES and attempt < retries:
+                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r)
                         delay = self._backoff(attempt, r.headers.get("Retry-After"))
                         log.info("GET %s -> %d; retrying in %.1fs", redact_url(url), r.status_code, delay)
                         limiter.penalise(delay)
                     elif r.status_code != 200:
-                        body = r.read()[:2000].decode("utf-8", "replace")
-                        raise HttpError(r.status_code, url, body)
+                        raw = r.read()
+                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
+                                     resp_body=raw.decode("utf-8", "replace"))
+                        raise HttpError(r.status_code, url, raw[:2000].decode("utf-8", "replace"))
                     else:
                         size = 0
+                        digest = hashlib.sha256()
                         with open(dest, "wb") as fh:
                             for chunk in r.iter_bytes(1 << 16):
                                 fh.write(chunk)
+                                digest.update(chunk)
                                 size += len(chunk)
                                 if max_bytes is not None and size > max_bytes:
+                                    _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
+                                                 error=f"larger than {max_bytes} bytes (stopped)")
                                     raise HttpError(200, url, f"larger than {max_bytes} bytes")
+                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
+                                     resp_size=size, resp_sha256=digest.hexdigest())
                         return Download(r.status_code, redact_url(str(r.url)),
                                         {k.lower(): v for k, v in r.headers.items()}, size)
             except httpx.TransportError as e:  # includes connections dropped mid-body
+                _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
+                             error=f"{type(e).__name__}: {e}")
                 if attempt >= retries:
                     raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
                 delay = self._backoff(attempt, None)
@@ -347,6 +367,37 @@ class HttpClient:
 
     def close(self) -> None:
         self._client.close()
+
+
+def _log_attempt(method: str, url: str, req_headers: Mapping[str, str], req_body: str | None, started: float,
+                 attempt: int, *, response: httpx.Response | None = None, resp_body: str | None = None,
+                 resp_size: int | None = None, resp_sha256: str | None = None, error: str | None = None) -> None:
+    """One `apilog` event for one attempt."""
+    ev: dict[str, Any] = {
+        "t": apilog.now_iso(started),
+        "ms": round((time.time() - started) * 1000),
+        "attempt": attempt,
+        "method": method.upper(),
+        "url": apilog.redact_url(str(response.url) if response is not None else url),
+        "req_headers": apilog.request_headers(req_headers),
+    }
+    if req_body is not None:
+        ev["req_body"] = apilog.redact_body(req_body, req_headers.get("Content-Type"))
+    if response is not None:
+        ev["status"] = response.status_code
+        ev["resp_headers"] = apilog.redact_headers(response.headers)
+        if response.history:
+            ev["redirects"] = [[h.status_code, apilog.redact_url(str(h.url))] for h in response.history]
+        if response.url != httpx.URL(url):
+            ev["requested_url"] = apilog.redact_url(url)
+    if resp_body is not None:
+        ev["resp_body"] = apilog.redact_body(resp_body, response.headers.get("content-type") if response else None)
+    if resp_size is not None:
+        ev["resp_size"] = resp_size
+        ev["resp_sha256"] = resp_sha256
+    if error:
+        ev["error"] = error
+    apilog.record(ev)
 
 
 _default: HttpClient | None = None
