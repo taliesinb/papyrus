@@ -160,7 +160,7 @@ ORDER BY page DESC, position DESC LIMIT 1;
 |---|---|---|---|---|---|
 | `filesystem` | absolute path | file birth time (≈ download time) | – | – | `filename`, `dir`, `size`, `mtime`, `where_froms`, `download_agent` |
 | `download` | the URL as given to `papyrus download` | time of the first successful download (NULL until then) | – | – | `filename` (Content-Disposition or URL), `where_froms` `[PDF URL after redirects, landing page]`, `content_type`, `size`; on failure `error`, `status` (or `last_error`, `last_status` after an earlier success) |
-| `slack` *(planned)* | message permalink | message ts | poster's display name (`actor_id` = Slack user id) | the message paragraph | `channel_id`, `thread_ts`, `reactions`, `files` |
+| `slack` | message permalink (`?thread_ts=` for replies) | message ts | poster's display name (`actor_id` = Slack user id); `title` `#channel`, `source` `<workspace>/#channel` | the message as Markdown | `team_id`, `channel_id`, `channel_name`, `channel_type` (public/private/im/mpim), `ts`, `thread_ts`, `author_handle`, `links` (`[{url, source, kind, id, label, title, site, file_id…}]`, see docs/slack.md) |
 | `safari_rl` *(planned)* | bookmark UUID | date added to Reading List | – | preview text | `date_last_viewed`, `site` |
 | `twitter` *(planned)* | tweet URL | tweet time | author handle | tweet text | `thread_root`, `quoted`, `likes` |
 | `web` *(planned)* | page URL | visit time | – | excerpt | – |
@@ -180,7 +180,11 @@ message with three arXiv links has three refs. A ref starts `unresolved`
 a `file_id` and/or `work_id`. A filesystem context has exactly one resolved
 ref, to the file at that path. A download context has one ref: resolved to
 the downloaded file, or `unresolved` (with the URL) while fetching fails;
-the next `papyrus download` of that URL retries it.
+the next `papyrus download` of that URL retries it. A Slack context has one
+ref per paper link; `resolve.py` resolves those naming an arXiv id or DOI to
+a work (`source` `resolve:arxiv` / `resolve:doi`, confidence 1.0), creating
+a `candidate` work (ids from `heuristic:link`, the rest from enrichment)
+when the library has none. Works created this way have no files.
 
 ### assertions
 

@@ -32,8 +32,8 @@ Early. What works today:
 Next on the list:
 
 * Open Library for books
-* Slack, Safari Reading List and Twitter contexts (the shared resolver can
-  reuse `download.fetch` for PDF links)
+* Slack: resolve PDF links and uploads (arXiv/DOI links are done:
+  `papyrus slack import`); Safari Reading List and Twitter contexts
 * embeddings with `sqlite-vec`
 * a managed file store
 

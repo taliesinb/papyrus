@@ -78,29 +78,28 @@ def whoami_cmd(workspace: str | None) -> None:
                f"({me.get('team_id')}, {me.get('url')})\nscopes: {me.get('_scopes')}")
 
 
-@slack_group.command("links")
-@click.option("--workspace", "-w")
-@click.option("--days", type=float, help="Look back this many days (default: [slack] days, else 30).")
-@click.option("--since", "since_date", metavar="YYYY-MM-DD", help="Look back to this date instead.")
-@click.option("--dms/--no-dms", default=None, help="Include direct and group messages (default: [slack] dms, else no).")
-@click.option("--channel", "channels", multiple=True, metavar="NAME",
-              help="Only these channels (name, #name or id; repeatable).")
-@click.option("--exclude-channel", "exclude_channels", multiple=True, metavar="NAME", help="Skip these channels.")
-@click.option("--domain", "domains", multiple=True, metavar="HOST[/PATH]",
-              help="Also count links to this host as papers (repeatable; adds to the built-in list).")
-@click.option("--all-links", is_flag=True, help="Keep every link, not only paper links (kind is then empty).")
-@click.option("--json", "as_json", is_flag=True, help="One JSON record per message (the future contexts row).")
-@click.option("-o", "--output", type=click.File("w"), help="Write the records here instead of stdout.")
-@click.option("-v", "--verbose", is_flag=True, help="Also print each message as Markdown.")
-@click.pass_context
-def links_cmd(ctx: click.Context, workspace: str | None, days: float | None, since_date: str | None,
-              dms: bool | None, channels: tuple[str, ...], exclude_channels: tuple[str, ...],
-              domains: tuple[str, ...], all_links: bool, as_json: bool, output, verbose: bool) -> None:
-    """List messages with paper links: arXiv, DOI, PDF and allow-listed hosts, plus uploaded PDFs.
+def _filter_options(f):
+    for opt in reversed([
+        click.option("--workspace", "-w"),
+        click.option("--days", type=float, help="Look back this many days (default: [slack] days, else 30)."),
+        click.option("--since", "since_date", metavar="YYYY-MM-DD", help="Look back to this date instead."),
+        click.option("--dms/--no-dms", default=None,
+                     help="Include direct and group messages (default: [slack] dms, else no)."),
+        click.option("--channel", "channels", multiple=True, metavar="NAME",
+                     help="Only these channels (name, #name or id; repeatable)."),
+        click.option("--exclude-channel", "exclude_channels", multiple=True, metavar="NAME",
+                     help="Skip these channels."),
+        click.option("--domain", "domains", multiple=True, metavar="HOST[/PATH]",
+                     help="Also count links to this host as papers (repeatable; adds to the built-in list)."),
+        click.option("--all-links", is_flag=True, help="Keep every link, not only paper links (kind is then empty)."),
+    ]):
+        f = opt(f)
+    return f
 
-    Reads only; nothing is added to the library yet. Two Slack searches cover the whole
-    period (docs/slack.md), and every API response is kept in the API log.
-    """
+
+def _search(conn, command: str, workspace, days, since_date, dms, channels, exclude_channels, domains, all_links,
+            after=None):
+    """Run the searches as a recorded run; `after(run_id, stats, records)` runs inside it."""
     from . import links as linkmod
     from .slack import Filters, Slack, SlackError, find, get_token, settings, since_days, workspace_name
 
@@ -112,12 +111,13 @@ def links_cmd(ctx: click.Context, workspace: str | None, days: float | None, sin
             raise click.BadParameter("use YYYY-MM-DD", param_hint="--since") from None
     else:
         since = since_days(days if days is not None else float(s.get("days", 30)))
+    extra_domains = tuple(s.get("domains") or ()) + domains
     filters = Filters(
         since=since,
         dms=bool(s.get("dms", False)) if dms is None else dms,
         channels=channels or tuple(s.get("channels") or ()),
         exclude_channels=exclude_channels or tuple(s.get("exclude_channels") or ()),
-        domains=linkmod.DEFAULT_DOMAINS + tuple(s.get("domains") or ()) + domains,
+        domains=linkmod.DEFAULT_DOMAINS + extra_domains,
         all_links=all_links,
     )
     try:
@@ -126,13 +126,44 @@ def links_cmd(ctx: click.Context, workspace: str | None, days: float | None, sin
     except SlackError as e:
         raise _err(e) from e
     args = {"workspace": ws, "since": since, "dms": filters.dms, "channels": list(filters.channels),
-            "exclude_channels": list(filters.exclude_channels), "extra_domains": list(filters.domains[len(linkmod.DEFAULT_DOMAINS):]),
+            "exclude_channels": list(filters.exclude_channels), "extra_domains": list(extra_domains),
             "all_links": all_links}
-    with db.recorded_run(ctx.obj["conn"], "slack-links", args) as (_run_id, stats):
+    with db.recorded_run(conn, command, args) as (run_id, stats):
         try:
             records = find(slack, filters, workspace=ws, stats=stats)
         except SlackError as e:
             raise _err(e) from e
+        if after:
+            after(run_id, stats, records)
+    return records, stats
+
+
+def _summary(records, stats) -> str:
+    kinds: dict[str, int] = {}
+    for r in records:
+        for lk in r["links"]:
+            kinds[lk.get("kind") or "other"] = kinds.get(lk.get("kind") or "other", 0) + 1
+    return (f"{len(records)} messages, {sum(kinds.values())} links "
+            f"({', '.join(f'{k} {v}' for k, v in sorted(kinds.items()))}); "
+            f"{stats.get('skipped_dm', 0)} DM matches skipped; {stats.get('api_calls')} Slack API calls"
+            + ("; WARNING: search hit Slack's 10,000-result cap, use fewer --days" if stats.get("truncated") else ""))
+
+
+@slack_group.command("links")
+@_filter_options
+@click.option("--json", "as_json", is_flag=True, help="One JSON record per message (what `import` stores).")
+@click.option("-o", "--output", type=click.File("w"), help="Write the records here instead of stdout.")
+@click.option("-v", "--verbose", is_flag=True, help="Also print each message as Markdown.")
+@click.pass_context
+def links_cmd(ctx: click.Context, workspace, days, since_date, dms, channels, exclude_channels, domains,
+              all_links: bool, as_json: bool, output, verbose: bool) -> None:
+    """List messages with paper links: arXiv, DOI, PDF and allow-listed hosts, plus uploaded PDFs.
+
+    Reads only (see `import` to store them). Two Slack searches cover the whole period
+    (docs/slack.md), and every API response is kept in the API log.
+    """
+    records, stats = _search(ctx.obj["conn"], "slack-links", workspace, days, since_date, dms, channels,
+                             exclude_channels, domains, all_links)
     out = output or sys.stdout
     for r in records:
         if as_json:
@@ -144,11 +175,46 @@ def links_cmd(ctx: click.Context, workspace: str | None, days: float | None, sin
         if verbose:
             out.write("".join(f"    | {line}\n" for line in r["markdown"].splitlines()) + "\n")
     out.flush()
-    kinds: dict[str, int] = {}
-    for r in records:
-        for lk in r["links"]:
-            kinds[lk.get("kind") or "other"] = kinds.get(lk.get("kind") or "other", 0) + 1
-    click.echo(f"{len(records)} messages, {sum(kinds.values())} links ({', '.join(f'{k} {v}' for k, v in sorted(kinds.items()))}); "
-               f"{stats.get('skipped_dm', 0)} DM matches skipped; {stats.get('api_calls')} API calls"
-               + ("; WARNING: search hit Slack's 10,000-result cap, use fewer --days" if stats.get("truncated") else ""),
+    click.echo(_summary(records, stats), err=True)
+
+
+@slack_group.command("import")
+@_filter_options
+@click.option("--resolve/--no-resolve", default=True,
+              help="Then link arXiv/DOI refs to works, creating and enriching new ones (default on).")
+@click.pass_context
+def import_cmd(ctx: click.Context, workspace, days, since_date, dms, channels, exclude_channels, domains,
+               all_links: bool, resolve: bool) -> None:
+    """Store messages with paper links as `slack` contexts, one ref per link; then resolve refs.
+
+    Re-running is safe: contexts are keyed by permalink and refreshed, refs are kept.
+    """
+    from .slack import store
+
+    conn = ctx.obj["conn"]
+
+    def write(run_id, stats, records):
+        stats.update(store(conn, records))
+        if resolve:
+            _resolve(conn, run_id, stats)
+
+    records, stats = _search(conn, "slack-import", workspace, days, since_date, dms, channels, exclude_channels,
+                             domains, all_links, after=write)
+    click.echo(_summary(records, stats), err=True)
+    click.echo("stored: " + " ".join(f"{k}={stats.get(k, 0)}" for k in ("contexts_new", "contexts_updated", "refs_new")),
                err=True)
+    if resolve:
+        click.echo("resolved: " + " ".join(f"{k}={v}" for k, v in stats.get("resolve", {}).items()), err=True)
+
+
+def _resolve(conn, run_id: int, stats: dict) -> None:
+    from ..resolve import resolve_refs
+
+    def progress(ident, r):
+        what = r.get("title") or ""
+        if r.get("work_id"):
+            what = f"work {r['work_id']} {what}"
+        click.echo(f"  {ident[0]}:{ident[1]:24} {r['status']:16} {what[:70]}"
+                   + (f" ({r['error'][:80]})" if r.get("error") else ""), err=True)
+
+    stats["resolve"] = dict(resolve_refs(conn, context_kind="slack", run_id=run_id, progress=progress))

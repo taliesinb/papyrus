@@ -458,3 +458,54 @@ def find(slack: Slack, filters: Filters, *, workspace: str, stats: dict | None =
 
 def since_days(days: float) -> float:
     return time.time() - days * 86400
+
+
+# --------------------------------------------------------------------------- writing
+
+
+def store(conn, records: list[dict[str, Any]]) -> dict[str, int]:
+    """Upsert one ``kind='slack'`` context per record (locator = permalink) and one
+    unresolved ref per link, in one transaction. Re-imports refresh the text, author and
+    links (messages get edited) and keep existing refs; `parent_id` points to the thread's
+    root message when that has a context too."""
+    import json
+
+    now = db.now_iso()
+    stats = {"contexts_new": 0, "contexts_updated": 0, "refs_new": 0}
+    with db.tx(conn):
+        ids: list[int] = []
+        for r in records:
+            ex = r["extra"]
+            extra = {**ex, "author_handle": r["author"].get("handle"), "links": r["links"]}
+            title = r["source"].split("/", 1)[1] if "/" in r["source"] else None
+            row = conn.execute("SELECT id FROM contexts WHERE kind='slack' AND locator=?", (r["permalink"],)).fetchone()
+            vals = (r["source"], r["occurred_at"], r["author"].get("name"), r["author"].get("id"), title,
+                    r["markdown"], r["permalink"], json.dumps(extra, ensure_ascii=False))
+            if row:
+                cid = row["id"]
+                conn.execute("UPDATE contexts SET source=?, occurred_at=?, actor=?, actor_id=?, title=?, text=?, url=?,"
+                             " extra=?, last_seen_at=?, missing_at=NULL WHERE id=?", (*vals, now, cid))
+                stats["contexts_updated"] += 1
+            else:
+                cid = conn.execute(
+                    "INSERT INTO contexts(kind, locator, source, occurred_at, actor, actor_id, title, text, url, extra,"
+                    " first_seen_at, last_seen_at) VALUES ('slack', ?,?,?,?,?,?,?,?,?,?,?)",
+                    (r["permalink"], *vals, now, now)).lastrowid
+                stats["contexts_new"] += 1
+            ids.append(cid)
+            for link in r["links"]:
+                # UNIQUE(context_id, url, mention) does not dedupe a NULL mention, so check first
+                if not conn.execute("SELECT 1 FROM context_refs WHERE context_id=? AND url=? AND mention IS NULL",
+                                    (cid, link["url"])).fetchone():
+                    conn.execute("INSERT INTO context_refs(context_id, url, status, source) VALUES (?,?,'unresolved','slack')",
+                                 (cid, link["url"]))
+                    stats["refs_new"] += 1
+        # thread replies -> their root message's context, when it has one
+        for cid in ids:
+            conn.execute(
+                """UPDATE contexts SET parent_id = (
+                       SELECT p.id FROM contexts p WHERE p.kind='slack'
+                         AND json_extract(p.extra, '$.channel_id') = json_extract(contexts.extra, '$.channel_id')
+                         AND json_extract(p.extra, '$.ts') = json_extract(contexts.extra, '$.thread_ts'))
+                   WHERE id=? AND json_extract(extra, '$.thread_ts') IS NOT NULL""", (cid,))
+    return stats

@@ -174,12 +174,13 @@ recognition are in [slack.md](slack.md)):
    * Upsert on `(kind, locator)` so re-imports are idempotent.
 2. **One `context_ref` per link or mention** in the text: `url=<link>` or
    `mention=<free text>`, `status='unresolved'`.
-3. **A resolver** (shared, to be written in `resolve.py`) turns unresolved
+3. **The resolver** (`resolve.py`, `papyrus resolve`) turns unresolved
    refs into works:
-   * arXiv/DOI links → `enrich.ids` → `find_work`, or create a candidate
-     work from `match.resolve_best`;
-   * PDF links can be fetched with `download.fetch`/`download.record`, then
-     go through triage;
+   * arXiv/DOI links: `find_work` by the id; else `match.resolve`, then
+     `find_work` by the record's other ids, title and year; else a new
+     candidate work holding the id, enriched by `enrich_work` (done);
+   * PDF links (to do) can be fetched with `download.fetch`/`download.record`,
+     then go through triage; Slack uploads need `files:read` and the token;
    * on success, set `status='resolved'` and `work_id`/`file_id`, with
      `confidence` and `source`.
 4. **Record a run** (`db.recorded_run(conn, "import-slack", …)`), and add an
@@ -209,8 +210,10 @@ Roughly by value:
   `#page=N&search=…` with the words highlighted; chunk embeddings for hybrid
   search (above), fused into the same RRF. OCR quality on maths is untested;
   Vision reads formulas as text.
-* **Context importers:** Slack, Safari Reading List, Twitter (see the recipe
-  above), and the shared resolver.
+* **Context importers:** Slack is done for links with an arXiv id or DOI
+  (`papyrus slack import`, docs/slack.md); PDF links and uploads are left
+  unresolved. Safari Reading List and Twitter still to do (see the recipe
+  above).
 * **Relations between works:** thesis ↔ paper, slides_for, versions. There
   is no table yet. Today work 12 (paper) and work 22 (Pang's thesis) are
   correctly separate but unlinked.

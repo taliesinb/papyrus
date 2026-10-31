@@ -546,6 +546,22 @@ def stats(ctx: click.Context) -> None:
         click.echo(f"  pages {r[0]}/{r[1]}: {r[2]}")
 
 
+@main.command("resolve")
+@click.option("--kind", "context_kind", metavar="KIND", help="Only refs of contexts of this kind (e.g. slack).")
+@click.option("--limit", type=int, help="At most this many identifiers.")
+@click.pass_context
+def resolve_cmd(ctx: click.Context, context_kind: str | None, limit: int | None) -> None:
+    """Link unresolved context refs that name a work (arXiv id, DOI) to works, creating and
+    enriching new candidate works where needed (resolve.py)."""
+    from .resolve import resolve_refs
+
+    conn = _conn(ctx)
+    with db.recorded_run(conn, "resolve", {"kind": context_kind, "limit": limit}) as (run_id, stats):
+        stats.update(resolve_refs(conn, context_kind=context_kind, run_id=run_id, limit=limit, progress=lambda i, r:
+                                  click.echo(f"{i[0]}:{i[1]:24} {r['status']:16} {r.get('work_id') or ''}")))
+    click.echo(" ".join(f"{k}={v}" for k, v in stats.items() if k != "status"))
+
+
 from .contexts.slack_cli import slack_group  # noqa: E402  (kept out of this file: contexts/slack_cli.py)
 
 main.add_command(slack_group)

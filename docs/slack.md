@@ -114,8 +114,19 @@ its links) and adds nothing to the library. It is a recorded run
 * Not covered by search (measured above): a reply in a thread is found, but
   1 web-link message in 929 was missed. A full scan (`--full-scan`, not built
   yet) would be the audit for that.
-* Next: write the records as `contexts` (`kind='slack'`, upsert on the
-  permalink) and `context_refs`, in one transaction after the API calls.
+
+`papyrus slack import` (same filters, plus `--no-resolve`) stores what
+`links` prints: one `kind='slack'` context per message, keyed by permalink
+and refreshed on re-import, and one unresolved ref per link, all in one
+transaction after the searches. Then `resolve.py` links arXiv/DOI refs to
+works, creating and enriching candidate works where the library has none
+(`papyrus resolve --kind slack` retries what is still unresolved).
+
+First import into the release library, 2026-10-30, 180 days (backup:
+`papyrus.backup-2026-10-30-slack-import.sqlite`): 129 messages, 135 refs;
+59 distinct arXiv ids and DOIs, of which 9 were already works and 50 became
+new candidate works (all titled and enriched); 69 refs (37 PDF links,
+26 uploads, 6 landing pages) left unresolved. A second run changed nothing.
 
 ## Which links count
 

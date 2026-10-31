@@ -204,3 +204,102 @@ def test_manifest_scopes():
     m = S.manifest()
     assert m["oauth_config"]["scopes"]["user"] == list(S.USER_SCOPES)
     assert "bot" not in m["oauth_config"]["scopes"]
+
+
+# --------------------------------------------------------------------------- store + resolve
+
+from papyrus import db as _db  # noqa: E402
+from papyrus import resolve as R  # noqa: E402
+from papyrus.enrich import match as match_mod  # noqa: E402
+from papyrus.models import AuthorRecord, WorkRecord  # noqa: E402
+
+
+def _rec(permalink, ts, urls, thread_ts=None, text="see"):
+    links = S.classify_links([{"url": u, "source": "message"} for u in urls], L.DEFAULT_DOMAINS)
+    return {"permalink": permalink, "occurred_at": S._occurred_at(ts), "source": "ws/#papers",
+            "author": {"id": "U1", "handle": "ada", "name": "Ada"}, "markdown": text, "links": links,
+            "extra": {"team_id": "T1", "channel_id": "C1", "channel_name": "papers", "channel_type": "public",
+                      "ts": ts, "thread_ts": thread_ts}}
+
+
+@pytest.fixture
+def conn():
+    c = _db.connect(":memory:")
+    yield c
+    c.close()
+
+
+def test_store_is_idempotent_and_links_threads(conn):
+    root = _rec("https://ws.slack.com/archives/C1/p100", "100.000001", ["https://arxiv.org/abs/2401.01234"])
+    reply = _rec("https://ws.slack.com/archives/C1/p200?thread_ts=100.000001", "200.000002",
+                 ["https://arxiv.org/abs/2401.01234", "https://example.org/x.pdf"], thread_ts="100.000001")
+    assert S.store(conn, [reply, root]) == {"contexts_new": 2, "contexts_updated": 0, "refs_new": 3}
+    reply["markdown"] = "edited"
+    assert S.store(conn, [reply, root]) == {"contexts_new": 0, "contexts_updated": 2, "refs_new": 0}
+    rows = {r["locator"]: r for r in conn.execute("SELECT * FROM contexts WHERE kind='slack'")}
+    r, p = rows[reply["permalink"]], rows[root["permalink"]]
+    assert r["parent_id"] == p["id"] and p["parent_id"] is None
+    assert r["text"] == "edited" and r["actor"] == "Ada" and r["actor_id"] == "U1" and r["title"] == "#papers"
+    assert r["url"] == reply["permalink"] and r["occurred_at"].startswith("1970-01-01T00:03:20")
+    assert json.loads(r["extra"])["links"][1]["kind"] == "pdf"
+
+
+def _fake_records(arxiv_id, doi=None, title="A Paper About Things"):
+    ids = {"arxiv": arxiv_id, **({"doi": doi} if doi else {})}
+    return [WorkRecord(source="arxiv", title=title, year=2024, ids=ids, kind="paper",
+                       authors=[AuthorRecord(name="Ada Lovelace")], abstract="We study things.", match_score=0.99)]
+
+
+def test_resolve_creates_links_and_reuses(conn, monkeypatch):
+    calls = []
+
+    def fake(hint, **kw):
+        calls.append(hint)
+        if hint.arxiv_id == "2401.01234":
+            return _fake_records("2401.01234", doi="10.1000/pub.1")
+        return []
+
+    monkeypatch.setattr(match_mod, "resolve", fake)
+    S.store(conn, [
+        _rec("https://ws.slack.com/archives/C1/p1", "1.0", ["https://arxiv.org/abs/2401.01234",
+                                                           "https://doi.org/10.5555/missing"]),
+        _rec("https://ws.slack.com/archives/C1/p2", "2.0", ["https://www.alphaxiv.org/abs/2401.01234v2",
+                                                           "https://example.org/x.pdf"]),
+    ])
+    with _db.recorded_run(conn, "test") as (run_id, _):
+        stats = R.resolve_refs(conn, context_kind="slack", run_id=run_id)
+    assert stats == {"created": 1, "not_found": 1}
+    w = conn.execute("SELECT * FROM works").fetchall()
+    assert len(w) == 1 and w[0]["title"] == "A Paper About Things" and w[0]["status"] == "candidate"
+    ids = {r["scheme"]: r["value"] for r in conn.execute("SELECT * FROM work_ids")}
+    assert ids["arxiv"] == "2401.01234" and ids["doi"] == "10.1000/pub.1"
+    refs = conn.execute("SELECT url, status, work_id, source FROM context_refs ORDER BY id").fetchall()
+    assert [(r["status"], r["source"]) for r in refs] == [
+        ("resolved", "resolve:arxiv"), ("unresolved", "slack"), ("resolved", "resolve:arxiv"), ("unresolved", "slack")]
+    # provenance: the id claim and the API's claims
+    srcs = {r[0] for r in conn.execute("SELECT source FROM assertions WHERE subject_type='work'")}
+    assert R.ID_SOURCE in srcs and any(s.startswith("api:") for s in srcs)
+    # a DOI link to the published version of the same paper reuses the work, with no lookup
+    S.store(conn, [_rec("https://ws.slack.com/archives/C1/p3", "3.0", ["https://doi.org/10.1000/PUB.1"])])
+    n = len(calls)
+    assert R.resolve_refs(conn, context_kind="slack") == {"linked": 1, "not_found": 1}
+    assert len(calls) == n + 1  # only the unknown DOI was looked up again
+    assert conn.execute("SELECT count(*) FROM works").fetchone()[0] == 1
+
+
+def test_resolve_links_to_existing_work_by_other_id(conn, monkeypatch):
+    wid = conn.execute("INSERT INTO works(title, year) VALUES ('A Paper About Things', 2024)").lastrowid
+    conn.execute("INSERT INTO work_ids(work_id, scheme, value) VALUES (?, 'doi', '10.1000/pub.1')", (wid,))
+    monkeypatch.setattr(match_mod, "resolve", lambda hint, **kw: _fake_records("2401.01234", doi="10.1000/pub.1"))
+    S.store(conn, [_rec("https://ws.slack.com/archives/C1/p1", "1.0", ["https://arxiv.org/pdf/2401.01234"])])
+    assert R.resolve_refs(conn) == {"linked_other_id": 1}
+    assert conn.execute("SELECT work_id FROM context_refs").fetchone()[0] == wid
+    assert conn.execute("SELECT count(*) FROM works").fetchone()[0] == 1
+
+
+def test_identifier():
+    assert R.identifier("https://arxiv.org/abs/2401.01234v3") == ("arxiv", "2401.01234")
+    assert R.identifier("https://doi.org/10.48550/arXiv.2401.01234") == ("arxiv", "2401.01234")
+    assert R.identifier("https://link.springer.com/article/10.1007/s00453-020-00001-1") == (
+        "doi", "10.1007/s00453-020-00001-1")
+    assert R.identifier("https://example.org/x.pdf") is None and R.identifier(None) is None
