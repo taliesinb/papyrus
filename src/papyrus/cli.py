@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sqlite3
 from pathlib import Path
@@ -20,14 +21,42 @@ def _conn(ctx: click.Context) -> sqlite3.Connection:
     return ctx.obj["conn"]
 
 
+def _check_home(db_path: Path | None) -> None:
+    """Refuse to create a library by accident: in the old single-library layout, or for a variant
+    that was never made (a typo would otherwise start an empty library)."""
+    if db_path or os.environ.get("PAPYRUS_HOME"):
+        return
+    try:
+        v = db.variant()
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    root, home = db.papyrus_root(), db.library_home()
+    if home.is_dir():
+        return
+    if (root / "papyrus.sqlite").exists():
+        raise click.ClickException(
+            f"{root} holds a library in the old layout; move its contents into {root / db.DEFAULT_VARIANT}/ "
+            "(every variant now has a home of its own, see apps/macos/README.md)")
+    if v != db.DEFAULT_VARIANT:
+        have = sorted(p.name for p in root.iterdir() if p.is_dir() and db.VARIANT_ID.match(p.name)) if root.is_dir() else []
+        raise click.ClickException(
+            f"no variant {v!r}: {home} does not exist{f' (have: {', '.join(have)})' if have else ''}. "
+            f"Create it with `mkdir {home}` or `python3 apps/macos/build.py --variant {v}`.")
+
+
 @click.group()
+@click.option("--variant", envvar="PAPYRUS_VARIANT", metavar="ID",
+              help="Library variant: its home is ~/.papyrus/<ID> (default release).")
 @click.option("--db", "db_path", type=click.Path(path_type=Path), envvar="PAPYRUS_DB",
-              help="SQLite database (default ~/.papyrus/papyrus.sqlite).")
+              help="SQLite database (default ~/.papyrus/<variant>/papyrus.sqlite).")
 @click.pass_context
-def main(ctx: click.Context, db_path: Path | None) -> None:
+def main(ctx: click.Context, variant: str | None, db_path: Path | None) -> None:
     """Local library of papers, books and other documents."""
     # turn `kill`/SIGTERM into KeyboardInterrupt so runs are closed as 'interrupted'
     signal.signal(signal.SIGTERM, _sigterm)
+    if variant:
+        os.environ["PAPYRUS_VARIANT"] = variant  # library_home() and the config read it
+    _check_home(db_path)
     ctx.ensure_object(dict)
     ctx.obj["conn"] = db.connect(db_path)
 
@@ -43,7 +72,7 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
          verbose: bool) -> None:
     """Find PDFs under ROOTS, hash them, read their first pages and record where they were found.
 
-    New files are also copied into the managed store (~/.papyrus/store, named by hash); on APFS
+    New files are also copied into the managed store (<home>/store, named by hash); on APFS
     the copy is a clone, which takes no extra space."""
     from .scan import ScanOptions, scan as do_scan
 
@@ -166,7 +195,7 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
     """Ask a local model what each file is (kind, title, authors, abstract, topics...).
 
     The backend and decider come from --backend/--decider, else PAPYRUS_BACKEND/PAPYRUS_DECIDER,
-    else ~/.papyrus/config.toml (see `papyrus config`), else auto. LM Studio's server is started
+    else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
     if it is off. Triage stops if no decider is available, unless the decider is 'none'."""
     from . import config
     from .llm import get_backend
@@ -481,6 +510,7 @@ def config_cmd(init: bool) -> None:
     if init:
         p, written = config.init()
         click.echo(f"{'wrote' if written else 'already exists:'} {p}")
+    click.echo(f"variant: {db.variant()}  library: {db.library_home()}")
     p = config.path()
     click.echo(f"config file: {p}{'' if p.exists() else '  (not present; using defaults)'}")
     try:

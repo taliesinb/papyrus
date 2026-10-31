@@ -1,7 +1,7 @@
-"""User configuration: `$PAPYRUS_HOME/config.toml` (default `~/.papyrus/config.toml`).
+"""User configuration: `<library home>/config.toml` (default `~/.papyrus/release/config.toml`).
 
-Lives next to the database and the store, so a scratch library (`PAPYRUS_HOME=/tmp/x`) has
-its own. `PAPYRUS_CONFIG` points at another file. Every key is optional:
+Lives next to the database and the store, so each variant (`~/.papyrus/<variant>`) and a
+scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at another file. Every key is optional:
 
     backend = "auto"      # extraction model: auto | lmstudio[:model] | apple
     decider = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url

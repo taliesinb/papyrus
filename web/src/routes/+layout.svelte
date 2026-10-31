@@ -7,7 +7,7 @@
 	import { installTooltips } from '#lib/tooltip.ts';
 	import type { LayoutProps } from './$types';
 
-	let { children }: LayoutProps = $props();
+	let { children, data }: LayoutProps = $props();
 
 	onMount(installTooltips);
 
@@ -22,7 +22,7 @@
 </script>
 
 <svelte:head>
-	<title>papyrus</title>
+	<title>{data.brand}</title>
 	<link rel="icon" type="image/svg+xml" href={asset('favicon.svg')} />
 	<link rel="apple-touch-icon" href={asset('apple-touch-icon.png')} />
 </svelte:head>

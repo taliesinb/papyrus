@@ -183,7 +183,7 @@
 <svelte:window {onkeydown} />
 
 <svelte:head>
-	<title>{data.filters.q ? `${data.filters.q} · ` : ''}papyrus</title>
+	<title>{data.filters.q ? `${data.filters.q} · ` : ''}{data.brand}</title>
 </svelte:head>
 
 <div class="layout">

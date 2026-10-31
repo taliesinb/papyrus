@@ -22,7 +22,13 @@ uv run papyrus config                  # config file path and the backend/decide
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
 python3 apps/macos/build.py [--install]   # Papyrus.app + Papyrus Server.app (menu bar, tailscale serve /papyrus)
+python3 apps/macos/build.py --variant personal [--install]   # Papyrus Personal(.app, Server.app); --all rebuilds every variant
 ```
+
+**Variants:** each library is a variant with its own home `~/.papyrus/<variant>/`
+(`release` is the default; `--variant` / `PAPYRUS_VARIANT` pick another,
+`PAPYRUS_HOME` overrides both). The naming rules (bundle ids, `~/Library`
+directories, ports, tailnet paths) are in `apps/macos/README.md`, "Variants".
 
 The usual pipeline is `scan` (or `download`) `→ triage → promote → extract → enrich`;
 `papyrus process` runs the last four. Every stage is idempotent and processes
@@ -30,18 +36,19 @@ only what is pending (see `--all` / `--reset`).
 
 ## Data safety (read before running anything)
 
-* **`~/.papyrus/papyrus.sqlite` is the user's real library.**
+* **`~/.papyrus/release/papyrus.sqlite` is the user's real library** (and so
+  is every other variant's, `~/.papyrus/<variant>/papyrus.sqlite`).
   * Experiment against a scratch copy:
-    `mkdir /tmp/ph && sqlite3 ~/.papyrus/papyrus.sqlite ".backup /tmp/ph/papyrus.sqlite"`,
+    `mkdir /tmp/ph && sqlite3 ~/.papyrus/release/papyrus.sqlite ".backup /tmp/ph/papyrus.sqlite"`,
     then set `PAPYRUS_HOME=/tmp/ph` (this moves the managed store too; with
     only `PAPYRUS_DB` set, `scan`/`download` would still write into
-    `~/.papyrus/store`). Tests do this automatically (`tests/conftest.py`).
+    `~/.papyrus/release/store`). Tests do this automatically (`tests/conftest.py`).
   * Before any bulk change to the real database, take a dated `.backup` next
-    to it (`~/.papyrus/papyrus.backup-YYYY-MM-DD-<why>.sqlite`).
+    to it (`~/.papyrus/release/papyrus.backup-YYYY-MM-DD-<why>.sqlite`).
 * **Never modify, move or delete the user's files on disk.** papyrus only
   reads them. Report odd files instead. For example, a PDF whose filename
   suggests a textbook may turn out to be an unrelated document.
-* **The managed store** (`~/.papyrus/store/ab/<sha256>.pdf`) is papyrus's
+* **The managed store** (`~/.papyrus/<variant>/store/ab/<sha256>.pdf`) is papyrus's
   own: content-addressed, read-only, written only through `store.commit`.
   Never rewrite or delete a stored file; `files.stored_path` points there.
   Copy local files in with `store.snapshot` (an APFS clone, falling back to a

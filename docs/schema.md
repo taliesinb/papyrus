@@ -1,7 +1,8 @@
 # papyrus database schema
 
-One SQLite file (default `~/.papyrus/papyrus.sqlite`, override with
-`PAPYRUS_DB`). The authoritative DDL is
+One SQLite file per library variant (default
+`~/.papyrus/release/papyrus.sqlite`, `~/.papyrus/<variant>/papyrus.sqlite`
+for others; override with `PAPYRUS_DB`). The authoritative DDL is
 [`src/papyrus/schema.sql`](../src/papyrus/schema.sql); this document explains
 the model. Everything is plain SQLite (FTS5 for text search); no extensions
 are required to read it.
@@ -70,7 +71,7 @@ version change is migrated once, by hand.
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
 | `triage_status` | `pending`, `done` or `error` (LLM triage) |
 | `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
-| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default `~/.papyrus`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed). |
+| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed). |
 
 `file_pages(file_id, page, text, source, kind)` holds extracted text per page.
 

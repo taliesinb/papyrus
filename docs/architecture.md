@@ -23,7 +23,7 @@ formatting.
  ───────                 ──────────────                                 ───────
  ~/Desktop, ~/Downloads ─▶ scan ──▶ files, file_pages(+FTS), contexts(filesystem), context_refs
  URLs, copied tabs ─────▶ download ─▶ … the same, with contexts(download); filename_hint assertion
-                               │       both keep a copy in ~/.papyrus/store (files.stored_path)
+                               │       both keep a copy in <home>/store (files.stored_path)
                                ▼
                            triage ─▶ assertions on files: kind(+probs), is_library_material(+probs),
                                │       title, authors, year, venue, abstract, summary, topics,
@@ -84,10 +84,10 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `enrich/match.py` | `resolve`, `score`, `cluster`, `merge` |
 | `enrich/pipeline.py` | `enrich_work` writes to the database (`_conflict`, authors → people, topics, ids); `reset_enrichment` |
 | `mcp_server.py` | MCP tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only connection), `library_stats`; resource `papyrus://schema` |
-| `config.py` | `~/.papyrus/config.toml`: default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
+| `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
-| `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` |
-| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`); `build.py` |
+| `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` (`/papyrus-<variant>` for other variants) |
+| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`), one pair per variant; `build.py` |
 
 ## Model layer
 
@@ -108,7 +108,7 @@ Two question types, kept deliberately separate:
 
 Backend specs: `--backend auto|lmstudio[:model]|apple` and
 `--decider auto|none|lmstudio[:model]|jev:<url>`. Defaults come from
-`config.py` (`~/.papyrus/config.toml`, then `auto`). Selecting LM Studio
+`config.py` (`~/.papyrus/<variant>/config.toml`, then `auto`). Selecting LM Studio
 starts its server if it is off (`lmstudio.ensure_server`, local URLs only,
 once per process). Triage refuses to run without a decider unless it is
 explicitly `none`: when LM Studio was off, `auto` used to fall back silently

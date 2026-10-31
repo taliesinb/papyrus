@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -14,8 +15,30 @@ from typing import Any, Iterator
 SCHEMA_VERSION = 2
 
 
+# A variant id: lowercase letters, digits and single dashes (as DeepSea's). No dots, so the
+# variant name `io.github.taliesinb.papyrus.<id>` and its components (`.server`) never collide.
+VARIANT_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+DEFAULT_VARIANT = "release"
+
+
+def papyrus_root() -> Path:
+    """Where every variant's home lives: `PAPYRUS_ROOT`, default `~/.papyrus`."""
+    return Path(os.environ.get("PAPYRUS_ROOT") or Path.home() / ".papyrus").expanduser()
+
+
+def variant() -> str:
+    """The variant this process works on: `PAPYRUS_VARIANT`, default `release`."""
+    v = os.environ.get("PAPYRUS_VARIANT", "").strip() or DEFAULT_VARIANT
+    if not VARIANT_ID.match(v):
+        raise ValueError(f"PAPYRUS_VARIANT={v!r} is not a variant id (lowercase letters, digits and single dashes)")
+    return v
+
+
 def library_home() -> Path:
-    return Path(os.environ.get("PAPYRUS_HOME", Path.home() / ".papyrus")).expanduser()
+    """The library: `PAPYRUS_HOME` if set, else the variant's home `<root>/<variant>`."""
+    if os.environ.get("PAPYRUS_HOME"):
+        return Path(os.environ["PAPYRUS_HOME"]).expanduser()
+    return papyrus_root() / variant()
 
 
 def default_db_path() -> Path:

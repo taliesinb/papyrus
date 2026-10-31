@@ -73,7 +73,7 @@ Two LM Studio notes:
 
 ## Configuration
 
-`~/.papyrus/config.toml` (under `PAPYRUS_HOME`; `PAPYRUS_CONFIG` points
+`~/.papyrus/release/config.toml` (in the library's home; `PAPYRUS_CONFIG` points
 elsewhere). Every key is optional. `papyrus config` shows the file's path and
 the settings in effect with where each comes from; `papyrus config --init`
 writes a commented template.
@@ -91,8 +91,14 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 
 ## Data
 
-* Database: `~/.papyrus/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
-* Managed store: `~/.papyrus/store/ab/<sha256>.pdf` (under `PAPYRUS_HOME`),
+* Variants: every library is a **variant** with a home of its own,
+  `~/.papyrus/<variant>/`. The everyday one is `release`
+  (`~/.papyrus/release/`); `papyrus --variant personal …` (or
+  `PAPYRUS_VARIANT=personal`) works on `~/.papyrus/personal/`. Each variant
+  has its own apps, port and tailnet path (`apps/macos/build.py --variant
+  personal`, see [`apps/macos/README.md`](apps/macos/README.md)).
+* Database: `~/.papyrus/<variant>/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
+* Managed store: `~/.papyrus/<variant>/store/ab/<sha256>.pdf` (under the home),
   read-only copies named by content hash; `files.stored_path` points there.
   Copies of local files are APFS clones (no extra space while the original
   exists; plain `cp` would not clone).
@@ -103,7 +109,8 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 
 | variable | purpose |
 |---|---|
-| `PAPYRUS_DB`, `PAPYRUS_HOME` | database location; `PAPYRUS_HOME` (default `~/.papyrus`) also holds the store |
+| `PAPYRUS_VARIANT`, `PAPYRUS_ROOT` | the variant (default `release`; also `--variant`) and where homes live (default `~/.papyrus`): the home is `$PAPYRUS_ROOT/$PAPYRUS_VARIANT` |
+| `PAPYRUS_DB`, `PAPYRUS_HOME` | database location; `PAPYRUS_HOME` (default: the variant's home) also holds the store and config, and overrides the variant |
 | `PAPYRUS_LMSTUDIO_URL`, `PAPYRUS_LMSTUDIO_MODEL` | extraction via LM Studio |
 | `PAPYRUS_BACKEND`, `PAPYRUS_DECIDER` | override `backend` / `decider` from the config |
 | `PAPYRUS_DECIDE_MODEL` | decider model via LM Studio |

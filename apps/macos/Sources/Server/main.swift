@@ -1,16 +1,18 @@
 // Papyrus Server.app: a menu-bar app (no Dock tile) that runs the read-only
-// papyrus web server and publishes it on the tailnet.
+// papyrus web server and publishes it on the tailnet. One per variant
+// (`Papyrus Personal Server.app`), each with its own menu-bar scroll.
 //
 //   - runs `node <bundle>/Contents/Resources/web/build/index.js` on
-//     127.0.0.1:<port> (papyrus-app.json; the app is served under /papyrus),
-//     its output in ~/Library/Logs/Papyrus/server.log, restarting it when it
+//     127.0.0.1:<port> with PAPYRUS_VARIANT=<variant> (papyrus-app.json; the
+//     app is served under its base, /papyrus or /papyrus-<variant>), its
+//     output in ~/Library/Logs/<variant name>/server.log, restarting it when it
 //     exits unexpectedly (with backoff; five quick failures in a row stop it);
-//   - keeps its pid in ~/Library/Application Support/Papyrus/server.pid, so a
-//     server left behind by a crashed app is stopped before a new one starts;
-//     a papyrus server on the port that it did not start (`pnpm start`) is used
-//     as it is;
-//   - publishes it with `tailscale serve --https=443 --set-path=/papyrus
-//     http://127.0.0.1:<port>/papyrus` (Publish on Tailnet, on by default) and
+//   - keeps its pid in ~/Library/Application Support/<variant name>/server.pid,
+//     so a server left behind by a crashed app is stopped before a new one
+//     starts; a papyrus server on the port that it did not start (`pnpm start`)
+//     is used as it is;
+//   - publishes it with `tailscale serve --https=443 --set-path=<base>
+//     http://127.0.0.1:<port><base>` (Publish on Tailnet, on by default) and
 //     withdraws that path when it quits;
 //   - the menu shows the library's counts and any pipeline run in progress
 //     (`/api/version`), and opens Papyrus.app, the browser, the log;
@@ -33,7 +35,7 @@ enum ServerState: Equatable {
 
 final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let config = PapyrusConfig.load()
-    let log = RunLog(name: "server")
+    lazy var log = RunLog(name: "server", config: config)
     var statusItem: NSStatusItem!
     let menu = NSMenu()
 
@@ -53,12 +55,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "publishOnTailnet") }
     }
 
-    var supportDir: URL {
-        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Papyrus", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-    var pidFile: URL { supportDir.appendingPathComponent("server.pid") }
+    var pidFile: URL { config.libraryDirectory("Application Support").appendingPathComponent("server.pid") }
     var script: URL { Bundle.main.resourceURL!.appendingPathComponent("web/build/index.js") }
     var tailnetURL: URL? { tailnetHost.map { URL(string: "https://\($0)\(config.base)/")! } }
 
@@ -68,15 +65,17 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
             .filter { $0.processIdentifier != getpid() }
         if !others.isEmpty {
-            log.line("another Papyrus Server is running (pid \(others[0].processIdentifier)); exiting")
+            log.line("another \(config.serverName) is running (pid \(others[0].processIdentifier)); exiting")
             exit(0)
         }
         let info = Bundle.main.infoDictionary ?? [:]
-        log.line("launch: \(Bundle.main.bundlePath) \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?")) port \(config.port)")
+        log.line("launch: \(Bundle.main.bundlePath) \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?")) variant \(config.variant) port \(config.port)")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = glyphImage(pointSize: 17) ?? NSImage(systemSymbolName: "scroll", accessibilityDescription: "Papyrus")
-        statusItem.button?.toolTip = "Papyrus Server"
+        statusItem.button?.image = menuBarImage(initial: config.initial) ?? NSImage(systemSymbolName: "scroll", accessibilityDescription: config.name)
+        statusItem.button?.toolTip = config.serverName
+        // Each variant's item keeps its own place in the menu bar.
+        statusItem.autosaveName = config.variantName
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
@@ -108,7 +107,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pollTimer?.invalidate()
         stopServer()
         if published {
-            // Withdraw /papyrus from the tailnet; tailscaled keeps --bg handlers otherwise.
+            // Withdraw our path from the tailnet; tailscaled keeps --bg handlers otherwise.
             runTailscale(["serve", "--https=443", "--set-path=\(config.base)", "off"])
             log.line("tailscale: withdrew \(config.base)")
         }
@@ -181,6 +180,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         env["HOST"] = "127.0.0.1"
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["NODE_ENV"] = "production"
+        env["PAPYRUS_VARIANT"] = config.variant
         if let pdftoppm = config.pdftoppm { env["PDFTOPPM"] = pdftoppm }
         for (key, value) in config.env ?? [:] { env[key] = value }
         p.environment = env
@@ -399,9 +399,9 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let header = menu.addItem(withTitle: "Papyrus Server", action: nil, keyEquivalent: "")
+        let header = menu.addItem(withTitle: config.serverName, action: nil, keyEquivalent: "")
         header.isEnabled = false
-        header.attributedTitle = NSAttributedString(string: "Papyrus Server", attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+        header.attributedTitle = NSAttributedString(string: config.serverName, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
 
         func info(_ text: String) {
             let item = menu.addItem(withTitle: text, action: nil, keyEquivalent: "")
@@ -427,7 +427,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        add(menu, "Open Papyrus", #selector(openPapyrus), "o")
+        add(menu, "Open \(config.name)", #selector(openPapyrus), "o")
         add(menu, "Open in Browser", #selector(openInBrowser), "", enabled: isRunning)
         add(menu, "Open Tailnet Address", #selector(openTailnet), "", enabled: published && isRunning)
         add(menu, "Copy Tailnet Address", #selector(copyTailnet), "", enabled: published)
@@ -439,7 +439,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         add(menu, "Open at Login", #selector(toggleLogin), "").state = SMAppService.mainApp.status == .enabled ? .on : .off
-        add(menu, "Quit Papyrus Server", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
+        add(menu, "Quit \(config.serverName)", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
 
         poll()
     }
@@ -454,9 +454,9 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    /// Papyrus.app: the one beside this bundle (a build in dist/), else wherever LaunchServices knows it.
+    /// This variant's Papyrus.app: the one beside this bundle (a build in dist/), else wherever LaunchServices knows it.
     var papyrusAppURL: URL? {
-        let sibling = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("Papyrus.app")
+        let sibling = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("\(config.name).app")
         if FileManager.default.fileExists(atPath: sibling.path) { return sibling }
         return NSWorkspace.shared.urlForApplication(withBundleIdentifier: config.appBundleId)
     }

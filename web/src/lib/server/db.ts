@@ -9,8 +9,22 @@ import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlit
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/** The variant this server shows (`PAPYRUS_VARIANT`, set by Papyrus Server.app), default `release`. */
+export function variant(): string {
+	const v = process.env.PAPYRUS_VARIANT?.trim() || 'release';
+	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v)) throw new Error(`PAPYRUS_VARIANT=${v} is not a variant id`);
+	return v;
+}
+
+/** The library: `PAPYRUS_HOME`, else the variant's home `<PAPYRUS_ROOT or ~/.papyrus>/<variant>` (as src/papyrus/db.py). */
 export function libraryHome(): string {
-	return process.env.PAPYRUS_HOME ?? join(homedir(), '.papyrus');
+	return process.env.PAPYRUS_HOME || join(process.env.PAPYRUS_ROOT || join(homedir(), '.papyrus'), variant());
+}
+
+/** What titles call this library: `papyrus`, or `papyrus personal` for the variant `personal`. */
+export function brand(): string {
+	const v = variant();
+	return v === 'release' ? 'papyrus' : `papyrus ${v.replaceAll('-', ' ')}`;
 }
 
 export function dbPath(): string {

@@ -57,7 +57,7 @@
 </script>
 
 <svelte:head>
-	<title>{w.title ?? 'Untitled'} · papyrus</title>
+	<title>{w.title ?? 'Untitled'} · {data.brand}</title>
 </svelte:head>
 
 <div class="work" class:wide>

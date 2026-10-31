@@ -1,6 +1,6 @@
 """papyrus's managed file store: a content-addressed copy of every document.
 
-Layout under the library root (`PAPYRUS_HOME`, default `~/.papyrus`):
+Layout under the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`):
 
     store/ab/abcdef0123….pdf    named by the sha256 of the bytes, sharded by its first two hex digits
     store/tmp/                  snapshots and partial downloads, renamed into place when complete

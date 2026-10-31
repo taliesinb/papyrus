@@ -1,5 +1,6 @@
 // Papyrus.app: a native window (WKWebView) around the read-only papyrus web
-// browser served by Papyrus Server.app.
+// browser served by Papyrus Server.app. One per variant (`Papyrus Personal.app`,
+// beside `Papyrus Personal Server.app`); names below are release's.
 //
 //   - on launch (and on Reconnect) it asks the server for `/api/version` on
 //     127.0.0.1:<port>; when nothing answers it launches Papyrus Server.app
@@ -10,11 +11,11 @@
 //     "Open ↗") open in a second window of its own;
 //   - PDF downloads (`?download`) go to ~/Downloads;
 //   - `papyrus://<path>` URLs open that path of the app (`open papyrus://work/43`,
-//     `papyrus://?q=transformers`);
+//     `papyrus://?q=transformers`); a variant's scheme is `papyrus-<variant>`;
 //   - menus: ⌘F focuses the library search, ⌘[ / ⌘] go back and forward,
 //     ⌘R reloads, zoom, Open in Browser (⇧⌘O), Copy Address (⇧⌘C), Papyrus
 //     Server's menu-bar app (Show Server);
-//   - the run log is ~/Library/Logs/Papyrus/app.log; `kill -USR1 <pid>` saves
+//   - the run log is ~/Library/Logs/<variant name>/app.log; `kill -USR1 <pid>` saves
 //     a snapshot of the key window's page beside it (snapshot.png), for
 //     checking the app from a script.
 
@@ -23,7 +24,9 @@ import WebKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
     let config = PapyrusConfig.load()
-    let log = RunLog(name: "app")
+    lazy var log = RunLog(name: "app", config: config)
+    /// The web pages' name for this library (`papyrus`, `papyrus personal`): page titles end in ` · <brand>`.
+    var brand: String { config.name.lowercased() }
     var window: NSWindow!
     var webView: WKWebView!
     var titleObservation: NSKeyValueObservation?
@@ -59,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1320, height: 900),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "Papyrus"
+        window.title = config.name
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = Self.background
         // A title bar in the page's own colour, without a separator: it reads as part of the page.
@@ -72,8 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if !window.setFrameUsingName("papyrus.main") { window.center() }
         titleObservation = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             guard let self, !self.showingStatusPage else { return }
-            let title = (view.title ?? "").replacingOccurrences(of: " · papyrus", with: "")
-            self.window.title = title.isEmpty || title == "papyrus" ? "Papyrus" : title
+            let title = (view.title ?? "").replacingOccurrences(of: " · \(self.brand)", with: "")
+            self.window.title = title.isEmpty || title == self.brand ? self.config.name : title
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -110,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var pendingURL: URL?
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.last, url.scheme == "papyrus" else { return }
+        guard let url = urls.last, url.scheme == config.scheme else { return }
         // papyrus://work/43?q=x → <local>/papyrus/work/43?q=x (the host is the first path segment).
         var path = (url.host.map { "/\($0)" } ?? "") + url.path
         if let query = url.query { path += "?\(query)" }
@@ -138,14 +141,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.load(self.config.localURL)
                 return
             }
+            let c = self.config
             guard let server = self.serverAppURL else {
                 self.connecting = false
-                self.showStatus(title: "Papyrus Server is not installed",
-                                detail: "Papyrus needs Papyrus Server.app beside it or in Applications. Build both with apps/macos/build.py.",
+                self.showStatus(title: "\(c.serverName) is not installed",
+                                detail: "\(c.name) needs \(c.serverName).app beside it or in Applications. Build both with apps/macos/build.py\(c.variant == "release" ? "" : " --variant \(c.variant)").",
                                 retry: false)
                 return
             }
-            self.showStatus(title: "Starting Papyrus Server…", detail: "", retry: false, spinner: true)
+            self.showStatus(title: "Starting \(c.serverName)…", detail: "", retry: false, spinner: true)
             self.log.line("the server does not answer; launching \(server.path)")
             let open = NSWorkspace.OpenConfiguration()
             open.activates = false
@@ -155,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                     if let error {
                         self.connecting = false
                         self.log.line("cannot launch the server: \(error)")
-                        self.showStatus(title: "Papyrus Server did not start", detail: error.localizedDescription, retry: true)
+                        self.showStatus(title: "\(self.config.serverName) did not start", detail: error.localizedDescription, retry: true)
                         return
                     }
                     self.waitForServer(deadline: Date().addingTimeInterval(40))
@@ -175,16 +179,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.waitForServer(deadline: deadline) }
             } else {
                 self.connecting = false
-                self.showStatus(title: "Papyrus Server does not answer",
+                self.showStatus(title: "\(self.config.serverName) does not answer",
                                 detail: "It was started but nothing answers on \(self.config.localURL.absoluteString). Its menu-bar menu has Show Server Log.",
                                 retry: true)
             }
         }
     }
 
-    /// Papyrus Server.app: the one beside this bundle (a build in dist/), else wherever LaunchServices knows it.
+    /// This variant's Papyrus Server.app: the one beside this bundle (a build in dist/), else wherever LaunchServices knows it.
     var serverAppURL: URL? {
-        let sibling = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("Papyrus Server.app")
+        let sibling = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("\(config.serverName).app")
         if FileManager.default.fileExists(atPath: sibling.path) { return sibling }
         return NSWorkspace.shared.urlForApplication(withBundleIdentifier: config.serverBundleId)
     }
@@ -198,10 +202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func showStatus(title: String, detail: String, retry: Bool, spinner: Bool = false) {
         showingStatusPage = true
-        window.title = "Papyrus"
+        window.title = config.name
         retryTimer?.invalidate()
         let html = """
-        <!doctype html><html><head><meta charset="utf-8"><title>Papyrus</title>
+        <!doctype html><html><head><meta charset="utf-8"><title>\(escapedHTML(config.name))</title>
         <style>:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0d0f12;color:#d9dee6;
         font:15px/1.5 -apple-system,system-ui,sans-serif}main{width:min(34em,calc(100% - 3em));text-align:center}
         h1{font:500 1.6em 'Iowan Old Style',Charter,Palatino,Georgia,serif;color:#f1f4f8;margin:.4em 0}p{color:#8a93a3}
@@ -390,16 +394,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             return item
         }
 
-        let app = submenu("Papyrus")
-        add(app, "About Papyrus", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
+        let name = config.name
+        let app = submenu(name)
+        add(app, "About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
         app.addItem(.separator())
-        add(app, "Show Papyrus Server", #selector(showServer))
+        add(app, "Show \(config.serverName)", #selector(showServer))
         app.addItem(.separator())
-        add(app, "Hide Papyrus", #selector(NSApplication.hide(_:)), "h")
+        add(app, "Hide \(name)", #selector(NSApplication.hide(_:)), "h")
         add(app, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
         add(app, "Show All", #selector(NSApplication.unhideAllApplications(_:)))
         app.addItem(.separator())
-        add(app, "Quit Papyrus", #selector(NSApplication.terminate(_:)), "q")
+        add(app, "Quit \(name)", #selector(NSApplication.terminate(_:)), "q")
 
         let file = submenu("File")
         add(file, "Library", #selector(goHome), "l", [.command, .shift])
