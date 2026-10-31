@@ -31,7 +31,7 @@ and handle them in the resolver.
 | option | reach | limits | verdict |
 |---|---|---|---|
 | **Internal app + user token** (`xoxp-`), `conversations.history`/`replies` | Every conversation the user is in, DMs included (per scope) | Internal apps keep Tier 3 for history/replies: 50+ requests/min, up to 1,000 messages per page ([Slack, 2025-05-29](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps/), [clarification](https://docs.slack.dev/changelog/2025/06/03/rate-limits-clarity/)) | **Recommended.** Complete and fast enough. |
-| Same token, `search.messages` (`search:read`) | Whatever the user's search sees, including old threads with new replies | Tier 2 (20+/min), 100 results per page, at most 100 pages; one result per cluster of nearby matches; marked "legacy" ([docs](https://docs.slack.dev/reference/methods/search.messages)) | Useful as a cheap fast path (`arxiv.org after:2026-10-01`), not as the only source: it can drop matches. |
+| Same token, `search.messages` (`search:read`) | Whatever the user's search sees, including old threads with new replies | Tier 2 (20+/min), 100 results per page, at most 100 pages; one result per cluster of nearby matches; marked "legacy" ([docs](https://docs.slack.dev/reference/methods/search.messages)) | **Primary path** after the 2026-10-30 check below: it found every arXiv message a full scan found, in one call instead of ~1,000. |
 | Real-time Search API, `assistant.search.context` | Same as search, with `channel_types` and `after`/`before` | ~10 requests/min per user, 20 results per page, meant for user-initiated AI queries; internal or Marketplace apps only ([guide](https://docs.slack.dev/apis/web-api/real-time-search-api)) | Wrong tool for a periodic scrape. |
 | A distributed (non-Marketplace) "papyrus" app | – | `conversations.history`/`replies` drop to 1 request/min and 15 messages | Ruled out. Each user makes their own internal app instead. |
 | Workspace export (admin) | Public channels only on Free/Pro | Manual ZIP | Fallback for a one-off backfill if we ever have admin rights. |
@@ -50,7 +50,7 @@ and handle them in the resolver.
    * `im:history`, `im:read`, `mpim:history`, `mpim:read` (DMs; optional, see
      filters)
    * `users:read` (display names)
-   * `search:read` (optional fast path)
+   * `search:read` (the main path, see the check below)
    * `files:read` (optional, to fetch PDFs uploaded to Slack later)
 2. **Install to the workspace.** If the workspace requires app approval, this
    becomes a request to an admin. That is the one step we can't automate, and
@@ -101,10 +101,14 @@ papyrus import-slack --days 30 [--dms | --no-dms] \
   a deny list.
 * `--dry-run` prints what would be stored (as JSON lines), so we can review
   real output before writing to the release library.
-* Cost: one `users.conversations` page, one `conversations.history` call per
-  channel per 1,000 messages, and one `conversations.replies` per thread with
-  replies, so threads dominate. At Tier 3 that's minutes, not hours, for a
-  month of a busy workspace. Honour `Retry-After` on 429.
+* Cost of a full scan: one `users.conversations` page, one
+  `conversations.history` call per channel per 1,000 messages, and one
+  `conversations.replies` per thread with replies, so threads dominate.
+  Measured on Symbolica: 30 days took 215 calls and 41 s; 180 days took 1,004
+  calls and 14.5 min, mostly waiting out 429s on `conversations.replies`
+  (`Retry-After: 10`, about every 50 calls). Search does the same job in one
+  call per domain and 100 results, so the importer searches first and keeps
+  the full scan as an option (`--full-scan`) for audits.
 * Incremental runs: per channel, remember the newest `ts` scanned (in the
   run's stats, or a small state file next to the database) and pass it as
   `oldest` next time. Upserting on `(kind, locator)` keeps re-runs harmless
@@ -158,17 +162,23 @@ the scrape.
 
 ## Open questions
 
-* **Workspace:** Symbolica. Whether it needs admin approval for app
-  installs is unknown; installing the app below answers it (the button says
-  "Request to Install" instead of "Install").
+* **Workspace:** Symbolica (`symbolicaai.slack.com`, `T06G6CMDF1V`). Installing
+  the internal app needed no admin approval. The user token is in the
+  Keychain as service `papyrus.slack`, account `release/symbolica`.
 * **DMs:** off by default, so the first manifest leaves out the `im:*` and
   `mpim:*` scopes. Adding them later means reinstalling the app, which issues
   a new token.
-* **Does `search.messages` match link hosts (`arxiv.org`)?** Unknown. The
-  API uses the same engine as the search box, so a first check is in the
-  Slack UI. The definitive check needs the token: scan one channel over 30
-  days with `conversations.history`, run `arxiv.org in:#channel after:<date>`
-  through `search.messages`, and compare the two sets of arXiv messages.
+* **Does `search.messages` match link hosts (`arxiv.org`)?** Yes, checked
+  2026-10-30 on the 26 channels the user is in. A full scan
+  (`conversations.history` + `conversations.replies`) and one
+  `search.messages` query, `arxiv.org after:<date>`, found the same messages
+  with arXiv links: 13 of 13 over 30 days and 63 of 63 over 180 days, with
+  nothing found by only one side. The 63 include 20 thread replies, 3 messages
+  whose link was only in the unfurl (`attachments`), and links behind labels.
+  Search also returned 12 DM matches, which were left out of the comparison.
+  Not yet checked: whether `has:link after:<date>` lists *all* link messages
+  (then the domain filter could run locally, with no per-domain queries), and
+  what a search match carries besides `text` (`blocks`, `attachments`).
 
 First manifest (user scopes only, read-only, no DMs):
 
