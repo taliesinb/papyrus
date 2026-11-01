@@ -1,5 +1,7 @@
-import type { AssertionRow, ContextInfo, PipelineStatus, WorkSummary } from '#lib/types.ts';
-import { all, dataVersion, get, parseJson } from './db.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AssertionRow, ContextInfo, PipelineStatus, WatchStatus, WorkSummary } from '#lib/types.ts';
+import { all, dataVersion, get, libraryHome, parseJson } from './db.ts';
 import type { Library } from './library.ts';
 import { sharedTerms, similarity, topTerms } from './similar.ts';
 
@@ -183,6 +185,29 @@ export function pipelineStatus(): PipelineStatus {
 		running,
 		last: last ? { id: last.id, command: last.command, finishedAt: last.finished_at, stats: last.stats } : null,
 		counts,
-		version: String(dataVersion())
+		version: String(dataVersion()),
+		watch: watchStatus()
+	};
+}
+
+/** The watcher's status file, if its process is alive (a watcher that crashed leaves the file behind). */
+export function watchStatus(): WatchStatus | null {
+	let s: { state?: string; detail?: string; pid?: number; retry_at?: string; pending?: WatchStatus['pending'] };
+	try {
+		s = JSON.parse(readFileSync(join(libraryHome(), 'watch.json'), 'utf8'));
+	} catch {
+		return null;
+	}
+	if (!s.pid || !s.state || s.state === 'stopped') return null;
+	try {
+		process.kill(s.pid, 0);
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code !== 'EPERM') return null;
+	}
+	return {
+		state: s.state as WatchStatus['state'],
+		detail: s.detail ?? '',
+		retryAt: s.retry_at ?? null,
+		pending: s.pending ?? null
 	};
 }

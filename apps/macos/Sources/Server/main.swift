@@ -16,14 +16,22 @@
 //   - publishes it with `tailscale serve --https=443 --set-path=<base>
 //     http://127.0.0.1:<port><base>` (Publish on Tailnet, on by default) and
 //     withdraws that path when it quits;
-//   - the menu shows the library's counts and any pipeline run in progress
-//     (`/api/version`), and opens Papyrus.app, the browser, the log;
+//   - runs `papyrus watch` (the `watch` command in papyrus-app.json, when the
+//     variant watches), which adds new PDFs from ~/Downloads and ~/Desktop and
+//     processes them in the background; its output goes to
+//     ~/Library/Logs/<variant name>/watch.log. It restarts it when it exits
+//     unexpectedly (with backoff; five quick failures in a row stop it) and stops
+//     it with SIGTERM on quit. Exit status 75 means another watcher holds the
+//     library's lock: tried again a minute later. "Watch for New PDFs" turns it
+//     off and on;
+//   - the menu shows the library's counts, any pipeline run in progress and the
+//     watcher's state (`/api/version`), and opens Papyrus.app, the browser, the logs;
 //   - Open at Login through SMAppService.
 //
-// Being the parent of the server, this bundle is the process macOS asks the
-// user about when the server reads PDFs in ~/Downloads or ~/Documents
-// ("Papyrus Server would like to access…"); its Info.plist carries the usage
-// strings (build.py).
+// Being the parent of the server and the watcher, this bundle is the process
+// macOS asks the user about when they read PDFs in ~/Downloads, ~/Desktop or
+// ~/Documents ("Papyrus Server would like to access…"); its Info.plist carries
+// the usage strings (build.py).
 
 import Cocoa
 import ServiceManagement
@@ -51,6 +59,17 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var tailnetHost: String?
     var published = false
     var tailscaleNote: String?
+
+    lazy var watchLog = RunLog(name: "watch", config: config)
+    var watcher: Process?
+    var watcherStopping = false
+    var watcherFailures: [Date] = []
+    var watcherNote: String?
+
+    var watchEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "watchForPDFs") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "watchForPDFs") }
+    }
 
     var publishEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "publishOnTailnet") as? Bool ?? true }
@@ -85,6 +104,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         installTerminationSignals()
         start()
+        startWatcher()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
     }
 
@@ -107,6 +127,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         pollTimer?.invalidate()
+        stopWatcher()
         stopServer()
         if published {
             // Withdraw our path from the tailnet; tailscaled keeps --bg handlers otherwise.
@@ -291,6 +312,103 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if publishEnabled { publish() } else { refreshTailnet() }
     }
 
+    // MARK: the watcher (papyrus watch)
+
+    func startWatcher() {
+        guard watchEnabled, watcher == nil, let command = config.watch, let exe = command.first else { return }
+        guard FileManager.default.isExecutableFile(atPath: exe) else {
+            watcherNote = "\(exe) not found"
+            watchLog.line("cannot start the watcher: no \(exe) (rebuild with build.py)")
+            return
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = Array(command.dropFirst())
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["PAPYRUS_VARIANT"] = config.variant
+        env["PYTHONUNBUFFERED"] = "1"
+        for (key, value) in config.env ?? [:] { env[key] = value }
+        p.environment = env
+        p.standardOutput = watchLog.fileHandle
+        p.standardError = watchLog.fileHandle
+        p.standardInput = FileHandle.nullDevice
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async { self?.watcherExited(proc) }
+        }
+        do {
+            try p.run()
+        } catch {
+            watcherNote = "cannot start: \(error.localizedDescription)"
+            watchLog.line("cannot start \(exe): \(error)")
+            return
+        }
+        watcher = p
+        watcherNote = nil
+        watchLog.line("started the watcher: pid \(p.processIdentifier)")
+    }
+
+    func watcherExited(_ proc: Process) {
+        guard proc === watcher else { return }
+        watcher = nil
+        let how = proc.terminationReason == .uncaughtSignal ? "signal \(proc.terminationStatus)" : "status \(proc.terminationStatus)"
+        watchLog.line("the watcher exited (\(how))")
+        if watcherStopping { watcherStopping = false; return }
+        var delay: Double
+        if proc.terminationReason == .exit && proc.terminationStatus == 75 {
+            // EXIT_LOCKED: another `papyrus watch` runs for this library (e.g. in a terminal).
+            watcherNote = "another watcher runs for this library"
+            delay = 60
+        } else {
+            let now = Date()
+            watcherFailures = watcherFailures.filter { now.timeIntervalSince($0) < 600 } + [now]
+            if watcherFailures.count >= 5 {
+                watcherNote = "keeps exiting (\(how)); see the watcher log"
+                return
+            }
+            delay = min(60, pow(2.0, Double(watcherFailures.count)))
+            watcherNote = "restarting"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.watcher == nil, self.watchEnabled else { return }
+            self.startWatcher()
+        }
+    }
+
+    /// SIGTERM: the watcher closes its run as interrupted and unloads any model it loaded.
+    func stopWatcher() {
+        guard let p = watcher else { return }
+        watcherStopping = true
+        p.terminate()
+        for _ in 0..<100 where p.isRunning { usleep(100_000) }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        watcher = nil
+        watchLog.line("stopped the watcher")
+    }
+
+    @objc func toggleWatch() {
+        watchEnabled.toggle()
+        watcherFailures = []
+        if watchEnabled { startWatcher() } else { stopWatcher(); watcherNote = nil }
+    }
+
+    /// One line for the menu: what the watcher is doing.
+    var watchLine: String? {
+        guard config.watch != nil else { return nil }
+        if !watchEnabled { return "Not watching for new PDFs" }
+        if let note = watcherNote, watcher == nil { return "Watcher: \(note)" }
+        guard watcher != nil else { return "Watcher: not running" }
+        guard let w = library?.watch else { return "Watcher: starting…" }
+        let todo = w.pending.map { $0.triage + $0.extract + $0.enrich } ?? 0
+        switch w.state {
+        case "idle": return "Watching: idle"
+        case "ingesting": return "Watching: adding new PDFs" + (todo > 0 ? " (\(todo) steps left)" : "")
+        case "waiting-memory": return "Watching: waiting for memory" + (todo > 0 ? " (\(todo) steps left)" : "")
+        case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))")
+        default: return "Watching: \(w.state)"
+        }
+    }
+
     // MARK: tailscale
 
     var tailscalePath: String? {
@@ -419,10 +537,11 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let c = library?.counts {
                 info("\(c.works) works · \(c.files) files · \(c.people) people")
             }
-            for run in library?.running ?? [] {
+            for run in library?.running ?? [] where run.command != "watch" {
                 info("\(run.command) running\(run.backend.map { " (\($0))" } ?? "")")
             }
         }
+        if let line = watchLine { info(line) }
         if published, let host = tailnetHost {
             info("Published at \(host)\(config.base)")
         } else if publishEnabled, let note = tailscaleNote {
@@ -437,8 +556,14 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         add(menu, "Publish on Tailnet", #selector(togglePublish), "").state = publishEnabled ? .on : .off
+        if config.watch != nil {
+            add(menu, "Watch for New PDFs", #selector(toggleWatch), "").state = watchEnabled ? .on : .off
+        }
         add(menu, "Restart Server", #selector(restartServer), "r")
         add(menu, "Show Server Log", #selector(showLog), "l")
+        if config.watch != nil {
+            add(menu, "Show Watcher Log", #selector(showWatchLog), "")
+        }
 
         menu.addItem(.separator())
         add(menu, "Open at Login", #selector(toggleLogin), "").state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -476,6 +601,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
     @objc func showLog() { NSWorkspace.shared.open(log.url) }
+    @objc func showWatchLog() { NSWorkspace.shared.open(watchLog.url) }
 
     @objc func toggleLogin() {
         do {

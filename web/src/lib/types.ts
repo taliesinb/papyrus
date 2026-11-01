@@ -138,4 +138,13 @@ export interface PipelineStatus {
 	last: { id: number; command: string; finishedAt: string | null; stats: string | null } | null;
 	counts: { works: number; files: number; people: number; pages: number };
 	version: string;
+	/** `papyrus watch` (src/papyrus/watch/daemon.py): its <home>/watch.json, or null if none runs. */
+	watch: WatchStatus | null;
+}
+
+export interface WatchStatus {
+	state: 'starting' | 'idle' | 'ingesting' | 'waiting-memory' | 'lmstudio-unavailable';
+	detail: string;
+	retryAt: string | null;
+	pending: { triage: number; extract: number; enrich: number } | null;
 }

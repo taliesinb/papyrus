@@ -4,15 +4,15 @@ Two native apps around the read-only web browser in [`web/`](../../web):
 
 | app | bundle id | what it is |
 |---|---|---|
-| **Papyrus Server.app** | `io.github.taliesinb.papyrus.release.server` | A menu-bar app with no Dock tile. It runs the web server on `127.0.0.1:5182` under `/papyrus` and publishes it on the tailnet with `tailscale serve`. |
+| **Papyrus Server.app** | `io.github.taliesinb.papyrus.release.server` | A menu-bar app with no Dock tile. It runs the web server on `127.0.0.1:5182` under `/papyrus` and publishes it on the tailnet with `tailscale serve`. It also runs `papyrus watch`, which adds new PDFs from `~/Downloads` and `~/Desktop`. |
 | **Papyrus.app** | `io.github.taliesinb.papyrus.release` | A window (WKWebView) on the library. It starts Papyrus Server.app when nothing answers. |
 
 That is the `release` variant; every other variant has a pair of its own
 (`Papyrus Personal.app`, `Papyrus Personal Server.app`), see
 [Variants](#variants).
 
-Both are read-only: the Python CLI (`papyrus scan`, `download`, `process`, …)
-is still the only writer. The pipeline's writes show up in the open window as
+Both are read-only: the Python CLI (`papyrus scan`, `download`, `process`,
+`watch`, …) is still the only writer. The pipeline's writes show up in the open window as
 "library updated · refresh", as in a browser.
 
 ```sh
@@ -53,8 +53,16 @@ Each bundle has a `Contents/Resources/papyrus-app.json`:
   "scheme": "papyrus-personal", "port": 5192, "base": "/papyrus-personal",
   "appBundleId": "io.github.taliesinb.papyrus.personal",
   "serverBundleId": "io.github.taliesinb.papyrus.personal.server", "color": "#8E4EC6",
-  "node": "/opt/homebrew/bin/node", "tailscale": "/usr/local/bin/tailscale", "env": {} }
+  "node": "/opt/homebrew/bin/node", "tailscale": "/usr/local/bin/tailscale", "env": {},
+  "watch": ["/opt/homebrew/bin/uv", "run", "--project", "/Users/me/github/papyrus", "--frozen", "--quiet",
+            "papyrus", "watch"] }
 ```
+
+`watch` is there when the variant watches: `release` by default, another
+variant after `--watch` (`--no-watch` turns it off; both are recorded as
+`watch:` in `variant.yml`). Every variant's watcher would otherwise add the
+same `~/Downloads` to its own library. The command runs the CLI from this
+checkout through uv, so a `git pull` reaches the watcher when it next starts.
 
 A GUI app has no shell `PATH`, so the tools' absolute paths are recorded at
 build time. The variant's port, base path and colour come from its
@@ -85,7 +93,7 @@ bundle id; components append to it (`.server`).
 | Server app | `Papyrus Server.app` | `Papyrus Personal Server.app` |
 | App / server bundle id | `io.github.taliesinb.papyrus.release[.server]` | `io.github.taliesinb.papyrus.<v>[.server]` |
 | Logs | `~/Library/Logs/io.github.taliesinb.papyrus.release/` | `~/Library/Logs/io.github.taliesinb.papyrus.<v>/` |
-| Linux: systemd user unit ([`apps/linux`](../linux/README.md)) | `io.github.taliesinb.papyrus.release.server.service` | `io.github.taliesinb.papyrus.<v>.server.service` |
+| Linux: systemd user units ([`apps/linux`](../linux/README.md)) | `io.github.taliesinb.papyrus.release.{server,watch}.service` | `io.github.taliesinb.papyrus.<v>.server.service` (and `.watch.service` with `--watch`) |
 | Application Support (`server.pid`) | `~/Library/Application Support/io.github.taliesinb.papyrus.release/` | `…/io.github.taliesinb.papyrus.<v>/` |
 | Tailscale Serve path = web base | **`/papyrus`** | `/papyrus-<v>` |
 | URL scheme | **`papyrus://`** | `papyrus-<v>://` |
@@ -106,7 +114,8 @@ backups) and:
 
 ```
 ~/.papyrus/<v>/
-  variant.yml     id, display, color, port, servePath, created; build, installed (written by the installers); serve (Linux)
+  variant.yml     id, display, color, port, servePath, created; build, installed (written by the installers); serve (Linux); watch
+  watch.json      what `papyrus watch` is doing (state, pending counts); watch.lock: one watcher per library
   logs -> ~/Library/Logs/<variant name>/                (Linux: ${XDG_STATE_HOME:-~/.local/state}/<variant name>/)
   support -> ~/Library/Application Support/<variant name>/  (Linux: ${XDG_DATA_HOME:-~/.local/share}/<variant name>/)
 ```
@@ -159,13 +168,32 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
   * the tailnet address.
 
   Its items are Open Papyrus (⌘O), Open in Browser, Open / Copy Tailnet
-  Address, Publish on Tailnet, Restart Server (⌘R), Show Server Log (⌘L),
-  Open at Login (`SMAppService`) and Quit (⌘Q).
+  Address, Publish on Tailnet, Watch for New PDFs, Restart Server (⌘R), Show
+  Server Log (⌘L), Show Watcher Log, Open at Login (`SMAppService`) and Quit
+  (⌘Q).
+* **Runs the watcher** (`papyrus watch`, the `watch` command in
+  `papyrus-app.json`), with `PAPYRUS_VARIANT` and the configured env. Its
+  output goes to `~/Library/Logs/<variant name>/watch.log` (file ids and
+  counts only).
+  * It restarts the watcher when it exits unexpectedly, waiting 2, 4, 8… s
+    (at most 60). Five exits within ten minutes stop it, with the reason in
+    the menu.
+  * Exit status 75 means another watcher holds the library's lock (one in a
+    terminal, say): it tries again a minute later.
+  * Quit sends it SIGTERM first (its run closes as `interrupted`, and it
+    unloads any model it loaded), waiting up to 10 s.
+  * Watch for New PDFs (on by default) stops and starts it.
+* **The menu's watcher line** comes from `/api/version`'s `watch` (the
+  library's `watch.json`): Watching: idle, adding new PDFs (n steps left),
+  waiting for memory, or LM Studio unavailable (with the reason, such as
+  "another model is loaded"). Show Watcher Log opens its log.
 * **Single instance:** a second copy exits at once.
 * **Privacy prompts:** macOS attributes file access to the process that
-  spawned the server, so its prompts name "Papyrus Server" (for example, when
-  a PDF is still only in `~/Downloads`). The Info.plist carries the usage
-  strings for Desktop, Documents, Downloads and network or removable volumes.
+  spawned the server and the watcher, so its prompts name "Papyrus Server"
+  (for example, when the watcher first reads `~/Downloads`). The Info.plist
+  carries the usage strings for Desktop, Documents, Downloads and network or
+  removable volumes. This is why the watcher runs here rather than as a
+  launchd agent: there, the prompt would name Python, or never appear.
 
 ## Papyrus.app
 

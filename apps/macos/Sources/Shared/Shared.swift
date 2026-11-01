@@ -27,8 +27,11 @@ struct PapyrusConfig: Decodable {
     /// Absolute paths found when the bundle was built: a GUI app has no shell PATH.
     var node: String?
     var tailscale: String?
-    /// Extra environment for the web server (PAPYRUS_HOME, PAPYRUS_DB, …).
+    /// Extra environment for the web server and the watcher (PAPYRUS_HOME, PAPYRUS_DB, …).
     var env: [String: String]?
+    /// The command that runs `papyrus watch` for this variant (uv run …), when the variant watches
+    /// ~/Downloads and ~/Desktop (variant.yml `watch`; build.py --watch / --no-watch).
+    var watch: [String]?
 
     static func load() -> PapyrusConfig {
         guard let url = Bundle.main.url(forResource: "papyrus-app", withExtension: "json"),
@@ -72,17 +75,22 @@ extension PapyrusConfig {
         node = try c.decodeIfPresent(String.self, forKey: .node)
         tailscale = try c.decodeIfPresent(String.self, forKey: .tailscale)
         env = try c.decodeIfPresent([String: String].self, forKey: .env)
+        watch = try c.decodeIfPresent([String].self, forKey: .watch)
     }
-    enum CodingKeys: String, CodingKey { case variant, name, serverName, scheme, port, base, appBundleId, serverBundleId, node, tailscale, env }
+    enum CodingKeys: String, CodingKey { case variant, name, serverName, scheme, port, base, appBundleId, serverBundleId, node, tailscale, env, watch }
 }
 
-/// What `/api/version` reports: the library's counts and any pipeline run in progress.
+/// What `/api/version` reports: the library's counts, any pipeline run in progress, and the watcher.
 struct LibraryStatus: Decodable {
     struct Counts: Decodable { var works: Int; var files: Int; var people: Int; var pages: Int }
     struct Run: Decodable { var id: Int; var command: String; var backend: String? }
+    struct Pending: Decodable { var triage: Int; var extract: Int; var enrich: Int }
+    /// `papyrus watch`'s state: idle | ingesting | waiting-memory | lmstudio-unavailable | starting.
+    struct Watch: Decodable { var state: String; var detail: String; var retryAt: String?; var pending: Pending? }
     var counts: Counts
     var running: [Run]
     var version: String
+    var watch: Watch?
 }
 
 /// Ask the server for its status. nil: nothing answers, or what answers is not papyrus.

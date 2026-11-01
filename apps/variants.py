@@ -158,7 +158,7 @@ def ensure_library(vid: str, server_env: dict[str, str]) -> bool:
         return False
     if (papyrus_root() / vid / "papyrus.sqlite").exists():
         return False
-    uv = find("uv", str(Path.home() / ".local/bin/uv"), "/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+    uv = find_uv()
     if not uv:
         die("uv not found (https://docs.astral.sh/uv/): the papyrus CLI runs with it, and it creates the new "
             f"library here; or create it yourself with `papyrus --variant {vid} stats`")
@@ -167,6 +167,35 @@ def ensure_library(vid: str, server_env: dict[str, str]) -> bool:
     run([uv, "run", "--project", str(REPO), "papyrus", "--variant", vid, "stats"],
         env={**env, "PAPYRUS_ROOT": str(papyrus_root())})
     return True
+
+
+def find_uv() -> str | None:
+    return find("uv", str(Path.home() / ".local/bin/uv"), "/opt/homebrew/bin/uv", "/usr/local/bin/uv")
+
+
+def watches(vid: str, variant: dict) -> bool:
+    """Whether the variant runs `papyrus watch` (variant.yml `watch`). Default: release only, since
+    every variant's watcher would add the same ~/Downloads to its own library."""
+    return bool(variant.get("watch", vid == RELEASE))
+
+
+def set_watch(vid: str, variant: dict, value: bool | None, writer: str) -> dict:
+    """Record --watch / --no-watch in variant.yml (when given and different)."""
+    if value is None or watches(vid, variant) == value:
+        return variant
+    record = {**variant, "watch": value}
+    write_flat_yaml(papyrus_root() / vid / "variant.yml", record, f"{display_name(vid)}: written by {writer}")
+    return record
+
+
+def watch_command() -> list[str]:
+    """`papyrus watch` from this checkout, as a service runs it (absolute paths: no shell PATH). The
+    CLI runs from the repository with uv, so a `git pull` reaches the watcher when it next starts;
+    PAPYRUS_VARIANT (and PAPYRUS_HOME, …) come from the service's environment."""
+    uv = find_uv()
+    if not uv:
+        die("uv not found (https://docs.astral.sh/uv/): `papyrus watch` runs with it (or install with --no-watch)")
+    return [uv, "run", "--project", str(REPO), "--frozen", "--quiet", "papyrus", "watch"]
 
 
 def link_home(home: Path, links: dict[str, Path]) -> None:

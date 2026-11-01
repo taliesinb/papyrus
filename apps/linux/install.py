@@ -20,6 +20,12 @@ https://<machine>.<tailnet>.ts.net<base>/. Variants and their variant.yml are sh
 The unit is enabled (it starts with the user's systemd manager: at login, or at boot when the
 account lingers) and restarted when it fails. It publishes the server with `tailscale serve --bg`
 when it starts; tailscaled keeps that across reboots, and --uninstall withdraws it.
+
+A variant that watches (release by default; `--watch` / `--no-watch`, recorded in variant.yml)
+also gets `<variant name>.watch.service`: `papyrus watch` from this checkout (`uv run --project
+<repo>`), at idle CPU and I/O priority, which adds new PDFs from ~/Downloads and ~/Desktop and
+processes them; its log is `<state dir>/watch.log`. Exit status 75 (another watcher holds the
+library's lock) is not restarted.
 """
 
 from __future__ import annotations
@@ -39,7 +45,8 @@ sys.path.insert(0, str(HERE.parent))
 
 from variants import (  # noqa: E402  (apps/variants.py, shared with apps/macos/build.py)
     FIRST_PORT, PORT_STEP, RELEASE, all_variants, copy_web, die, display_name, ensure_library, find, find_node, link_home,
-    papyrus_root, record_install, resolve_variant, variant_name, version, web_build_for, write_flat_yaml,
+    papyrus_root, record_install, resolve_variant, set_watch, variant_name, version, watch_command, watches, web_build_for,
+    write_flat_yaml,
 )
 
 WRITER = "apps/linux/install.py"
@@ -63,6 +70,10 @@ def unit_dir() -> Path:
 
 def unit_name(vid: str) -> str:
     return f"{variant_name(vid)}.server.service"
+
+
+def watch_unit_name(vid: str) -> str:
+    return f"{variant_name(vid)}.watch.service"
 
 
 def data_dir(vid: str) -> Path:
@@ -124,6 +135,39 @@ def unit_text(*, vid: str, node: str, web: Path, port: int, base: str, log: Path
         "",
     ]
     return "\n".join(lines)
+
+
+def watch_unit_text(*, vid: str, command: list[str], log: Path, env: dict[str, str]) -> str:
+    """`papyrus watch` as a service. systemd lowers its priority (the watcher also does it itself);
+    SIGTERM closes its run as interrupted."""
+    environment = {"PAPYRUS_VARIANT": vid, "PYTHONUNBUFFERED": "1",
+                   "PATH": os.pathsep.join(dict.fromkeys([str(Path(command[0]).parent), "/usr/local/bin", "/usr/bin", "/bin"])),
+                   **env}
+    return "\n".join([
+        f"# {display_name(vid)} watcher: written by {WRITER}",
+        "[Unit]",
+        f"Description={display_name(vid)} watcher: papyrus watch adds new PDFs from ~/Downloads and ~/Desktop",
+        "StartLimitIntervalSec=600",
+        "StartLimitBurst=5",
+        "",
+        "[Service]",
+        "Type=simple",
+        "ExecStart=" + " ".join(map(systemd_quote, command)),
+        *(f"Environment={systemd_quote(f'{k}={v}', dollars=False)}" for k, v in environment.items()),
+        "Nice=19",
+        "CPUSchedulingPolicy=idle",
+        "IOSchedulingClass=idle",
+        "Restart=on-failure",
+        "RestartSec=10",
+        "RestartPreventExitStatus=75",  # another watcher holds the library's lock
+        "TimeoutStopSec=30",
+        f"StandardOutput=append:{log}",
+        f"StandardError=append:{log}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ])
 
 
 # --- systemd and tailscale --------------------------------------------------------------------
@@ -238,11 +282,15 @@ def install(vid: str, variant: dict, args, tools: dict, build: str, systemd: boo
         check(systemctl("stop", unit), f"stop {unit}")
     install_web(web_build, support / "web")
 
+    watch_env = {k: v for k, v in env.items() if k != "PDFTOPPM"}
     if not systemd:
         command = " ".join([*(f"{k}={json.dumps(v)}" for k, v in {
             "PORT": str(port), "HOST": "127.0.0.1", "NODE_ENV": "production", "PAPYRUS_VARIANT": vid, **env}.items()),
             tools["node"], str(support / "web" / "build" / "index.js")])
         result["run"] = command
+        if watches(vid, variant):
+            result["runWatch"] = " ".join([*(f"{k}={json.dumps(v)}" for k, v in {"PAPYRUS_VARIANT": vid, **watch_env}.items()),
+                                         *map(json.dumps, watch_command())])
         record_install(vid, build, WRITER)
         return result
 
@@ -255,6 +303,18 @@ def install(vid: str, variant: dict, args, tools: dict, build: str, systemd: boo
     check(systemctl("restart", unit), f"restart {unit}")
     result["unit"] = str(unit_dir() / unit)
     result["log"] = str(logs / "server.log")
+
+    wunit = watch_unit_name(vid)
+    if watches(vid, variant):
+        (unit_dir() / wunit).write_text(watch_unit_text(vid=vid, command=watch_command(), log=logs / "watch.log",
+                                                        env=watch_env))
+        check(systemctl("daemon-reload"), "daemon-reload")
+        check(systemctl("enable", wunit), f"enable {wunit}")
+        check(systemctl("restart", wunit), f"restart {wunit}")
+        result["watchUnit"] = str(unit_dir() / wunit)
+        result["watchLog"] = str(logs / "watch.log")
+    elif remove_watch_unit(vid):
+        result["watchUnitRemoved"] = str(unit_dir() / wunit)
 
     status = wait_until_answering(port, base)
     if status is None:
@@ -271,10 +331,27 @@ def install(vid: str, variant: dict, args, tools: dict, build: str, systemd: boo
     return result
 
 
+def remove_watch_unit(vid: str, systemd: bool = True) -> bool:
+    """Stop, disable and remove the variant's watcher unit, if there is one."""
+    wunit = watch_unit_name(vid)
+    path = unit_dir() / wunit
+    if not path.exists():
+        return False
+    if systemd:
+        systemctl("stop", wunit)
+        systemctl("disable", wunit)
+    path.unlink()
+    if systemd:
+        systemctl("daemon-reload")
+    return True
+
+
 def uninstall(vid: str, variant: dict, tools: dict, systemd: bool) -> dict:
     unit = unit_name(vid)
     path = unit_dir() / unit
     removed = []
+    if remove_watch_unit(vid, systemd):
+        removed.append(str(unit_dir() / watch_unit_name(vid)))
     if systemd and path.exists():
         systemctl("stop", unit)
         systemctl("disable", unit)
@@ -307,8 +384,10 @@ def main() -> None:
     p.add_argument("--color", metavar="#RRGGBB", help="set the variant's colour (recorded; used by the macOS apps)")
     p.add_argument("--serve", action=argparse.BooleanOptionalAction, default=None,
                    help="publish on the tailnet with tailscale serve (recorded; default on)")
+    p.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
+                   help="also run `papyrus watch` as a service (recorded; default: release only)")
     p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
-                   help="environment for the web server, e.g. PAPYRUS_HOME=/tmp/ph (repeatable)")
+                   help="environment for the web server and the watcher, e.g. PAPYRUS_HOME=/tmp/ph (repeatable)")
     p.add_argument("--no-systemd", action="store_true", help="install the web build only and print the command that runs it")
     p.add_argument("--no-thumbnails", action="store_true", help="install without pdftoppm (page thumbnails fail)")
     p.add_argument("--skip-web", action="store_true", help="reuse web/build as it is (it must be built for the variant's base)")
@@ -355,6 +434,7 @@ def main() -> None:
             record = {**variants[vid], "serve": args.serve}
             write_flat_yaml(path, record, f"{display_name(vid)}: written by {WRITER}")
             variants[vid] = record
+        variants[vid] = set_watch(vid, variants[vid], args.watch, WRITER)
     results = [install(vid, v, args, tools, build, systemd) for vid, v in variants.items()]
 
     notes = []

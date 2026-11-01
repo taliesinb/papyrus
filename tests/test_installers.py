@@ -89,3 +89,26 @@ def test_unit_text():
     without = install.unit_text(vid="release", node="/usr/bin/node", web=Path("/d/web"), port=5182, base="/papyrus",
                                 log=Path("/s/server.log"), env={}, tailscale=None)
     assert "ExecStartPost" not in without
+
+
+def test_watch_defaults_to_release_only(root):
+    assert variants.watches("release", {}) and not variants.watches("personal", {})
+    assert variants.watches("personal", {"watch": True}) and not variants.watches("release", {"watch": False})
+    (root / "personal").mkdir(parents=True)
+    rec = variants.set_watch("personal", {"id": "personal", "port": 5192}, True, "test")
+    assert rec["watch"] is True and variants.read_flat_yaml(root / "personal" / "variant.yml")["watch"] is True
+    assert variants.set_watch("personal", rec, None, "test") is rec
+
+
+def test_watch_unit_text():
+    cmd = ["/home/u/.local/bin/uv", "run", "--project", "/src/papyrus", "--frozen", "--quiet", "papyrus", "watch"]
+    text = install.watch_unit_text(vid="release", command=cmd, log=Path("/s/watch.log"), env={"PAPYRUS_HOME": "/tmp/ph"})
+    lines = text.splitlines()
+    assert install.watch_unit_name("release") == "io.github.taliesinb.papyrus.release.watch.service"
+    assert ('ExecStart="/home/u/.local/bin/uv" "run" "--project" "/src/papyrus" "--frozen" "--quiet" '
+            '"papyrus" "watch"') in lines
+    for line in ('Environment="PAPYRUS_VARIANT=release"', 'Environment="PAPYRUS_HOME=/tmp/ph"', "Nice=19",
+                 "CPUSchedulingPolicy=idle", "IOSchedulingClass=idle", "RestartPreventExitStatus=75",
+                 "StandardOutput=append:/s/watch.log", "WantedBy=default.target"):
+        assert line in lines, line
+    assert 'Environment="PATH=/home/u/.local/bin:/usr/local/bin:/usr/bin:/bin"' in lines

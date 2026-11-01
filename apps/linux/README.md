@@ -6,13 +6,16 @@ read-only web browser in [`web/`](../../web) runs as a systemd user service, one
 per [variant](../macos/README.md#variants). You reach it in a browser at
 `http://127.0.0.1:5182/papyrus/` or, on the tailnet, at
 `https://<machine>.<tailnet>.ts.net/papyrus/`. The Python CLI (`papyrus scan`,
-`download`, `process`, …) is still the only writer, as on macOS.
+`download`, `process`, …) is still the only writer, as on macOS. A second
+unit runs `papyrus watch`, which adds new PDFs from `~/Downloads` and
+`~/Desktop` as they appear.
 
 ```sh
 python3 apps/linux/install.py                      # release: build web/, install, start, publish
 python3 apps/linux/install.py --variant personal   # Papyrus Personal: port 5192, /papyrus-personal
 python3 apps/linux/install.py --all                # every variant (after a code change)
-python3 apps/linux/install.py --uninstall          # stop and remove the service; the library stays
+python3 apps/linux/install.py --uninstall          # stop and remove the services; the library stays
+python3 apps/linux/install.py --variant personal --watch   # personal watches too (default: release only)
 ```
 
 ## Requirements
@@ -47,6 +50,7 @@ as on macOS:
 | | path |
 |---|---|
 | unit | `${XDG_CONFIG_HOME:-~/.config}/systemd/user/<variant name>.server.service` |
+| watcher unit | `…/systemd/user/<variant name>.watch.service`, log `<state dir>/watch.log` |
 | the built server | `${XDG_DATA_HOME:-~/.local/share}/<variant name>/web/` (`<home>/support`) |
 | log | `${XDG_STATE_HOME:-~/.local/state}/<variant name>/server.log` (`<home>/logs`) |
 | library | `~/.papyrus/<variant>/` (`PAPYRUS_ROOT` moves `~/.papyrus`), with its `variant.yml` |
@@ -74,7 +78,23 @@ administrator: `sudo loginctl enable-linger $USER`.
 * `--no-serve` turns publishing off, and `--serve` turns it back on. The
   choice is recorded as `serve:` in `variant.yml`.
 
-`--uninstall` stops, disables and deletes the unit, deletes the installed web
+**The watcher** (`<variant name>.watch.service`, for a variant that watches:
+release by default, others with `--watch`, recorded as `watch:` in
+`variant.yml`; `--no-watch` removes the unit):
+
+* It runs `uv run --project <this checkout> --frozen --quiet papyrus watch`
+  with `PAPYRUS_VARIANT`, `--env` and `PAPYRUS_ROOT`, so a `git pull` reaches
+  it at its next restart.
+* `Nice=19`, `CPUSchedulingPolicy=idle` and `IOSchedulingClass=idle`; the
+  watcher lowers its own priority the same way when run by hand.
+* It restarts after a failure (`Restart=on-failure`, five within ten
+  minutes stop it), except after exit status 75: another watcher already
+  holds the library's lock (`RestartPreventExitStatus=75`). Start it again
+  with `systemctl --user restart` once that one has gone.
+* Its state is in `~/.papyrus/<variant>/watch.json`, and `papyrus watch
+  --status` prints it.
+
+`--uninstall` stops, disables and deletes the units, deletes the installed web
 build and withdraws the tailnet path. The library and the logs stay.
 
 ## Day to day
@@ -83,6 +103,9 @@ build and withdraws the tailnet path. The library and the logs stay.
 systemctl --user status io.github.taliesinb.papyrus.release.server
 systemctl --user restart io.github.taliesinb.papyrus.release.server
 tail -f ~/.papyrus/release/logs/server.log
+systemctl --user status io.github.taliesinb.papyrus.release.watch
+tail -f ~/.papyrus/release/logs/watch.log
+uv run papyrus watch --status
 ```
 
 A change to `web/` needs a reinstall, because the service runs the installed
@@ -100,6 +123,7 @@ The CLI runs as on macOS. These are the Linux counterparts of its macOS parts:
 | `papyrus download -c` reads RTF/HTML/text with `osascript` and `pbpaste` | `wl-paste` (Wayland) or `xclip` (X11): HTML, then plain text |
 | Reveal in Finder | "Show in Files" (`org.freedesktop.FileManager1` on the session bus), shown only when the server has a desktop session |
 | Apple Foundation Models and Vision OCR (`tools/afm-bridge`) | none: use LM Studio, and pages without a text layer stay unsearchable |
+| `papyrus watch`: FSEvents, `PRIO_DARWIN_BG`, `kern.memorystatus_vm_pressure_level`; run by Papyrus Server.app | inotify, nice + `SCHED_IDLE` + idle I/O class, `/proc/pressure/memory` (else `MemAvailable`); a systemd user unit |
 
 ## Testing
 

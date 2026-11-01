@@ -7,6 +7,7 @@ Command Line Tools' swiftc, node and pnpm, no Xcode).
     python3 apps/macos/build.py --variant personal --install      # Papyrus Personal(.app, Server.app)
     python3 apps/macos/build.py --all --install                   # every variant that has a variant.yml
     python3 apps/macos/build.py --install /Applications --env PAPYRUS_HOME=/tmp/ph
+    python3 apps/macos/build.py --variant personal --watch --install  # its server also runs `papyrus watch`
 
 A variant is a library of its own, `~/.papyrus/<id>/` (PAPYRUS_ROOT moves `~/.papyrus`), with
 its apps, port, tailscale path and colour in `<home>/variant.yml`, which this script writes the
@@ -16,7 +17,7 @@ everyday one and leaves its id out of what people read and type: `Papyrus.app`, 
 Everything else carries the variant name `io.github.taliesinb.papyrus.<id>` (bundle ids,
 ~/Library/Logs, ~/Library/Application Support), as DeepSea's variants do.
 
-Steps: compile the two Swift executablesSteps: compile the two Swift executables, the page renderer and the icon renderer (cached by
+Steps: compile the two Swift executables, the page renderer and the icon renderer (cached by
 source hash in apps/macos/.build/); render each variant's icon (its colour); `pnpm build` in web/
 once per variant (SvelteKit's base path is fixed at build time); assemble both bundles with
 `papyrus-app.json` (variant, names, port, base path, and the absolute paths of node and
@@ -24,6 +25,11 @@ tailscale, since a GUI app has no shell PATH); sign them ad hoc. Papyrus Server.
 built web server in Contents/Resources/web and the page renderer `papyrus-thumb` (CoreGraphics;
 no poppler on macOS) in Contents/MacOS. The variant logic is shared with the Linux installer
 (apps/variants.py).
+
+Papyrus Server.app also runs `papyrus watch` (`uv run --project <repo> …`, recorded in
+papyrus-app.json as `watch`) when the variant watches: release does by default, other variants
+with `--watch` (recorded in variant.yml; `--no-watch` turns it off). Being its parent, the server
+is the app macOS asks for access to ~/Downloads and ~/Desktop.
 
 `--install` quits the variant's running copies, replaces its installed bundles and starts them
 again if they were running; other variants' apps are left alone. `--touch-icon` also rewrites
@@ -50,8 +56,8 @@ sys.path.insert(0, str(HERE.parent))
 
 from variants import (  # noqa: E402  (apps/variants.py, shared with apps/linux/install.py)
     FIRST_PORT, PORT_STEP, RELEASE, RELEASE_COLOR, WEB, all_variants, alive, copy_web, die, display_name, find, find_node,
-    ensure_library, link_home, papyrus_root, record_install, resolve_variant, run, scheme, variant_name, version,
-    web_build_for,
+    ensure_library, link_home, papyrus_root, record_install, resolve_variant, run, scheme, set_watch, variant_name, version,
+    watch_command, watches, web_build_for,
 )
 
 WRITER = "apps/macos/build.py"
@@ -63,7 +69,8 @@ TILE_TOP, TILE_BOTTOM = "#232833", "#0d0f12"
 def server_usage(server_name: str) -> dict[str, str]:
     """The server reads PDFs wherever the library found them; macOS asks the user on its behalf."""
     return {
-        key: f"{server_name} reads the PDFs in your library to show them and render page thumbnails."
+        key: f"{server_name} reads the PDFs in your library to show them and render page thumbnails, "
+             "and adds new PDFs from your Downloads and Desktop folders."
         for key in ("NSDesktopFolderUsageDescription", "NSDocumentsFolderUsageDescription",
                     "NSDownloadsFolderUsageDescription", "NSNetworkVolumesUsageDescription",
                     "NSRemovableVolumesUsageDescription", "NSFileProviderDomainUsageDescription")
@@ -215,6 +222,8 @@ def build_variant(vid: str, variant: dict, args, compiled: Path, tools: dict, sh
     config = {"variant": vid, "name": name, "serverName": server_name, "scheme": url_scheme,
               "port": int(variant["port"]), "base": base, "appBundleId": app_id, "serverBundleId": server_id,
               "color": color, **tools, "env": dict(e.split("=", 1) for e in args.env)}
+    if watches(vid, variant):
+        config["watch"] = watch_command()
     server = assemble(out, server_name, server_id, compiled / "papyrus-server",
                       info_plist(server_name, server_id, "papyrus-server", short, build, LSUIElement=True, **server_usage(server_name)),
                       icns, config, web_build, helpers=(compiled / "papyrus-thumb",))
@@ -222,7 +231,8 @@ def build_variant(vid: str, variant: dict, args, compiled: Path, tools: dict, sh
     app = assemble(out, name, app_id, compiled / "Papyrus",
                    info_plist(name, app_id, "Papyrus", short, build, CFBundleURLTypes=url_types), icns, config)
     result = {"variant": vid, "app": str(app), "server": str(server), "home": str(papyrus_root() / vid),
-              "port": config["port"], "base": base, "scheme": url_scheme, "color": color}
+              "port": config["port"], "base": base, "scheme": url_scheme, "color": color,
+              "watch": "watch" in config}
 
     if args.install:
         ensure_library(vid, config["env"])
@@ -258,6 +268,8 @@ def main() -> None:
                    f"{FIRST_PORT + PORT_STEP}, …)")
     p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="environment for the web server, e.g. PAPYRUS_HOME=/tmp/ph (repeatable)")
+    p.add_argument("--watch", action=argparse.BooleanOptionalAction, default=None,
+                   help="the server also runs `papyrus watch` (recorded in variant.yml; default: release only)")
     p.add_argument("--skip-web", action="store_true", help="reuse web/build as it is (it must be built for the variant's base)")
     p.add_argument("--touch-icon", action="store_true", help="also write web/static/apple-touch-icon.png")
     args = p.parse_args()
@@ -276,7 +288,7 @@ def main() -> None:
 
     variants = {}
     for vid in ids:
-        variants[vid] = resolve_variant(vid, args.color, args.port, WRITER)
+        variants[vid] = set_watch(vid, resolve_variant(vid, args.color, args.port, WRITER), args.watch, WRITER)
         link_home(papyrus_root() / vid, library_links(vid))
     compiled = compile_all(HERE / ".build")
     if args.touch_icon:
