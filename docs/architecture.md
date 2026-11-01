@@ -22,6 +22,7 @@ formatting.
  sources                 papyrus stages                                 outputs
  ───────                 ──────────────                                 ───────
  ~/Desktop, ~/Downloads ─▶ scan ──▶ files, file_pages(+FTS), contexts(filesystem), context_refs
+   (or, as files appear: watch ─▶ scan.ingest_path, then the stages below, one file at a time)
  URLs, copied tabs ─────▶ download ─▶ … the same, with contexts(download); filename_hint assertion
                                │       both keep a copy in <home>/store (files.stored_path)
                                ▼
@@ -51,6 +52,37 @@ Each stage:
 Re-running a stage processes only pending items, unless you pass `--all` or
 `--reset`.
 
+**`papyrus watch`** (`watch/`) runs the same stages continuously, in the
+background:
+
+1. **Hearing about files:** FSEvents on macOS, inotify on Linux (both through
+   ctypes), polling as a fallback, on the `[watch] dirs` of the config (default
+   `~/Downloads`, `~/Desktop`; not their subdirectories).
+2. **Waiting until they are finished** (`debounce.py`): size, mtime and ctime
+   unchanged for `settle` seconds (3). Browsers' partial files (`.download`,
+   `.crdownload`, `.part`) and hidden files are ignored; the rename to the
+   final name is an event of its own. An empty `x.pdf` next to `x.pdf.part`
+   (Firefox) waits for the `.part` to go.
+3. **Ingesting** through `scan.ingest_path`, the per-file body of `scan`: the
+   same snapshot, sha256 dedupe, purged tombstones and provenance. At start, a
+   catch-up scan of the directories covers what happened while it was down.
+4. **Processing**, one item per step, new files first: extract (a live work's
+   text layer), OCR, enrich, then triage + promote. Each batch of steps is one
+   recorded run (`command='watch'`), at most 25 steps long.
+5. **Staying out of the way:** background priority (`PRIO_DARWIN_BG`; Linux
+   nice 19, `SCHED_IDLE`, idle I/O). Before every model call it reads the
+   memory pressure and, for LM Studio, what is loaded (`models.ModelLedger`).
+   Model work then waits (`Backoff`) under critical pressure, when a model
+   would have to be loaded under any pressure, while LM Studio is off or has
+   another model loaded, when Apple's model refuses (error 1013, `ModelBusy`),
+   or without a decider. Extract and enrich go on meanwhile. It unloads only
+   the models it loaded, after `unload_after` seconds idle (600) and at exit.
+6. **Status:** `<home>/watch.json` (idle | ingesting | waiting-memory |
+   lmstudio-unavailable), served in `/api/version` for the menu bar; one
+   watcher per library (`<home>/watch.lock`, an flock).
+
+Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
+
 | stage | module | pending means | notes |
 |---|---|---|---|
 | scan | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` (Linux: `user.xdg.origin.url`, `user.xdg.referrer.url`) gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
@@ -65,18 +97,19 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | module | role |
 |---|---|
 | `schema.sql`, `db.py` | DDL; connect/init; `tx`, `assert_`, `current_assertions`, `recorded_run` |
-| `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames |
+| `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames; `ingest_path` (one path, shared with `watch`), `scan_roots`, `mark_missing` |
+| `watch/` | `papyrus watch`: `sources.py` (FSEvents / inotify / polling), `debounce.py` (finished files, partial files), `system.py` (background priority, memory pressure, the instance lock), `models.py` (`ModelLedger`: never a second LM Studio model, unload only our own), `daemon.py` (`Watch`: catch-up, batches, steps, back-off, `watch.json`) |
 | `store.py` | the managed store: `snapshot` (clone or copy into `store/tmp`), `commit` (rename to `store/ab/<sha256>.pdf`, read-only), `backfill`, `check` |
 | `download.py` | link parsing (RTF / HTML / text, Safari's copied tabs), URL → PDF resolution, `fetch`, recording `download` contexts |
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
 | `textspan.py` | find spans from anchors (`locate`), the `heuristic_abstract` regex, and `best_abstract`, which reconciles the two |
 | `works.py` | `SOURCE_RANK`/`best` resolution, `is_library`, `promote_file`, `reject_work`, `reindex_work`, `work_json` |
 | `purge.py` | personal paperwork: `verdict` (purge, hold or keep), `purge_file` (tombstone, secure delete, store copy and thumbnails), `keep`/`restore` (the user's override), `is_purged` (used by scan and download) |
-| `fulltext.py` | the `extract` stage: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `run` |
+| `fulltext.py` | the `extract` stage: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `run` (a recorded run around `process`; `process(live_only=True)` never reads a non-work file past its first pages) |
 | `ocr.py` | `VisionOCR`: page OCR through the bridge's `ocr` op (Vision `RecognizeDocumentsRequest`) |
 | `search.py` | ranking shared by the CLI and MCP: `rank_files` (pages → files), `search_works` (RRF with metadata), `fill_snippets`; mirrored in `web/src/lib/server/query.ts` |
 | `llm/base.py` | contracts: `Backend.extract` (JSON-schema output) and `Decider.decide` (Jev-style typed questions → probabilities) |
-| `llm/lmstudio.py` | extraction through any OpenAI-compatible server (the LM Studio quirks are handled here) |
+| `llm/lmstudio.py` | extraction through any OpenAI-compatible server (the LM Studio quirks are handled here); `ensure_server`, `loaded_models`, `unload_model` |
 | `llm/apple.py` + `tools/afm-bridge` | extraction through Apple Foundation Models (a Swift CLI speaking NDJSON; guided generation via `DynamicGenerationSchema`); the same bridge does OCR (`OCR.swift`) |
 | `llm/decide.py` | `JevHTTPDecider` (`/v1/systemone`: TypeSafe, Ollama `tev1`, …) and `OpenAICompatDecider` (logprobs over lettered options) |
 | `llm/schema_lite.py` | JSON extraction and coercion for a JSON Schema subset; all model output passes through it |
@@ -86,11 +119,11 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `enrich/match.py` | `resolve`, `score`, `cluster`, `merge` |
 | `enrich/pipeline.py` | `enrich_work` writes to the database (`_conflict`, authors → people, topics, ids); `reset_enrichment` |
 | `mcp_server.py` | MCP tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only connection), `library_stats`; resource `papyrus://schema` |
-| `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
+| `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, decider, LM Studio autostart (CLI > env > file > `auto`), `[watch]` |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
 | `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` (`/papyrus-<variant>` for other variants) |
-| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`; carries `papyrus-thumb`, the CoreGraphics page renderer), one pair per variant; `build.py` |
-| `apps/linux/` | `install.py`: the web server as a systemd user service per variant (`io.github.taliesinb.papyrus.<v>.server.service`), XDG data and state directories, `tailscale serve`; thumbnails by poppler's `pdftoppm` |
+| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`, and `papyrus watch`; carries `papyrus-thumb`, the CoreGraphics page renderer), one pair per variant; `build.py` |
+| `apps/linux/` | `install.py`: the web server as a systemd user service per variant (`io.github.taliesinb.papyrus.<v>.server.service`), the watcher as another (`….watch.service`), XDG data and state directories, `tailscale serve`; thumbnails by poppler's `pdftoppm` |
 | `apps/variants.py` | variant rules shared by both installers: `variant.yml`, ports, colours, the web build, a new variant's empty library |
 
 ## Model layer
@@ -162,6 +195,13 @@ and a CV to works.
 | rank works by Reciprocal Rank Fusion of metadata and pages | bm25 from `works_fts` and `file_pages_fts` aren't on one scale (adding them, as before, let either swamp the other). RRF needs only ranks, and an embedding ranking can join later. |
 | page kinds from the text, not the outline | Outlines were wrong as often as right (a book's "Index" entry spanning its references, "2.1.2 Bibliography" a manual's section about bibliographies). Bibliography-entry density ≥ 0.5 marks 86% of reference pages and 1% of body pages; the body pages were mostly unlabelled reference pages. |
 | OCR with Vision `RecognizeDocumentsRequest` in the existing bridge | On-device, no new dependency, reading order across columns; ~57 ms a page warm, ~25 s warm-up per process. |
+| `watch` reuses `scan.ingest_path` and the stages' own functions, in recorded runs of its own | One ingestion path means dedupe, purged tombstones and provenance can't drift between `scan` and the watcher. Each batch is one `watch` run (at most 25 steps), so `runs` shows what happened, and the web's "running" indicator is on only while it works. |
+| `watch`: settle on size + mtime + ctime, not on close events | FSEvents has no close event and inotify's `CLOSE_WRITE` fires for every chunk some tools write. Stability over a few seconds works the same everywhere; ctime catches a browser writing the download URL xattr after the bytes. |
+| `watch`: FSEvents and inotify through ctypes, not `watchdog` | No compiled dependency (wheels for Python 3.14 lag); about 100 lines each. Polling covers everything else. |
+| `watch`: memory pressure gates *loading*, not using | On this 24 GB M4, `kern.memorystatus_vm_pressure_level` reads 2 (warn) while LM Studio holds the 4B model. Refusing at warn would mean never triaging with the model already loaded; loading a model at warn is what swaps. So: critical stops every model call, warn stops only calls that may load something (an LM Studio model that isn't loaded, Apple FM, Vision OCR). |
+| `watch`: unload only models it loaded itself, idle for 10 min | LM Studio is shared with the user and other agents. A model loaded before the watcher asked, or reloaded by someone after it went away, is not the watcher's (`ModelLedger.refresh`). |
+| `watch` runs inside Papyrus Server.app on macOS, not as a launchd agent | macOS asks for access to `~/Downloads` and `~/Desktop` on behalf of the responsible app. As a child of Papyrus Server.app, the prompt names that app, which already carries the usage strings; a launchd agent running `python3` would get a prompt naming Python, or nothing. The app also gives the menu-bar status and an on/off item for free. |
+| `watch` defaults to the `release` variant only | Every variant's watcher would add the same `~/Downloads` to its own library. Other variants opt in (`--watch`, recorded in `variant.yml`). |
 
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
 
@@ -231,8 +271,17 @@ Roughly by value:
   labelled files exist now.
 * Thesis venue: S2 gives "arXiv: Combinatorics" where an institution is
   better.
-* **The apps write nothing yet.** Adding to the library (dropping PDFs on
-  the window or the menu-bar icon, pasting links, "download these tabs")
-  needs a write path. The likely shape is that Papyrus Server runs
-  `papyrus download`/`scan`/`process` as recorded runs, rather than the web
-  server opening the database for writing.
+* **The apps write only through the watcher.** Papyrus Server.app runs
+  `papyrus watch`, which adds whatever lands in `~/Downloads` and
+  `~/Desktop`. Dropping PDFs on the window or the menu-bar icon, pasting
+  links and "download these tabs" still need a path; the likely shape is the
+  same: the server runs `papyrus download`/`scan` as recorded runs, rather
+  than the web server opening the database for writing.
+* **The watcher's queue in a database of its own.** `watch` works on the one
+  library database today; splitting what is pending (and its retries) into
+  a separate queue database is a later step. Failed steps are retried after
+  6 h, tracked only in memory.
+* **The watcher:** subdirectories of watched directories are not watched
+  (FSEvents would allow it; inotify needs a watch per directory). A model
+  the watcher loaded and the user then started using is unloaded after 10
+  idle minutes of the watcher, since LM Studio can't say who uses a model.

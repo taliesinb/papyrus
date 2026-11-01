@@ -268,3 +268,11 @@ any assertion can be traced back to the exact model and prompt that produced
 it. `stats.status` says how the run ended: `completed`, `interrupted` or
 `crashed: <error>`. Runs are opened and closed by `db.recorded_run`, so
 every run gets a `finished_at`.
+
+`papyrus watch` records one `watch` run per batch of work. Its `args` hold
+`trigger` (`startup` for the catch-up scan, `events` for new files, `pending`
+for work left over, `once`) and counts; its `stats` combine `scan`'s counters
+(`new_files`, `known_files`, `purged_skipped`, `went_missing`…) with the
+steps it took (`triaged`, `promote_<action>`, `extracted`, `enrich_<status>`)
+and its back-offs (`backoff_waiting-memory`, `backoff_lmstudio-unavailable`).
+`backend` is filled in once the batch has triaged with a model.

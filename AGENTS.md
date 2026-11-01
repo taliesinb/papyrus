@@ -17,13 +17,15 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | works | work | files | show | search | stats | config | mcp | slack | resolve
+uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | watch | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/decider in effect
+PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl   # the ingestion daemon in the foreground (--once: catch up and exit; --status)
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
 python3 apps/macos/build.py [--install]   # Papyrus.app + Papyrus Server.app (menu bar, tailscale serve /papyrus)
 python3 apps/macos/build.py --variant personal [--install]   # Papyrus Personal(.app, Server.app); --all rebuilds every variant
-python3 apps/linux/install.py [--variant personal | --all] [--uninstall]   # Linux: the web server as a systemd user service
+python3 apps/linux/install.py [--variant personal | --all] [--uninstall]   # Linux: the web server (and watcher) as systemd user services
+# both installers: --watch / --no-watch (recorded in variant.yml; default: release watches, other variants don't)
 ```
 
 **Platforms:** macOS and Linux. The installers share `apps/variants.py`.
@@ -45,7 +47,10 @@ directories, ports, tailnet paths) are in `apps/macos/README.md`, "Variants".
 
 The usual pipeline is `scan` (or `download`) `→ triage → promote → extract → enrich`;
 `papyrus process` runs the last four. Every stage is idempotent and processes
-only what is pending (see `--all` / `--reset`).
+only what is pending (see `--all` / `--reset`). `papyrus watch` (`watch/`)
+runs the same stages in the background as PDFs land in `~/Downloads` and
+`~/Desktop`, one file at a time; Papyrus Server.app (macOS) or a systemd user
+unit (Linux) keeps it running.
 
 ## Data safety (read before running anything)
 
@@ -279,6 +284,34 @@ only what is pending (see `--all` / `--reset`).
 * arXiv's PDF responses carry `filename="<id>v<N>.pdf"`, which is where the
   version of a downloaded preprint comes from.
 
+**`papyrus watch`** (`watch/`, docs/architecture.md "Pipeline"):
+
+* **It writes to the real library** as soon as Papyrus Server.app (or the
+  Linux unit) runs it. Try changes on a scratch library and directory:
+  `PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl`. Without `--dir` it
+  watches the config's `[watch] dirs`, by default the real `~/Downloads`.
+* **One watcher per library** (`<home>/watch.lock`). A second one, or `--once`
+  while one runs, exits with status 75, which the app and the unit don't
+  treat as a crash.
+* **Its log names ids and counts only.** No titles, paths, page text, or
+  exception messages (an `OSError`'s message is a path). Keep it that way in
+  new log lines.
+* **Memory pressure reads "warn" on this machine whenever LM Studio holds a
+  model.** So warn blocks only calls that may *load* a model; critical
+  blocks all of them (`Watch._gate`).
+* **Never a second LM Studio model, unload only its own**
+  (`watch/models.ModelLedger`). If the user's model is loaded and differs
+  from the configured one, triage waits (state `lmstudio-unavailable`, "another
+  model is loaded").
+* **`uv run` forwards SIGTERM** to the watcher and passes its exit status
+  through, so Papyrus Server.app can supervise `uv run … papyrus watch`
+  directly. SIGTERM closes the open run as `interrupted`.
+* **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
+  not involved; `scan.ingest_path` is the shared per-file body.
+* **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and
+  enrichment are slower in the watcher than on the command line. Don't call
+  `system.lower_priority()` in tests: it would slow the rest of the suite.
+
 **uv:** `~/pyproject.toml` defines a uv workspace. This project declares its
 own `[tool.uv.workspace]` so that uv never adds it there. Don't remove that
 table, and never edit `~/pyproject.toml`.
@@ -296,6 +329,12 @@ with the same decorators.
 * **Downloads:** `tests/test_download.py::_web` serves PDFs, redirects and
   landing pages through `httpx.MockTransport`; pass the client to
   `download.download` (or `http.set_default_client` for CLI tests).
+* **The watcher:** `tests/test_watch.py` drives `Watch` with a fake watcher
+  (`inject` paths), a fake clock, a fake memory probe, a fake LM Studio
+  (`LMStudio`: what is loaded, what was unloaded) and `FakeBackend` /
+  `FakeDecider`. Call `pump()` once after injecting (the settle timer starts
+  there), advance the clock, then `pump()` again. Use `_pdf(..., old=True)`
+  for files the catch-up scan should take at once.
 * **Live tests** must skip themselves when the service isn't reachable
   (LM Studio, the AFM bridge, `PAPYRUS_LIVE` for the network).
 * **Regressions found by reviewing real data** go into

@@ -23,12 +23,13 @@ Early. What works today:
 | purge, keep | `papyrus purge [FILE_IDS] [--dry-run]`, `papyrus keep ID\|PATH...` | `purge` erases what promote would, lists held files, or purges the given files on your say-so. `keep` marks files as library material whatever triage says; given the path of the original, it also brings back a purged file. |
 | extract | `papyrus extract [FILE_IDS] [--all] [--no-ocr]` | Reads every page of the files of live works into the full-text index (personal paperwork stays at the 2 pages triage needs). Labels references, index and contents pages, which rank lower; keeps the PDF outline, so hits show their section; OCRs pages without a text layer with Apple Vision (through `tools/afm-bridge`). |
 | process | `papyrus process [FILE_IDS] [--backend B] [--decider D]` | Shorthand for `triage && promote && extract && enrich` over whatever is pending (with FILE_IDS: those files and their works). Stops before promoting if triage can't run. |
+| watch | `papyrus watch [--once] [--dir DIR] [--status]` | A background daemon: adds new PDFs from `~/Downloads` and `~/Desktop` (config `[watch] dirs`) once they have finished downloading, through the same path as `scan`, then triages, promotes, extracts and enriches them one at a time at background priority. Model work waits under memory pressure, while LM Studio is off or has another model loaded, and without a decider; it never loads a second model and unloads only what it loaded. Logs carry file ids and counts only. Papyrus Server.app runs it on macOS (Watch for New PDFs in its menu), a systemd user unit on Linux; `--once` catches up and exits. |
 | enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
 | search | `papyrus search QUERY [--kind K] [--files] [--json]` | Works matching in their metadata or anywhere in their pages, ranked by Reciprocal Rank Fusion of the two, each with its best pages (page, section, snippet). Free text or FTS5 syntax. `--files` ranks files instead, personal ones included. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus stats` | |
 | web | `cd web && pnpm dev` | Read-only SvelteKit browser at `/papyrus/`: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
-| apps | `python3 apps/macos/build.py --install` | `Papyrus.app`, a window on the web browser, and `Papyrus Server.app`, a menu-bar app that runs the server and publishes it with `tailscale serve` at `https://<mac>.<tailnet>.ts.net/papyrus/`. See [`apps/macos/README.md`](apps/macos/README.md). |
-| Linux | `python3 apps/linux/install.py` | The web server as a systemd user service, published the same way. Page thumbnails need poppler's `pdftoppm` there. See [`apps/linux/README.md`](apps/linux/README.md). |
+| apps | `python3 apps/macos/build.py --install` | `Papyrus.app`, a window on the web browser, and `Papyrus Server.app`, a menu-bar app that runs the server, publishes it with `tailscale serve` at `https://<mac>.<tailnet>.ts.net/papyrus/`, and runs `papyrus watch`. See [`apps/macos/README.md`](apps/macos/README.md). |
+| Linux | `python3 apps/linux/install.py` | The web server as a systemd user service, published the same way, and `papyrus watch` as another. Page thumbnails need poppler's `pdftoppm` there. See [`apps/linux/README.md`](apps/linux/README.md). |
 | MCP | `papyrus mcp` | stdio MCP server with these tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only), `library_stats`. Resource: `papyrus://schema`. |
 
 Next on the list:
@@ -86,6 +87,11 @@ decider = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:mode
 
 [lmstudio]
 autostart = true      # start LM Studio's server when it is off
+
+[watch]               # papyrus watch
+dirs = ["~/Downloads", "~/Desktop"]
+settle = 3            # seconds a new file must stay unchanged
+unload_after = 600    # seconds idle before unloading a model the watcher loaded
 ```
 
 Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,

@@ -9,6 +9,11 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     [lmstudio]
     autostart = true      # run `lms server start` when LM Studio's server is off
 
+    [watch]               # `papyrus watch` (watch/)
+    dirs = ["~/Downloads", "~/Desktop"]
+    settle = 3            # seconds a new file must stay unchanged before it is added
+    unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
+
     [slack]               # `papyrus slack links` defaults (contexts/slack.py)
     workspace = "symbolica"
     days = 30
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +53,13 @@ decider = "auto"
 [lmstudio]
 # Start LM Studio's local server (`lms server start`) when it isn't running.
 autostart = true
+
+# `papyrus watch`: add new PDFs from these directories (not their subdirectories) as they
+# appear, then triage, promote, extract and enrich them in the background.
+[watch]
+dirs = ["~/Downloads", "~/Desktop"]
+# settle = 3            # seconds a file must stay unchanged before it is added
+# unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
 
 # Defaults for `papyrus slack links` (command-line options override them).
 # [slack]
@@ -121,6 +134,35 @@ def lmstudio_autostart() -> tuple[bool, str]:
     if not isinstance(v, bool):
         raise ConfigError(f"{path()}: lmstudio.autostart must be true or false, got {v!r}")
     return v, str(path())
+
+
+WATCH_DIRS = ("~/Downloads", "~/Desktop")
+
+
+@dataclass(frozen=True)
+class WatchSettings:
+    dirs: tuple[Path, ...]
+    settle_s: float = 3.0
+    unload_after_s: float = 600.0
+
+
+def watch() -> WatchSettings:
+    """The [watch] table: directories to watch (default ~/Downloads, ~/Desktop) and timings."""
+    section = load().get("watch") or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path()}: [watch] must be a table")
+    dirs = section.get("dirs", list(WATCH_DIRS))
+    if not isinstance(dirs, list) or not all(isinstance(d, str) and d.strip() for d in dirs):
+        raise ConfigError(f"{path()}: watch.dirs must be a list of directories, got {dirs!r}")
+    out = {}
+    for key, name in (("settle", "settle_s"), ("unload_after", "unload_after_s")):
+        v = section.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            raise ConfigError(f"{path()}: watch.{key} must be a number of seconds, got {v!r}")
+        out[name] = float(v)
+    return WatchSettings(dirs=tuple(Path(d).expanduser() for d in dirs), **out)
 
 
 def init() -> tuple[Path, bool]:
