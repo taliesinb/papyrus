@@ -9,10 +9,11 @@ Layout under the library root (`PAPYRUS_HOME`, default the variant's home `~/.pa
 (`store/ab/abcdef….pdf`). Stored files are read-only (0444) and never rewritten:
 the same name always means the same bytes, so writing one twice is harmless.
 
-Copies are APFS clones where possible (`clonefile(2)`): they cost no space while
-the original is unchanged, and keep the old bytes if the original is later
-edited or deleted. Across volumes we fall back to a real copy. Note that
-`du`/Finder count a clone at full size.
+Copies are clones where possible: APFS `clonefile(2)` on macOS, a `FICLONE`
+reflink on Linux (btrfs, XFS, …). They cost no space while the original is
+unchanged, and keep the old bytes if the original is later edited or deleted.
+Across volumes, and on filesystems without clones, we fall back to a real copy.
+Note that `du`/Finder count a clone at full size.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
-from . import db, macos
+from . import db, linux, macos
 from .pdf import sha256_file
 
 STORE_DIR = "store"
@@ -69,11 +70,12 @@ def snapshot(src: Path) -> tuple[Path, str]:
     the hashed bytes, even if `src` changes meanwhile.
     """
     tmp = new_tmp()
-    try:
-        macos.clonefile(src, tmp)
-        return tmp, "clone"
-    except (OSError, NotImplementedError):
-        tmp.unlink(missing_ok=True)
+    for clone in (macos.clonefile, linux.reflink):  # each raises NotImplementedError on the other system
+        try:
+            clone(src, tmp)
+            return tmp, "clone"
+        except (OSError, NotImplementedError):
+            tmp.unlink(missing_ok=True)
     try:
         shutil.copyfile(src, tmp)
     except BaseException:

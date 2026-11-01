@@ -1,6 +1,7 @@
 """`papyrus download`: fetch documents from a list of URLs into the managed store.
 
-Input comes from arguments, files, stdin or the macOS clipboard. Copying a
+Input comes from arguments, files, stdin or the clipboard (macOS; on Linux
+through `wl-paste` or `xclip`, which give HTML and plain text). Copying a
 selection of Safari tabs puts, per tab, a title and a URL on the clipboard: as
 RTF, a list of `HYPERLINK` fields; as plain text, `title\\nURL\\n\\n` (a PDF tab
 is titled by its URL). We read the RTF (or HTML) links first and add any other
@@ -33,6 +34,7 @@ import queue
 import re
 import subprocess
 import sqlite3
+import sys
 import threading
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -231,11 +233,34 @@ def parse_html(text: str) -> list[Link]:
 
 
 # ---------------------------------------------------------------------------
-# The macOS clipboard
+# The clipboard: macOS, or Linux through wl-paste (Wayland) / xclip (X11)
 # ---------------------------------------------------------------------------
+
+LINUX_MIME = {"RTF ": "text/rtf", "HTML": "text/html", "text": "text/plain;charset=utf-8"}
+
+
+def _linux_clipboard(kind: str) -> bytes | None:
+    """The clipboard as one MIME type (LINUX_MIME), from the first tool of the session that has it."""
+    mime = LINUX_MIME[kind]
+    tools = []
+    if os.environ.get("WAYLAND_DISPLAY"):
+        tools.append(["wl-paste", "--no-newline", "--type", mime])
+    if os.environ.get("DISPLAY"):
+        tools.append(["xclip", "-selection", "clipboard", "-target", "UTF8_STRING" if kind == "text" else mime, "-out"])
+    for cmd in tools:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+    return None
+
 
 def _clipboard_data(cls: str) -> bytes | None:
     """Raw clipboard data of an AppleScript class ('RTF ', 'HTML'), or None."""
+    if sys.platform != "darwin":
+        return _linux_clipboard(cls) if sys.platform.startswith("linux") else None
     try:
         r = subprocess.run(["osascript", "-e", f"the clipboard as «class {cls}»"],
                            capture_output=True, text=True, timeout=10)
@@ -246,6 +271,9 @@ def _clipboard_data(cls: str) -> bytes | None:
 
 
 def _clipboard_text() -> str:
+    if sys.platform != "darwin":
+        raw = _linux_clipboard("text") if sys.platform.startswith("linux") else None
+        return raw.decode("utf-8", "replace") if raw else ""
     try:
         r = subprocess.run(["pbpaste"], capture_output=True, timeout=10,
                            env={**os.environ, "LANG": "en_US.UTF-8"})

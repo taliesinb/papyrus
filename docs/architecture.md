@@ -52,7 +52,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 
 | stage | module | pending means | notes |
 |---|---|---|---|
-| scan | `scan.py`, `pdf.py`, `macos.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
+| scan | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` (Linux: `user.xdg.origin.url`, `user.xdg.referrer.url`) gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
 | download | `download.py`, `store.py`, `enrich/http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. |
 | triage | `triage.py`, `llm/*`, `textspan.py` | `files.triage_status <> 'done'` | One extraction call per file, plus one decider call per question. The state sent to the model holds the filename(s), path, download URL, PDF metadata, filename hint and ≤4000 characters of page text. |
 | promote | `works.py` | the file has no `file_works` row | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. |
@@ -64,7 +64,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | module | role |
 |---|---|
 | `schema.sql`, `db.py` | DDL; connect/init; `tx`, `assert_`, `current_assertions`, `recorded_run` |
-| `scan.py`, `pdf.py`, `macos.py`, `filenames.py` | file discovery, hashing, PDF info and text, macOS provenance (xattrs and `clonefile` via ctypes), hints from hand-made filenames |
+| `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames |
 | `store.py` | the managed store: `snapshot` (clone or copy into `store/tmp`), `commit` (rename to `store/ab/<sha256>.pdf`, read-only), `backfill`, `check` |
 | `download.py` | link parsing (RTF / HTML / text, Safari's copied tabs), URL → PDF resolution, `fetch`, recording `download` contexts |
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
@@ -87,7 +87,9 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, decider, LM Studio autostart (CLI > env > file > `auto`) |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
 | `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` (`/papyrus-<variant>` for other variants) |
-| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`), one pair per variant; `build.py` |
+| `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`; carries `papyrus-thumb`, the CoreGraphics page renderer), one pair per variant; `build.py` |
+| `apps/linux/` | `install.py`: the web server as a systemd user service per variant (`io.github.taliesinb.papyrus.<v>.server.service`), XDG data and state directories, `tailscale serve`; thumbnails by poppler's `pdftoppm` |
+| `apps/variants.py` | variant rules shared by both installers: `variant.yml`, ports, colours, the web build, a new variant's empty library |
 
 ## Model layer
 

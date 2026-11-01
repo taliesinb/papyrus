@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import db, macos, store
+from . import db, linux, macos, store
 from .filenames import parse_filename
 from .fulltext import page_kind
 from .pdf import TRIAGE_PAGES, looks_like_pdf, read_pdf, sha256_file
@@ -106,7 +106,7 @@ def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, page
 
 def _record_context(conn: sqlite3.Connection, path: Path, st: os.stat_result, file_id: int,
                     host: str, now: str) -> None:
-    froms = macos.where_froms(path)
+    froms = macos.where_froms(path) or linux.where_froms(path)
     quarantine = macos.quarantine(path)
     extra = {
         "filename": path.name,
@@ -116,7 +116,9 @@ def _record_context(conn: sqlite3.Connection, path: Path, st: os.stat_result, fi
         "where_froms": froms,  # [download URL, referrer page] when set by a browser
         "download_agent": (quarantine or {}).get("agent"),
     }
-    birth = getattr(st, "st_birthtime", None)
+    # Linux's stat has no birth time (before os.statx, Python 3.15); a download's mtime is when it
+    # was written, which is what occurred_at stands for here.
+    birth = getattr(st, "st_birthtime", None) or st.st_mtime
     url = froms[0] if froms else None
     row = conn.execute("SELECT id FROM contexts WHERE kind='filesystem' AND locator=?", (str(path),)).fetchone()
     if row:

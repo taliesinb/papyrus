@@ -15,7 +15,7 @@ Early. What works today:
 
 | stage | command | what it does |
 |---|---|---|
-| scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms`. New files are copied into the managed store (an APFS clone, so free). Re-scans are idempotent, and paths that have gone are marked missing. |
+| scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms` (on Linux, the `user.xdg.origin.url` attributes). New files are copied into the managed store (an APFS clone or a Linux reflink where the filesystem has them, so free). Re-scans are idempotent, and paths that have gone are marked missing. |
 | download | `papyrus download URL...`, `-c`/`--clipboard`, `-`/`--stdin`, `-f`/`--file FILE` | Fetches PDFs into the store and ingests them like `scan`. Takes tabs copied from Safari (titles included), or URLs separated by newlines, commas or spaces, markdown links and arXiv ids. arXiv/OpenReview pages map to their PDF; other landing pages are followed via `citation_pdf_url`. Each URL is a `download` context; URLs already in the library are skipped. `--dry-run` shows what would happen; `--process` then runs triage, promote, extract and enrich on the new files. |
 | store | `papyrus store [--check]` | Copies files scanned before the store existed into it; `--check` re-hashes the stored copies. |
 | triage | `papyrus triage [--backend B] [--decider D]` | Asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
@@ -27,6 +27,7 @@ Early. What works today:
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus stats` | |
 | web | `cd web && pnpm dev` | Read-only SvelteKit browser at `/papyrus/`: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
 | apps | `python3 apps/macos/build.py --install` | `Papyrus.app`, a window on the web browser, and `Papyrus Server.app`, a menu-bar app that runs the server and publishes it with `tailscale serve` at `https://<mac>.<tailnet>.ts.net/papyrus/`. See [`apps/macos/README.md`](apps/macos/README.md). |
+| Linux | `python3 apps/linux/install.py` | The web server as a systemd user service, published the same way. Page thumbnails need poppler's `pdftoppm` there. See [`apps/linux/README.md`](apps/linux/README.md). |
 | MCP | `papyrus mcp` | stdio MCP server with these tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only), `library_stats`. Resource: `papyrus://schema`. |
 
 Next on the list:
@@ -96,12 +97,14 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
   (`~/.papyrus/release/`); `papyrus --variant personal …` (or
   `PAPYRUS_VARIANT=personal`) works on `~/.papyrus/personal/`. Each variant
   has its own apps, port and tailnet path (`apps/macos/build.py --variant
-  personal`, see [`apps/macos/README.md`](apps/macos/README.md)).
+  personal`, or `apps/linux/install.py --variant personal`; see
+  [`apps/macos/README.md`](apps/macos/README.md)).
 * Database: `~/.papyrus/<variant>/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
 * Managed store: `~/.papyrus/<variant>/store/ab/<sha256>.pdf` (under the home),
   read-only copies named by content hash; `files.stored_path` points there.
-  Copies of local files are APFS clones (no extra space while the original
-  exists; plain `cp` would not clone).
+  Copies of local files are APFS clones on macOS and reflinks on Linux
+  (btrfs, XFS): no extra space while the original exists. Plain `cp` would
+  not clone. Other filesystems get a copy.
 * Schema: [`src/papyrus/schema.sql`](src/papyrus/schema.sql), explained in
   [`docs/schema.md`](docs/schema.md).
 

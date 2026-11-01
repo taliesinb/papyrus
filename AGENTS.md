@@ -23,7 +23,20 @@ cd tools/afm-bridge && swift build -c release                # Apple Foundation 
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
 python3 apps/macos/build.py [--install]   # Papyrus.app + Papyrus Server.app (menu bar, tailscale serve /papyrus)
 python3 apps/macos/build.py --variant personal [--install]   # Papyrus Personal(.app, Server.app); --all rebuilds every variant
+python3 apps/linux/install.py [--variant personal | --all] [--uninstall]   # Linux: the web server as a systemd user service
 ```
+
+**Platforms:** macOS and Linux. The installers share `apps/variants.py`.
+Each OS-specific piece of the CLI has its counterpart:
+
+* `macos.py` ↔ `linux.py`: clones/reflinks and download-URL xattrs;
+* `download._clipboard_*`: `osascript`/`pbpaste` ↔ `wl-paste`/`xclip`;
+* page thumbnails: `papyrus-thumb` (CoreGraphics, in Papyrus Server.app) ↔
+  poppler's `pdftoppm` (`web/src/lib/server/files.ts`).
+
+Keep both sides working. The Apple bridge (Foundation Models, Vision OCR)
+has no Linux counterpart. Tests that need one OS skip themselves on the
+other.
 
 **Variants:** each library is a variant with its own home `~/.papyrus/<variant>/`
 (`release` is the default; `--variant` / `PAPYRUS_VARIANT` pick another,
@@ -51,7 +64,7 @@ only what is pending (see `--all` / `--reset`).
 * **The managed store** (`~/.papyrus/<variant>/store/ab/<sha256>.pdf`) is papyrus's
   own: content-addressed, read-only, written only through `store.commit`.
   Never rewrite or delete a stored file; `files.stored_path` points there.
-  Copy local files in with `store.snapshot` (an APFS clone, falling back to a
+  Copy local files in with `store.snapshot` (an APFS clone or Linux reflink, falling back to a
   copy), never `shutil.copy`/`cp`, which duplicate the bytes.
 * **Never delete rows that carry knowledge:**
   * works are rejected (`status='rejected'`, ids released by

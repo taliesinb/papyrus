@@ -90,7 +90,8 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
 @main.command()
 @click.argument("urls", nargs=-1)
 @click.option("-c", "--clipboard", is_flag=True,
-              help="Read links from the clipboard (e.g. tabs copied in Safari, which keep their titles).")
+              help="Read links from the clipboard (e.g. tabs copied in Safari, which keep their titles; "
+                   "on Linux through wl-paste or xclip).")
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read links from standard input (also: a lone '-').")
 @click.option("-f", "--file", "files", multiple=True, type=click.File("r"), metavar="FILE",
               help="Read links from FILE (repeatable).")
