@@ -22,6 +22,11 @@ Two implementations of `papyrus.llm.base.Decider`:
   0.4.25 ``chat_template_kwargs``/``reasoning_effort``/``/no_think`` do not
   switch Qwen3.5 thinking off; the prefill does.
 
+  Every question about one state is a separate request that starts with the
+  same system prompt and STATE, so the server can reuse that prefix. On LM
+  Studio's MLX engine that reuse needs a *prime* for hybrid models such as
+  Qwen3.5 (see `OpenAICompatDecider._prime`).
+
 `get_decider(spec)` builds one from a short spec string.
 """
 
@@ -53,6 +58,10 @@ TYPESAFE_URL = "https://api.typesafe.ai"
 DEFAULT_DECIDE_MODELS = ("qwen3.5-4b-mlx", "qwen3.5-9b-mlx")
 QWEN_NO_THINK_PREFILL = "<think>\n\n</think>\n\n"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# Every rendered question (`_render`) starts with this, so it belongs to the prefix that all
+# the questions about one state share (and the prime ends with it: a template that trims the
+# user message cannot cut it, unlike a trailing newline).
+QUESTION_LEAD = "QUESTION:"
 
 
 def _normalise(probs: dict[str, float]) -> dict[str, float]:
@@ -267,7 +276,7 @@ def _render(q: Question, order: list[int] | None = None) -> _Prompt:
             desc = q.criteria[key]
             lines.append(f"{lab}) {key}" + (f": {desc}" if desc else ""))
         tail = (
-            f"QUESTION: {q.instructions}\nOPTIONS:\n" + "\n".join(lines)
+            f"{QUESTION_LEAD} {q.instructions}\nOPTIONS:\n" + "\n".join(lines)
             + f"\nAnswer with one letter ({labels[0]}-{labels[-1]})."
         )
         return _Prompt(tail, labels, options, {lab: lab for lab in labels})
@@ -278,7 +287,7 @@ def _render(q: Question, order: list[int] | None = None) -> _Prompt:
             extra += f"\nYes means: {crit.get('yes') or crit.get('true')}"
         if crit.get("no") or crit.get("false"):
             extra += f"\nNo means: {crit.get('no') or crit.get('false')}"
-        tail = f"QUESTION: {q.instructions}{extra}\nAnswer Yes or No."
+        tail = f"{QUESTION_LEAD} {q.instructions}{extra}\nAnswer Yes or No."
         return _Prompt(tail, ["Yes", "No"], ["yes", "no"], {"yes": "Yes", "no": "No"})
     if q.type == "score":
         levels = _score_levels(q)
@@ -287,7 +296,7 @@ def _render(q: Question, order: list[int] | None = None) -> _Prompt:
         labels = [str(i) for i in range(len(levels))]
         lines = [f"{i}) {lvl}" for i, lvl in enumerate(levels)]
         tail = (
-            f"QUESTION: {q.instructions}\nLEVELS (low to high):\n" + "\n".join(lines)
+            f"{QUESTION_LEAD} {q.instructions}\nLEVELS (low to high):\n" + "\n".join(lines)
             + f"\nAnswer with one digit (0-{len(levels) - 1})."
         )
         return _Prompt(tail, labels, labels, {lab: lab for lab in labels})
@@ -316,6 +325,9 @@ class OpenAICompatDecider:
         empty ``<think></think>`` block for Qwen3-family models (disables
         thinking) and nothing otherwise.
     vote_samples: samples per question for the voting fallback.
+    prime_prefix: before the first question about a new state, send one short request that
+        ends where the questions start (`_prime`), so that LM Studio's MLX engine keeps a
+        reusable cache of the shared prefix. ``None`` (default) primes on LM Studio only.
     """
 
     backend = "lmstudio"
@@ -336,6 +348,7 @@ class OpenAICompatDecider:
         api_key: str | None = None,
         backend_name: str = "lmstudio",
         transport: httpx.BaseTransport | None = None,
+        prime_prefix: bool | None = None,
     ):
         if method not in ("auto", "logprobs", "vote"):
             raise ValueError("method must be auto|logprobs|vote")
@@ -352,6 +365,8 @@ class OpenAICompatDecider:
         self.vote_samples = vote_samples
         self.top_logprobs = top_logprobs
         self.backend = backend_name
+        self.prime_prefix = backend_name == "lmstudio" if prime_prefix is None else prime_prefix
+        self._primed: str | None = None  # the state the server's cache was last primed with
         headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.Client(timeout=timeout, transport=transport, headers=headers)
         self._context: int | None = None
@@ -382,14 +397,18 @@ class OpenAICompatDecider:
         out: dict[str, Answer] = {}
         self._seed, self.last_usage = seed, {"prompt_tokens": 0, "completion_tokens": 0}
         calls = self.calls
+        primed = self._prime(state) if questions else False
         for q in questions:
             out[q.key] = self._decide_one(state, q)
         self.last_params = {"method": self.method, "requests": self.calls - calls}
+        if primed:
+            self.last_params["primed"] = True
         return out
 
     # -- inference cache (inference.py) -------------------------------------------------
     def cache_params(self) -> dict[str, Any]:
-        """What shapes the answer besides the question and the state."""
+        """What shapes the answer besides the question and the state. (Not `prime_prefix`:
+        the prime changes which prefix the server recomputes, not the prompt of a question.)"""
         return {"impl": "openai-decide-1", "method": self._configured_method, "permutations": self.permutations,
                 "calibration_temperature": self.temperature, "assistant_prefill": self.assistant_prefill,
                 "system_prompt": self.system_prompt, "vote_samples": self.vote_samples,
@@ -424,16 +443,50 @@ class OpenAICompatDecider:
                 pass
         return self._context
 
+    @staticmethod
+    def _state_block(state: str) -> str:
+        return f"STATE:\n{state.strip()}\n\n---\n"
+
     def _messages(self, state: str, tail: str) -> list[dict[str, str]]:
         # The system prompt and the STATE come first and are identical for every
         # question about one document, so the server's prompt cache reuses them.
         msgs = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"STATE:\n{state.strip()}\n\n---\n{tail}"},
+            {"role": "user", "content": self._state_block(state) + tail},
         ]
         if self.assistant_prefill:
             msgs.append({"role": "assistant", "content": self.assistant_prefill})
         return msgs
+
+    def _prime(self, state: str) -> bool:
+        """Make the server cache the prefix the questions about `state` share. True if sent.
+
+        LM Studio's MLX engine (mlx-engine 1.x, batched path, which every Qwen3.5 load
+        takes) restores a prompt prefix from records saved every 256 tokens. A hybrid model's
+        recurrent layers (Qwen3.5's linear attention) can't be cut back, so their state is
+        restorable only where a prefill call ended: at multiples of the prefill step (2048)
+        and at the last multiple of 256 before the end of the prompt. The first question
+        leaves that last checkpoint inside its own text whenever the text crosses a
+        256-token boundary, and the next question then recomputes the whole STATE (logs:
+        most second questions had 0 cached tokens). This request ends a few tokens after
+        the shared prefix, so its checkpoint falls at the last 256-boundary inside it and
+        every question restores all but < 256 + its own tokens. It costs one generated
+        token. Sent once per new state, since the inference cache asks one question per
+        `decide` call.
+        """
+        if not self.prime_prefix or state == self._primed:
+            return False
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": self._state_block(state) + QUESTION_LEAD},
+        ]
+        try:
+            self._chat(messages, max_tokens=1, temperature=0.0)
+        except ValueError:  # the server refuses it: stop priming rather than fail decisions
+            self.prime_prefix = False
+            return False
+        self._primed = state
+        return True
 
     def _chat(self, messages: list[dict[str, str]], **params: Any) -> dict[str, Any]:
         body = {"model": self.model, "messages": messages, "stream": False, "seed": self._seed, **params}

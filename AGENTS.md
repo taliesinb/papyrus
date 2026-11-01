@@ -218,7 +218,12 @@ unit (Linux) keeps it running.
   | qwen3.5-4b | — | — | 12–30 s, including the decider |
 
   The 4B is the default for both extraction and decisions. Prompt caching is
-  automatic (prefix-based), with no markers to set.
+  automatic (prefix-based), with no markers to set, but for Qwen3.5 (hybrid
+  layers) the MLX engine restores a prefix only at 256-token checkpoints where
+  a prefill call ended. Questions that share a prefix but diverge after it get
+  no reuse unless something primes it: the decider sends one short prime per
+  state (`OpenAICompatDecider._prime`). Restore counts are in
+  `~/.cache/lm-studio/server-logs` ("Prompt cache restore: cached_tokens=").
 
 **Seeds:** LM Studio accepts `seed` but its MLX engine ignores it (same seed,
 different answers at temperature 1). The Apple bridge honours it (same seed,

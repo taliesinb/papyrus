@@ -267,13 +267,14 @@ def test_openai_decider_seeds_every_request_and_sums_usage():
     seq = iter(["Yes", "No", "Yes", "Yes", "Yes"])
 
     def respond(body):
-        if body.get("logprobs"):
+        if body.get("logprobs") or body.get("max_tokens") == 1:  # the probe, or the prefix prime
             return chat_response(None, "Yes")
         return {**chat_response(None, next(seq)), "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
 
     d = OpenAICompatDecider(model="qwen3.5-4b-mlx", vote_samples=5, transport=oa_transport(rec, respond))
     d.decide("s", [Question("lib", "yesno", "Library?")], seed=3)
-    assert [b["seed"] for b in rec] == [3, 15, 16, 17, 18, 19]  # the probe, then seed * 5 + i per vote
+    # the prime and the probe, then seed * 5 + i per vote
+    assert [b["seed"] for b in rec] == [3, 3, 15, 16, 17, 18, 19]
     assert d.last_usage == {"prompt_tokens": 50, "completion_tokens": 5}
     assert d.cache_params()["method"] == "auto" and d.last_params["method"] == "vote"
 

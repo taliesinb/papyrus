@@ -12,9 +12,11 @@ import pytest
 
 from papyrus.llm.base import Answer, BackendUnavailable, Decider, Question
 from papyrus.llm.decide import (
+    QUESTION_LEAD,
     QWEN_NO_THINK_PREFILL,
     JevHTTPDecider,
     OpenAICompatDecider,
+    _render,
     get_decider,
 )
 
@@ -142,6 +144,15 @@ def oa_transport(record: list, respond):
     return httpx.MockTransport(handler)
 
 
+def is_prime(body: dict) -> bool:
+    return body.get("max_tokens") == 1 and not body.get("logprobs")
+
+
+def questions(rec: list[dict]) -> list[dict]:
+    """The recorded requests that ask a question (not the prefix primes)."""
+    return [b for b in rec if not is_prime(b)]
+
+
 def test_openai_choice_logprobs_readout_and_prompt():
     rec: list[dict] = []
     tops = top({"B": math.log(0.6), " B": math.log(0.1), "A": math.log(0.2), "b": math.log(0.05), "The": -3.0})
@@ -155,7 +166,7 @@ def test_openai_choice_logprobs_readout_and_prompt():
     assert a.probabilities == pytest.approx({"paper": 0.2 / z, "book": 0.7 / z, "slides": floor / z})
     assert a.best == "book"
 
-    body = rec[0]
+    body = questions(rec)[0]
     assert body["logprobs"] is True and body["top_logprobs"] == 5 and body["temperature"] == 0.0
     msgs = body["messages"]
     assert msgs[0]["role"] == "system"
@@ -178,7 +189,7 @@ def test_openai_skips_leading_whitespace_token():
     a = d.decide("s", [LIB])["library"]
     pyes = math.exp(-0.1) / (math.exp(-0.1) + math.exp(-2.4))
     assert a.probabilities == pytest.approx({"yes": pyes, "no": 1 - pyes})
-    assert "Yes means: papers, books\nNo means: payslips, CVs" in rec[0]["messages"][1]["content"]
+    assert "Yes means: papers, books\nNo means: payslips, CVs" in questions(rec)[0]["messages"][1]["content"]
 
 
 def test_openai_yesno_case_insensitive_and_shared_prefix():
@@ -189,9 +200,10 @@ def test_openai_yesno_case_insensitive_and_shared_prefix():
     assert out["library"].probabilities == pytest.approx({"yes": 0.8, "no": 0.2})
     assert out["paperish"].probabilities == pytest.approx({"score": 0.8})
     # every question about one state shares the system + STATE prefix
-    p0, p1 = (b["messages"][1]["content"] for b in rec)
+    q0, q1 = questions(rec)
+    p0, p1 = (b["messages"][1]["content"] for b in (q0, q1))
     assert p0.split("---")[0] == p1.split("---")[0]
-    assert rec[0]["messages"][0] == rec[1]["messages"][0]
+    assert q0["messages"][0] == q1["messages"][0]
 
 
 def test_openai_score_with_levels():
@@ -200,7 +212,7 @@ def test_openai_score_with_levels():
     d = OpenAICompatDecider(model="qwen3.5-4b-mlx", transport=oa_transport(rec, lambda b: chat_response(tops)))
     s = d.decide("s", [QUALITY])["quality"].probabilities["score"]
     assert s == pytest.approx(0.75, abs=1e-3)  # expected level 1.5 of 0..2
-    assert "0) garbled\n1) partly\n2) clean" in rec[0]["messages"][1]["content"]
+    assert "0) garbled\n1) partly\n2) clean" in questions(rec)[0]["messages"][1]["content"]
 
 
 def test_openai_permutations_average_reverse_order():
@@ -212,8 +224,8 @@ def test_openai_permutations_average_reverse_order():
 
     d = OpenAICompatDecider(model="qwen3.5-4b-mlx", permutations=2, transport=oa_transport(rec, respond))
     a = d.decide("s", [KIND])["kind"]
-    assert len(rec) == 2
-    assert "A) slides" in rec[1]["messages"][1]["content"]
+    assert len(questions(rec)) == 2
+    assert "A) slides" in questions(rec)[1]["messages"][1]["content"]
     assert a.probabilities["paper"] == pytest.approx(a.probabilities["slides"])
     assert a.probabilities["book"] == pytest.approx(0.05)
 
@@ -225,7 +237,7 @@ def test_openai_temperature_flattens():
                             transport=oa_transport(rec, lambda b: chat_response(tops)))
     p = d.decide("s", [LIB])["library"].probabilities["yes"]
     assert p == pytest.approx(3 / 4)  # sqrt(.9)/(sqrt(.9)+sqrt(.1))
-    assert rec[0]["messages"][-1]["role"] == "user"  # no prefill for non-Qwen3 models
+    assert questions(rec)[0]["messages"][-1]["role"] == "user"  # no prefill for non-Qwen3 models
 
 
 def test_openai_falls_back_to_voting_without_logprobs():
@@ -241,9 +253,66 @@ def test_openai_falls_back_to_voting_without_logprobs():
     a = d.decide("s", [LIB])["library"]
     assert d.method == "vote" and d.info().model == "qwen3.5-4b-mlx#vote"
     assert a.probabilities == pytest.approx({"yes": 4.1 / 5.2, "no": 1.1 / 5.2})
-    assert len(rec) == 6  # one logprob probe + 5 samples
+    assert len(questions(rec)) == 6  # one logprob probe + 5 samples
     d.decide("s", [LIB])
-    assert len(rec) == 11  # no more probing once switched
+    assert len(questions(rec)) == 11  # no more probing once switched
+    assert len(rec) == 12  # and one prime: the second decide was about the same state
+
+
+def test_openai_primes_the_shared_prefix_once_per_state():
+    rec: list = []
+    tops = top({"Yes": -0.1, "No": -2.4})
+
+    def respond(body):
+        r = chat_response(tops)
+        r["usage"] = {"prompt_tokens": 1 if is_prime(body) else 10, "completion_tokens": 1}
+        return r
+
+    d = OpenAICompatDecider(model="qwen3.5-4b-mlx", transport=oa_transport(rec, respond))
+    d.decide("state one", [KIND])  # the inference cache asks one question per call
+    d.decide("state one", [LIB])
+    assert [is_prime(b) for b in rec] == [True, False, False]
+    prime, q0, q1 = rec
+    # the prime is the shared prefix: system prompt, then STATE up to where the questions start
+    assert prime["messages"][0] == q0["messages"][0]
+    assert len(prime["messages"]) == 2 and prime["messages"][1]["content"].endswith("---\n" + QUESTION_LEAD)
+    for q in (q0, q1):
+        assert q["messages"][1]["content"].startswith(prime["messages"][1]["content"] + " ")
+    assert prime["temperature"] == 0.0
+    assert d.last_params == {"method": "logprobs", "requests": 1}
+
+    d.decide("state two", [KIND, LIB])  # a new state is primed again, once
+    assert [is_prime(b) for b in rec[3:]] == [True, False, False]
+    assert d.last_params == {"method": "logprobs", "requests": 3, "primed": True}
+    assert d.last_usage == {"prompt_tokens": 21, "completion_tokens": 3}  # the prime counts
+
+
+def test_openai_prime_is_optional_and_never_fails_a_decision():
+    rec: list = []
+    tops = top({"Yes": -0.1, "No": -2.4})
+    oa = OpenAICompatDecider("http://box:8000/v1", "m", backend_name="openai",
+                             transport=oa_transport(rec, lambda b: chat_response(tops)))
+    oa.decide("s", [LIB, PAPERISH])
+    assert not any(is_prime(b) for b in rec)  # other servers: off unless asked for
+
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if is_prime(body):
+            return httpx.Response(400, json={"error": "max_tokens too small"})
+        return httpx.Response(200, json=chat_response(tops))
+
+    d = OpenAICompatDecider(model="qwen3.5-4b-mlx", transport=httpx.MockTransport(handler))
+    assert d.decide("s", [LIB])["library"].best == "yes"
+    d.decide("t", [LIB])
+    assert [is_prime(b) for b in seen] == [True, False, False]  # refused once, then not tried again
+
+
+def test_every_rendered_question_starts_with_the_shared_lead():
+    for q in (KIND, LIB, QUALITY, PAPERISH):
+        assert _render(q).user_tail.startswith(QUESTION_LEAD + " ")
 
 
 def test_openai_strict_logprobs_raises():
