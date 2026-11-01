@@ -844,6 +844,12 @@ def test_status_lists_each_stage_with_its_average_and_time_left(tmp_path):
     assert stages["metadata"]["state"] == "pending" and stages["metadata"]["pending"] == 2
     assert stages["metadata"]["per_item_s"] is None  # no history yet
     assert [s for s in stages] == ["classify", "metadata"]  # pipeline order, only stages with work
+    # a stage stays active while other stages' steps come in between (e.g. a document's full text)
+    w.last_worked["metadata"] = w.clock()
+    w.clock.advance(10)
+    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["metadata"] == "active"
+    w.clock.advance(31)
+    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["metadata"] == "pending"
     w.pause_path.touch()
     w._settle()
     assert {s["state"] for s in json.loads(w.status_path.read_text())["stages"]} == {"paused"}

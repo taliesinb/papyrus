@@ -72,9 +72,12 @@ TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND tr
 METADATA_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
 # the menu's lines (Watch.stages), in pipeline order
 STAGE_ORDER = ("ocr", "classify", "metadata", "extract", "enrich")
-STAGE_LABELS = {"ocr": "Reading scans", "classify": "Classifying", "metadata": "Extracting",
+STAGE_LABELS = {"ocr": "Scanning", "classify": "Classifying", "metadata": "Extracting",
                 "extract": "Indexing full text", "enrich": "Enriching"}
 EMA_ALPHA = 0.2  # weight of the newest step in a stage's seconds-per-item average
+# a stage worked within this many seconds is "active": steps of other stages come in between
+# (each extracted document's full text and enrichment run before the next document's metadata)
+ACTIVE_S = 30.0
 
 
 def default_log(msg: str) -> None:
@@ -180,7 +183,7 @@ class Watch:
         # seconds per item, per stage: an exponential moving average of finished steps, started from
         # the stage's history (the queue's, else the performance log's); and the stage worked last
         self.ema: dict[str, float | None] = {}
-        self.current_stage: str | None = None
+        self.last_worked: dict[str, float] = {}  # stage -> clock() of its last step
 
     # --- running ------------------------------------------------------------------------------
 
@@ -581,7 +584,7 @@ class Watch:
         finally:
             if outcome != "backoff":
                 self._busy()["steps"][stage] += 1
-                self.current_stage = stage
+                self.last_worked[stage] = self.clock()
             if outcome == "done":
                 self._average(stage, time.monotonic() - t0)
             self.events.emit("step", stage=stage, id=i, ms=round((time.monotonic() - t0) * 1000), outcome=outcome,
@@ -757,9 +760,9 @@ class Watch:
 
     def stages(self, counts: dict[str, int]) -> list[dict[str, Any]]:
         """One entry per stage with work left, in pipeline order, for the menu: what it is doing
-        (`active`: the stage worked last; `pending`: waiting for its turn, since the stages share
-        one loop and the local models; `waiting`: backed off; `paused`), how many items, seconds per
-        item (moving average) and seconds left."""
+        (`active`: worked in the last ACTIVE_S seconds; `pending`: waiting for its turn, since the
+        stages share one loop and the local models; `waiting`: backed off; `paused`), how many
+        items, seconds per item (moving average) and seconds left."""
         out, now = [], self.clock()
         for stage in STAGE_ORDER:
             n = counts.get(stage, 0)
@@ -772,7 +775,8 @@ class Watch:
             elif b and now < b[0]:
                 state, reason = "waiting", b[2]
             else:
-                state, reason = ("active" if stage == self.current_stage else "pending"), None
+                worked = self.last_worked.get(stage)
+                state, reason = ("active" if worked is not None and now - worked <= ACTIVE_S else "pending"), None
             entry = {"stage": stage, "label": STAGE_LABELS[stage], "unit": "works" if stage == "enrich" else "docs",
                      "pending": n, "state": state, "per_item_s": round(per, 2) if per is not None else None,
                      "eta_s": round(n * per) if per is not None else None}
