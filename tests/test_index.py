@@ -178,7 +178,7 @@ def test_ocr_first_pages_of_image_only_file_and_retriage(tmp_path, monkeypatch):
     fake = FakeOCR()
     monkeypatch.setattr(index, "VisionOCR", lambda: fake)
     stats = index.run(conn)
-    assert fake.calls == [[1, 2]] and stats["retriage"] == 1  # first pages only: not a work
+    assert fake.calls == [[1, 2]] and stats["requeued"] == 1  # first pages only: not a work
     rows = conn.execute("SELECT page, source, text FROM file_pages WHERE file_id=? ORDER BY page", (fid,)).fetchall()
     assert [(r[0], r[1]) for r in rows] == [(1, "ocr:vision"), (2, "ocr:vision")] and "legible" in rows[0][2]
     assert conn.execute("SELECT triage_status FROM files WHERE id=?", (fid,)).fetchone()[0] == "pending"

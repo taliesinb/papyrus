@@ -86,8 +86,8 @@ def test_enrich_writes_everything(conn, fake_resolve):
         [("arxiv", "2412.06464")],
         ["Yang, Songlin", "Jan Kautz"],
     )
-    res = pipeline.enrich_work(conn, wid)
-    assert res["status"] == "enriched"
+    res = pipeline.match_work(conn, wid)
+    assert res["status"] == "matched"
     assert res["sources"] == ["arxiv", "openalex", "s2"]
     assert fake_resolve["hints"][0].arxiv_id == "2412.06464"
 
@@ -144,10 +144,10 @@ def test_enrich_writes_everything(conn, fake_resolve):
 
 def test_enrich_is_idempotent_and_reuses_people(conn, fake_resolve):
     wid = add_work(conn, "Gated Delta Networks: Improving Mamba2 with Delta Rule", 2024, [("arxiv", "2412.06464")])
-    pipeline.enrich_work(conn, wid)
+    pipeline.match_work(conn, wid)
     n_people = conn.execute("SELECT count(*) FROM people").fetchone()[0]
-    res = pipeline.enrich_work(conn, wid)
-    assert res["status"] == "enriched" and not res["possible_duplicates"]
+    res = pipeline.match_work(conn, wid)
+    assert res["status"] == "matched" and not res["possible_duplicates"]
     assert conn.execute("SELECT count(*) FROM people").fetchone()[0] == n_people
     assert conn.execute("SELECT count(*) FROM work_authors WHERE work_id=?", (wid,)).fetchone()[0] == 3
     # live claims are not duplicated by the re-run
@@ -158,7 +158,7 @@ def test_enrich_is_idempotent_and_reuses_people(conn, fake_resolve):
 def test_id_owned_by_other_work_is_flagged(conn, fake_resolve):
     other = add_work(conn, "Some other record", None, [("dblp", "conf/iclr/YangKH25")])
     wid = add_work(conn, "Gated Delta Networks: Improving Mamba2 with Delta Rule", 2024, [("arxiv", "2412.06464")])
-    res = pipeline.enrich_work(conn, wid)
+    res = pipeline.match_work(conn, wid)
     assert res["possible_duplicates"] == [{"other_work_id": other, "scheme": "dblp", "value": "conf/iclr/YangKH25"}]
     assert conn.execute("SELECT work_id FROM work_ids WHERE scheme='dblp'").fetchone()[0] == other
     claims = db.current_assertions(conn, "work", wid)
@@ -168,7 +168,7 @@ def test_id_owned_by_other_work_is_flagged(conn, fake_resolve):
 def test_existing_values_kept(conn, fake_resolve):
     wid = add_work(conn, "Gated Delta Networks: Improving Mamba2 with Delta Rule", 2024, [("arxiv", "2412.06464")])
     conn.execute("UPDATE works SET abstract='mine', kind='slides' WHERE id=?", (wid,))
-    pipeline.enrich_work(conn, wid)
+    pipeline.match_work(conn, wid)
     w = conn.execute("SELECT abstract, kind FROM works WHERE id=?", (wid,)).fetchone()
     assert (w["abstract"], w["kind"]) == ("mine", "slides")
 
@@ -179,10 +179,10 @@ def test_below_threshold_is_ambiguous(conn, fake_resolve):
     )
     fake_resolve["records"] = [weak]
     wid = add_work(conn, "Something", 2020)
-    res = pipeline.enrich_work(conn, wid)
+    res = pipeline.match_work(conn, wid)
     assert res["status"] == "ambiguous" and res["best_score"] == 0.6
     claims = db.current_assertions(conn, "work", wid)
-    cands = claims["enrich_candidates"][0]["value"]
+    cands = claims["match_candidates"][0]["value"]
     assert cands[0]["ids"] == {"doi": "10.1234/abc"} and cands[0]["source"] == "crossref"
     assert conn.execute("SELECT count(*) FROM work_ids WHERE work_id=?", (wid,)).fetchone()[0] == 0
 
@@ -190,6 +190,6 @@ def test_below_threshold_is_ambiguous(conn, fake_resolve):
 def test_nothing_found(conn, fake_resolve):
     fake_resolve["records"] = []
     wid = add_work(conn, "Nothing", None)
-    assert pipeline.enrich_work(conn, wid)["status"] == "not_found"
+    assert pipeline.match_work(conn, wid)["status"] == "not_found"
     empty = conn.execute("INSERT INTO works(title) VALUES (NULL)").lastrowid
-    assert pipeline.enrich_work(conn, empty)["status"] == "not_found"
+    assert pipeline.match_work(conn, empty)["status"] == "not_found"

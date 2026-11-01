@@ -95,11 +95,11 @@ def screen_input(name: str, folder: str, size_bytes: int, host: str | None, text
 def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str | None:
     """The screen's input for a file in the library, or None if it has no text to go on (none in
     the pages scanning read)."""
-    from .pdf import TRIAGE_PAGES
+    from .pdf import FIRST_PAGES
 
     f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     text = "\n".join(r[0] for r in conn.execute(
-        "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
+        "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, FIRST_PAGES)))
     if f is None or not text.strip():
         return None
     if version >= 3:

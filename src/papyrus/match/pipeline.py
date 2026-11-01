@@ -1,6 +1,6 @@
 """Enrich a work in the database from external bibliographic APIs.
 
-    enrich_work(conn, work_id) -> {'status': 'enriched' | 'ambiguous' | 'not_found', ...}
+    match_work(conn, work_id) -> {'status': 'matched' | 'ambiguous' | 'not_found', ...}
 
 Network calls (candidates.resolve) happen before the write transaction. Writes:
 * assertions (subject 'work') per contributing record, source 'api:<source>':
@@ -39,7 +39,7 @@ KINDS = {
 }
 # identifiers that are not unique to a work (journal ISSNs) are not written to work_ids
 SKIP_ID_SCHEMES = {"issn"}
-ENRICH_SOURCE = "api:enrich"
+MATCH_SOURCE = "api:match"
 
 
 def build_hint(conn: sqlite3.Connection, work_id: int) -> candidates.Hint:
@@ -124,7 +124,7 @@ def _id_source(records: list[WorkRecord], scheme: str, value: str) -> str:
     for r in records:
         if r.ids.get(scheme) == value:
             return f"api:{r.source}"
-    return ENRICH_SOURCE
+    return MATCH_SOURCE
 
 
 def _write_ids(
@@ -142,7 +142,7 @@ def _write_ids(
             dup = {"other_work_id": row[0], "scheme": scheme, "value": value}
             dups.append(dup)
             db.assert_(
-                conn, "work", work_id, "possible_duplicate", dup, source=ENRICH_SOURCE, run_id=run_id, supersede=False
+                conn, "work", work_id, "possible_duplicate", dup, source=MATCH_SOURCE, run_id=run_id, supersede=False
             )
             continue
         conn.execute(
@@ -214,7 +214,7 @@ def _link_authors(conn: sqlite3.Connection, work_id: int, merged: WorkRecord) ->
             conn.execute(
                 "INSERT INTO work_authors(work_id, position, raw_name, person_id, role, affiliation, source)"
                 " VALUES (?,?,?,?, 'author', ?, ?)",
-                (work_id, pos, a.name, pid, (a.affiliations or [None])[0], ENRICH_SOURCE),
+                (work_id, pos, a.name, pid, (a.affiliations or [None])[0], MATCH_SOURCE),
             )
             linked += pid is not None
         return linked
@@ -244,7 +244,7 @@ def _link_authors(conn: sqlite3.Connection, work_id: int, merged: WorkRecord) ->
             conn.execute(
                 "INSERT INTO work_authors(work_id, position, raw_name, person_id, role, affiliation, source)"
                 " VALUES (?,?,?,?, 'author', ?, ?)",
-                (work_id, pos, a.name, person(j), (a.affiliations or [None])[0], ENRICH_SOURCE),
+                (work_id, pos, a.name, person(j), (a.affiliations or [None])[0], MATCH_SOURCE),
             )
             linked += cache[j] is not None
             pos += 1
@@ -324,13 +324,13 @@ def _conflict(conn: sqlite3.Connection, work_id: int, hint: candidates.Hint, rec
     return None
 
 
-def reset_enrichment(conn: sqlite3.Connection, work_id: int) -> None:
+def reset_match(conn: sqlite3.Connection, work_id: int) -> None:
     """Undo what enrichment wrote for a work, keeping triage data and the claims as history."""
     now = db.now_iso()
     with db.tx(conn):
         conn.execute("UPDATE assertions SET superseded_at=? WHERE subject_type='work' AND subject_id=?"
                      " AND superseded_at IS NULL AND (source LIKE 'api:%')", (now, work_id))
-        conn.execute("DELETE FROM work_authors WHERE work_id=? AND source=?", (work_id, ENRICH_SOURCE))
+        conn.execute("DELETE FROM work_authors WHERE work_id=? AND source=?", (work_id, MATCH_SOURCE))
         conn.execute("UPDATE work_authors SET person_id=NULL WHERE work_id=?", (work_id,))
         conn.execute("DELETE FROM work_ids WHERE work_id=? AND source LIKE 'api:%'", (work_id,))
         conn.execute("DELETE FROM work_topics WHERE work_id=? AND source<>'triage'", (work_id,))
@@ -338,17 +338,17 @@ def reset_enrichment(conn: sqlite3.Connection, work_id: int) -> None:
         works.reindex_work(conn, work_id)
 
 
-def unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
+def unmatched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
     """Live works with no API claims or candidates yet; only those of `file_ids` if given."""
     q = ("SELECT DISTINCT w.id FROM works w" + (" JOIN file_works fw ON fw.work_id=w.id" if file_ids else "")
          + " WHERE w.status IN ('candidate','confirmed')"
          + (f" AND fw.file_id IN ({','.join('?' * len(file_ids))})" if file_ids else "")
          + " AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
-           " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates')) ORDER BY w.id")
+           " AND (a.source LIKE 'api:%' OR a.field='match_candidates')) ORDER BY w.id")
     return [r[0] for r in conn.execute(q, file_ids)]
 
 
-def enrich_work(
+def match_work(
     conn: sqlite3.Connection,
     work_id: int,
     *,
@@ -380,7 +380,7 @@ def enrich_work(
             for r, why in excluded:
                 db.assert_(conn, "work", work_id, "excluded_candidate",
                            {"source": r.source, "title": r.title, "ids": r.ids, "reason": why},
-                           source=ENRICH_SOURCE, confidence=r.match_score, run_id=run_id, supersede=False)
+                           source=MATCH_SOURCE, confidence=r.match_score, run_id=run_id, supersede=False)
     if not good:
         cands = [_candidate_summary(r) for r in records[:10]]
         with db.tx(conn):
@@ -388,9 +388,9 @@ def enrich_work(
                 conn,
                 "work",
                 work_id,
-                "enrich_candidates",
+                "match_candidates",
                 cands,
-                source=ENRICH_SOURCE,
+                source=MATCH_SOURCE,
                 run_id=run_id,
                 confidence=records[0].match_score if records else None,
             )
@@ -410,7 +410,7 @@ def enrich_work(
         n_topics = _write_topics(conn, work_id, merged)
         works.reindex_work(conn, work_id)
     return {
-        "status": "enriched",
+        "status": "matched",
         "work_id": work_id,
         "score": merged.match_score,
         "sources": sorted({r.source for r in group}),

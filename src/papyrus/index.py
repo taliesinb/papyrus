@@ -28,7 +28,7 @@ from typing import Callable
 
 from . import db, store
 from .ocr import SOURCE as OCR_SOURCE, VisionOCR
-from .pdf import TRIAGE_PAGES, clean_text, read_pdf
+from .pdf import FIRST_PAGES, clean_text, read_pdf
 from .search import LIVE_FILE
 
 MIN_TEXT = 40  # characters: a page with less has no usable text layer (as in scan)
@@ -121,7 +121,7 @@ def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), live_o
     extracted = "f.fulltext_status = 'done'" + ("" if file_ids and not live_only else f" AND {LIVE_FILE.format(f='f.id')}")
     q = (f"""SELECT p.file_id, p.page FROM file_pages p JOIN files f ON f.id = p.file_id
              WHERE p.source = 'pdfium' AND length(trim(p.text)) < {MIN_TEXT}
-               AND (({extracted}) OR (f.text_status = 'no_text' AND p.page <= {TRIAGE_PAGES}))"""
+               AND (({extracted}) OR (f.text_status = 'no_text' AND p.page <= {FIRST_PAGES}))"""
          + (f" AND f.id IN ({','.join('?' * len(file_ids))})" if file_ids else "")
          + " ORDER BY p.file_id, p.page")
     out: dict[int, list[int]] = {}
@@ -228,7 +228,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
                 if got and not conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (fid,)).fetchone():
                     conn.execute("UPDATE files SET triage_status='pending' WHERE id=? AND text_status='no_text'",
                                  (fid,))
-                    stats["retriage"] += 1
+                    stats["requeued"] += 1
         finally:
             engine.close()
     return stats

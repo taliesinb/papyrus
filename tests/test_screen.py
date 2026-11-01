@@ -116,7 +116,7 @@ def test_keep_sends_a_screened_file_through_full_triage(tmp_path):
     conn = _payslip(tmp_path)
     scr = _screen()
     classify_and_extract(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True), screen=scr)
-    assert purge.keep(conn, 1) == ("retriage", None)
+    assert purge.keep(conn, 1) == ("requeued", None)
     assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "pending"
     be = FakeBackend(PAPER)
     r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=scr)
@@ -132,7 +132,7 @@ def test_no_screen_without_a_text_layer(tmp_path):
     assert "screen" not in r and len(be.prompts) == 1 and scr.embedder.inner.texts == []
 
 
-def test_the_watcher_screens_before_asking_the_language_model(tmp_path, no_enrich_network):
+def test_the_watcher_screens_before_asking_the_language_model(tmp_path, no_match_network):
     from test_watch import LMBackend, LMClassifier, LMStudio, Memory, _pdf, _watch
 
     lm = LMStudio(["gemma"])  # the user's model: the language model may not be asked now

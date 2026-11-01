@@ -116,7 +116,7 @@ class LMStudio:
 
 
 @pytest.fixture(autouse=True)
-def _no_network(no_enrich_network):
+def _no_network(no_match_network):
     pass
 
 
@@ -264,8 +264,8 @@ def test_new_file_is_ingested_once_settled_and_processed(tmp_path):
     # one recorded run per batch, all `watch`, closed as completed
     runs = _runs(conn)
     assert [c for c, _ in runs] == ["watch", "watch"]
-    assert runs[1][1]["status"] == "completed" and runs[1][1]["new_files"] == 1 and runs[1][1]["triaged"] == 1
-    assert runs[1][1]["promote_created"] == 1 and runs[1][1]["extracted"] == 1 and runs[1][1]["enrich_not_found"] == 1
+    assert runs[1][1]["status"] == "completed" and runs[1][1]["new_files"] == 1 and runs[1][1]["extracted"] == 1
+    assert runs[1][1]["promote_created"] == 1 and runs[1][1]["indexed"] == 1 and runs[1][1]["match_not_found"] == 1
     assert json.loads((tmp_path / "papyrus-home" / "watch.json").read_text())["state"] == IDLE
     # a copy of the same bytes: a second context for the same file, nothing to triage
     copy = dl / "copy.pdf"
@@ -276,7 +276,7 @@ def test_new_file_is_ingested_once_settled_and_processed(tmp_path):
     w.pump()
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 2
-    assert _runs(conn)[-1][1]["known_files"] == 1 and "triaged" not in _runs(conn)[-1][1]
+    assert _runs(conn)[-1][1]["known_files"] == 1 and "extracted" not in _runs(conn)[-1][1]
 
 
 def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
@@ -459,7 +459,7 @@ def test_extract_and_enrich_go_on_while_model_work_waits(tmp_path):
     w.dirty = True
     w.pump()
     assert conn.execute("SELECT fulltext_status FROM files").fetchone()[0] == "done"
-    assert conn.execute("SELECT count(*) FROM assertions WHERE field='enrich_candidates'").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM assertions WHERE field='match_candidates'").fetchone()[0] == 1
 
 
 def test_no_classifier_means_no_triage(tmp_path):
@@ -867,7 +867,7 @@ def test_a_stage_average_starts_from_the_performance_log(tmp_path):
 def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypatch):
     from papyrus.match import pipeline
 
-    monkeypatch.setattr(pipeline, "enrich_work", lambda conn, wid, **kw: {
+    monkeypatch.setattr(pipeline, "match_work", lambda conn, wid, **kw: {
         "status": "rate_limited", "work_id": wid, "sources": ["openalex"], "retry_after": 120.0})
     w, conn, dl, clock, logs = _watch(tmp_path)
     _pdf(dl / "a.pdf", "Lecture notes on things", old=True)

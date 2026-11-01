@@ -25,7 +25,7 @@ MARK = "Quuxperson"  # in a payslip: must survive nowhere after a purge
 
 
 @pytest.fixture(autouse=True)
-def _no_network(no_enrich_network):  # the watcher enriches what it promotes
+def _no_network(no_match_network):  # the watcher enriches what it promotes
     pass
 
 

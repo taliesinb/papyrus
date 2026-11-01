@@ -410,7 +410,7 @@ def keep_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
                 where = f" (file {fid})" if fid and action == "restored" else ""
             stats[action] = stats.get(action, 0) + 1
             hint = {"restored": "; now `papyrus process` triages it", "no_title": "; `papyrus process` triages it",
-                    "retriage": "; the screen had set it aside: `papyrus process` triages it in full",
+                    "requeued": "; the screen had set it aside: `papyrus process` triages it in full",
                     "unknown": "; not in the library: `papyrus scan` it"}.get(action, "")
             click.echo(f"{t}: {action}{where}{hint}")
 
@@ -451,7 +451,7 @@ def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_oc
 def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
     """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
     identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
-    from .match.pipeline import enrich_work, reset_enrichment
+    from .match.pipeline import match_work, reset_match
 
     conn = _conn(ctx)
     if reset and not work_ids:
@@ -462,14 +462,14 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
         ids = [r[0] for r in conn.execute(
             "SELECT id FROM works WHERE status IN ('candidate','confirmed') ORDER BY id")]
     else:
-        ids = _unenriched_works(conn)
+        ids = _unmatched_works(conn)
     ids = ids[:limit] if limit else ids
     with db.recorded_run(conn, "enrich", {"works": len(ids), "reset": reset}) as (run_id, stats):
         for wid in ids:
             try:
                 if reset:
-                    reset_enrichment(conn, wid)
-                r = enrich_work(conn, wid, run_id=run_id)
+                    reset_match(conn, wid)
+                r = match_work(conn, wid, run_id=run_id)
             except Exception as e:
                 r = {"status": "error", "error": f"{type(e).__name__}: {e}"}
             stats[r["status"]] = stats.get(r["status"], 0) + 1
@@ -481,9 +481,9 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 
-def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
-    from .match.pipeline import unenriched_works
-    return unenriched_works(conn, file_ids)
+def _unmatched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
+    from .match.pipeline import unmatched_works
+    return unmatched_works(conn, file_ids)
 
 
 @main.command()
@@ -507,7 +507,7 @@ def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, 
     ctx.invoke(promote)
     click.echo("== extract")
     ctx.invoke(extract)  # everything pending: new works' files, whether or not they were in FILE_IDS
-    pending = _unenriched_works(_conn(ctx), file_ids)
+    pending = _unmatched_works(_conn(ctx), file_ids)
     click.echo(f"== enrich ({len(pending)} works)")
     if pending:
         ctx.invoke(enrich, work_ids=tuple(pending))

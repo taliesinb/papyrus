@@ -15,7 +15,7 @@ STOPPED = "stopped"
 MEMORY_DELAY, MEMORY_DELAY_MAX = 30.0, 600.0
 LMSTUDIO_DELAY = 300.0
 RATE_LIMIT_DELAY = 300.0  # when the server didn't say how long (Retry-After)
-ENRICH_PATIENCE_S = 15.0  # seconds of retry waits one enrichment may spend before backing off
+MATCH_PATIENCE_S = 15.0  # seconds of retry waits one enrichment may spend before backing off
 
 
 class Backoff(Exception):

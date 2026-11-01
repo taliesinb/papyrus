@@ -9,7 +9,7 @@ For each distinct identifier:
 3. a live work already has one of the record's other ids, or its title and year (the
    published DOI of an arXiv link, say) → link to that work;
 4. else create a ``candidate`` work holding the identifier and enrich it
-   (`enrich.pipeline.enrich_work`, which repeats the lookup from the HTTP cache), so its
+   (`enrich.pipeline.match_work`, which repeats the lookup from the HTTP cache), so its
    title, authors, abstract and topics come with API provenance.
 
 Refs become ``resolved`` with ``work_id``, ``confidence`` 1.0 (identifier match) and
@@ -27,7 +27,7 @@ from typing import Any
 from . import db, works
 from .contexts import links as linkmod
 from .match import candidates
-from .match.pipeline import THRESHOLD, enrich_work
+from .match.pipeline import THRESHOLD, match_work
 
 ID_SOURCE = "heuristic:link"
 
@@ -83,7 +83,7 @@ def resolve_one(conn: sqlite3.Connection, scheme: str, value: str, ref_ids: list
         db.assert_(conn, "work", wid, "ids", {scheme: value}, source=ID_SOURCE, confidence=1.0, run_id=run_id)
         _link(conn, ref_ids, wid, scheme)
         works.reindex_work(conn, wid)
-    r = enrich_work(conn, wid, run_id=run_id, **resolve_kw)
+    r = match_work(conn, wid, run_id=run_id, **resolve_kw)
     return {"status": "created", "work_id": wid, "enrich": r["status"], "title": rec.title}
 
 

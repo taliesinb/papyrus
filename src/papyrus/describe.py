@@ -126,11 +126,11 @@ def state_header(d: Document) -> str:
 def render_state(d: Document, n_pages: int, page_text: Callable[[int], str], max_tokens: int | None = None,
                  tail_fraction: float | None = None) -> str:
     """The state: the header, then pages chosen by pagetext.select_pages within about
-    `max_tokens` (config [triage]). `page_text(p)` is page p's raw text ('' without a text layer)."""
+    `max_tokens` (config [describe]). `page_text(p)` is page p's raw text ('' without a text layer)."""
     from . import config
 
     if max_tokens is None or tail_fraction is None:
-        cfg = config.triage()
+        cfg = config.describe()
         max_tokens = cfg.state_tokens if max_tokens is None else max_tokens
         tail_fraction = cfg.tail_fraction if tail_fraction is None else tail_fraction
     header = state_header(d)

@@ -53,7 +53,7 @@ from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
 from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, PAUSED,
                      STARTING,
-                     STOPPED, WAITING_MEMORY, Backoff, ENRICH_PATIENCE_S, RATE_LIMIT_DELAY, RATE_LIMITED)
+                     STOPPED, WAITING_MEMORY, Backoff, MATCH_PATIENCE_S, RATE_LIMIT_DELAY, RATE_LIMITED)
 from .models import ModelLedger
 from .events import NAME as EVENTS_NAME, EventLog
 from .queue import MODEL_STAGES, STAGES, Queue
@@ -68,8 +68,8 @@ EXIT_LOCKED = 75  # another watcher holds the library's lock (EX_TEMPFAIL): don'
 EXIT_REPLACED = 70  # a database file was replaced under the watcher; a copy is in <home>/rescued-*
 EXIT_RESCUED = 78  # a rescued-* copy waits to be restored: refuse to start (EX_CONFIG)
 
-TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status IN ('pending', 'error')")
-METADATA_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
+CLASSIFY_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status IN ('pending', 'error')")
+EXTRACT_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
 # the menu's lines (Watch.stages), in pipeline order
 STAGE_ORDER = ("ocr", "classify", "metadata", "extract", "enrich")
 STAGE_LABELS = {"ocr": "Scanning", "classify": "Classifying", "metadata": "Extracting",
@@ -511,15 +511,15 @@ class Watch:
 
     def _library_pending(self) -> dict[str, list[int]]:
         """What the library says is pending, per stage (the queue mirrors it)."""
-        from ..match.pipeline import unenriched_works
+        from ..match.pipeline import unmatched_works
 
         ocr = self.ocr and self.ocr_ok is not False
         return {
             "extract": index.pending_files(self.conn),
             "ocr": list(index.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
-            "enrich": unenriched_works(self.conn),
-            "classify": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {TRIAGE_PENDING} ORDER BY id")],
-            "metadata": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {METADATA_PENDING} ORDER BY id")],
+            "enrich": unmatched_works(self.conn),
+            "classify": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {CLASSIFY_PENDING} ORDER BY id")],
+            "metadata": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {EXTRACT_PENDING} ORDER BY id")],
         }
 
     @property
@@ -604,7 +604,7 @@ class Watch:
     def _extract(self, fid: int, run_id: int, c: Counter) -> None:
         s = index.process(self.conn, (fid,), ocr=False, live_only=True)
         if s.get("files"):
-            c["extracted"] += s["files"]
+            c["indexed"] += s["files"]
         if s.get("error"):
             c["extract_error"] += s["error"]
         self.log(f"file {fid} extracted ({s.get('pages', 0)} pages)" if s.get("files") else f"file {fid} extract failed")
@@ -617,20 +617,20 @@ class Watch:
             self.log("OCR is unavailable (tools/afm-bridge not built, or not macOS); image-only pages stay unread")
             return
         self.memory_delay = MEMORY_DELAY
-        for k in ("ocr_pages", "retriage"):
+        for k in ("ocr_pages", "requeued"):
             if s.get(k):
                 c[k] += s[k]
         self.log(f"file {fid} OCR: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)} pages read")
 
     def _enrich(self, wid: int, run_id: int, c: Counter) -> None:
         from .. import http
-        from ..match.pipeline import enrich_work
+        from ..match.pipeline import match_work
 
         # Don't sit through a rate limit's retries (minutes, with everything else waiting): give up
-        # on a refusal that would cost more than ENRICH_PATIENCE_S, record no verdict, come back.
-        with http.patience(ENRICH_PATIENCE_S):
-            r = enrich_work(self.conn, wid, run_id=run_id)
-        c[f"enrich_{r['status']}"] += 1
+        # on a refusal that would cost more than MATCH_PATIENCE_S, record no verdict, come back.
+        with http.patience(MATCH_PATIENCE_S):
+            r = match_work(self.conn, wid, run_id=run_id)
+        c[f"match_{r['status']}"] += 1
         self.log(f"work {wid} enrich: {r['status']}")
         if r["status"] == "rate_limited":
             names = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref", "s2": "Semantic Scholar"}
@@ -666,7 +666,7 @@ class Watch:
         r = extract_metadata(self.conn, fid, be, run_id=run_id)
         self.step_detail = {"cached": bool(r.get("cached"))}
         self.memory_delay = MEMORY_DELAY
-        c["triaged"] += 1
+        c["extracted"] += 1
         self.log(f"file {fid} metadata extracted")
         self._promote(fid, run_id, c)
 
@@ -834,8 +834,8 @@ class Watch:
             "state": state, "detail": detail, "pid": os.getpid(), "since": self.started, "updated": db.now_iso(),
             "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs), "paused": self.paused,
             "loaded_by_watch": sorted(self.ledger.ours),
-            "totals": {k: self.totals[k] for k in ("new_files", "classified", "triaged", "promote_created", "promote_linked",
-                                                   "promote_purged", "extracted", "enrich_enriched") if self.totals[k]},
+            "totals": {k: self.totals[k] for k in ("new_files", "classified", "extracted", "promote_created", "promote_linked",
+                                                   "promote_purged", "indexed", "match_matched") if self.totals[k]},
         }
         if state in (WAITING_MEMORY, LMSTUDIO_UNAVAILABLE):
             if waiting := self._waiting():

@@ -7,7 +7,7 @@
 * `daemon.py`: the loop, its recorded runs, the status file.
 
 The pipeline itself is the CLI's: `scan.ingest_path` → `triage.triage_file` →
-`works.promote_file` → `fulltext.process` → `enrich.pipeline.enrich_work`.
+`works.promote_file` → `fulltext.process` → `enrich.pipeline.match_work`.
 """
 
 from .daemon import EXIT_LOCKED, Watch, read_status

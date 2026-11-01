@@ -14,7 +14,7 @@ from . import db
 from .classify import KINDS, classified_p_personal, classify_file
 from .describe import build_state
 from .llm.base import Backend, Classifier
-from .pdf import TRIAGE_PAGES
+from .pdf import FIRST_PAGES
 from .textspan import best_abstract
 
 ANCHOR_WORDS = 8
@@ -108,7 +108,7 @@ def extract_metadata(conn: sqlite3.Connection, file_id: int, backend: Backend, r
     extracted["abstract"], abstract_source = None, None
     if extracted.get("has_abstract") and library:
         pages = "\n".join(r[0] for r in conn.execute(  # the first pages, even once the full text is in
-            "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
+            "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, FIRST_PAGES)))
         text, method = best_abstract(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
         if text:
             extracted["abstract"] = text

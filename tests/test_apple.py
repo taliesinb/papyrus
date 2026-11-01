@@ -112,7 +112,7 @@ on a single GPU.
 Predicting protein structure from sequence has been transformed by deep learning...
 """
 
-TRIAGE_SCHEMA = {
+EXTRACT_SCHEMA_TEST = {
     "type": "object",
     "properties": {
         "kind": {"type": "string", "enum": ["paper", "book", "slides", "personal", "other"]},
@@ -153,7 +153,7 @@ def test_live_arxiv_extraction(backend):
         instructions="You catalogue documents for a research library. Extract bibliographic metadata "
         "using only information in the input. Copy the abstract verbatim.",
         prompt=ARXIV_PAGE,
-        schema=TRIAGE_SCHEMA,
+        schema=EXTRACT_SCHEMA_TEST,
         max_tokens=800,
     )
     assert r["kind"] == "paper"

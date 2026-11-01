@@ -12,7 +12,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 
 PDF_MAGIC = b"%PDF-"
-TRIAGE_PAGES = 2  # pages read when a file is scanned: all that triage sees
+FIRST_PAGES = 2  # pages read when a file is scanned: all that triage sees
 
 # get_toc() warns on stderr for every outline deeper than max_depth (and for cycles); both are harmless.
 logging.getLogger("pypdfium2").setLevel(logging.ERROR)

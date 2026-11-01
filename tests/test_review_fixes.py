@@ -55,8 +55,8 @@ def test_candidate_owned_by_other_work_is_not_merged(tmp_path, monkeypatch):
                      ["Persi Diaconis", "Amy Pang", "Arun Ram"])
     other_arxiv = _rec("s2", "Hopf algebras and Markov chains", {"arxiv": "1206.3620"}, ["Persi Diaconis"])
     monkeypatch.setattr(pipeline.candidates, "resolve", lambda hint, **kw: [good, other_doi, other_arxiv])
-    r = pipeline.enrich_work(conn, thesis)
-    assert r["status"] == "enriched" and r["sources"] == ["arxiv"]
+    r = pipeline.match_work(conn, thesis)
+    assert r["status"] == "matched" and r["sources"] == ["arxiv"]
     names = [x[0] for x in conn.execute("SELECT raw_name FROM work_authors WHERE work_id=?", (thesis,))]
     assert names == ["Amy Pang"]
     excl = db.current_assertions(conn, "work", thesis)["excluded_candidate"]
@@ -229,13 +229,13 @@ def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
 
     monkeypatch.setattr(candidates, "resolve", resolve)
     monkeypatch.delenv("S2_API_KEY", raising=False)
-    r = pipeline.enrich_work(conn, wid)
+    r = pipeline.match_work(conn, wid)
     assert r["status"] == "rate_limited" and r["sources"] == ["openalex"] and r["retry_after"] == 120.0
-    assert wid in pipeline.unenriched_works(conn)  # still pending
+    assert wid in pipeline.unmatched_works(conn)  # still pending
 
     def resolve_s2_only(hint, report=None, **kw):  # Semantic Scholar without a key refuses almost always
         report["rate_limited"] = {"s2": 0.0}
         return []
 
     monkeypatch.setattr(candidates, "resolve", resolve_s2_only)
-    assert pipeline.enrich_work(conn, wid)["status"] == "not_found"
+    assert pipeline.match_work(conn, wid)["status"] == "not_found"

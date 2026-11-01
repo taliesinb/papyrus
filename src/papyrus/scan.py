@@ -24,7 +24,7 @@ from typing import Callable, Iterable
 from . import db, linux, macos, purge, store
 from .filenames import parse_filename
 from .index import page_kind
-from .pdf import TRIAGE_PAGES, looks_like_pdf, read_pdf, sha256_file
+from .pdf import FIRST_PAGES, looks_like_pdf, read_pdf, sha256_file
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".Trash", "Library"}
 
@@ -87,7 +87,7 @@ def first_read(conn: sqlite3.Connection, file_id: int, path: Path, name: str | N
     return status
 
 
-def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = TRIAGE_PAGES) -> str:
+def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = FIRST_PAGES) -> str:
     try:
         info = read_pdf(path, max_pages=pages)
     except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files

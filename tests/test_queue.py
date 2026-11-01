@@ -14,7 +14,7 @@ from test_watch import Clock, _pdf, _watch
 
 
 @pytest.fixture(autouse=True)
-def _no_network(no_enrich_network):  # the watcher enriches what it promotes
+def _no_network(no_match_network):  # the watcher enriches what it promotes
     pass
 
 
@@ -88,7 +88,7 @@ def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
         attempts.append(wid)
         return {"status": "not_found", "work_id": wid}
 
-    monkeypatch.setattr(pipeline, "enrich_work", finds_nothing)
+    monkeypatch.setattr(pipeline, "match_work", finds_nothing)
     w, conn, dl, clock, logs = _watch(tmp_path)
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()

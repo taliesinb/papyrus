@@ -15,13 +15,13 @@ def test_process_runs_triage_promote_enrich_and_is_idempotent(tmp_path, monkeypa
     monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")
     enriched = []
 
-    def fake_enrich(conn, wid, run_id=None):
+    def fake_match(conn, wid, run_id=None):
         enriched.append(wid)
         conn.execute("INSERT INTO assertions(subject_type, subject_id, field, value, source)"
                      " VALUES ('work', ?, 'title', '\"x\"', 'api:test')", (wid,))
         return {"status": "matched"}
 
-    monkeypatch.setattr(pipeline, "enrich_work", fake_enrich)
+    monkeypatch.setattr(pipeline, "match_work", fake_match)
     runner, db_arg = CliRunner(), ["--db", str(tmp_path / "t.sqlite")]
 
     r = runner.invoke(main, [*db_arg, "process"])

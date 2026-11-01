@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from papyrus import db, describe, works
-from papyrus.pdf import TRIAGE_PAGES
+from papyrus.pdf import FIRST_PAGES
 
 INPUT_CONTEXTS = ("filesystem", "download")
 WORK_FIELDS = ["kind", "title", "subtitle", "abstract", "year", "date", "venue", "language"]
@@ -91,7 +91,7 @@ def contexts(conn: sqlite3.Connection, file_id: int) -> list[dict[str, Any]]:
 def pages(conn: sqlite3.Connection, file_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(
         "SELECT page, source, kind, text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page",
-        (file_id, TRIAGE_PAGES))]
+        (file_id, FIRST_PAGES))]
 
 
 def trace(value: Any, claims: dict[str, list[dict]], field: str) -> str | None:
@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot(db.default_db_path(), path)
         conn = db.connect(path)
         files = conn.execute("SELECT * FROM files ORDER BY id").fetchall()
-        meta = {"triage_pages": TRIAGE_PAGES, "prompt_version": describe.PROMPT_VERSION,
+        meta = {"triage_pages": FIRST_PAGES, "prompt_version": describe.PROMPT_VERSION,
                 "schema_version": db.SCHEMA_VERSION, "exported_at": db.now_iso(),
                 "library": str(db.default_db_path()) if a.db is None else str(a.db)}
         recs = [record(conn, f) for f in files]

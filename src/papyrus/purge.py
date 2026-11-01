@@ -174,7 +174,7 @@ def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> t
         if retriage:
             conn.execute("UPDATE files SET triage_status=? WHERE id=?", (status, file_id))
     if retriage:
-        return "retriage", None
+        return "requeued", None
     return promote_file(conn, file_id, run_id=run_id)
 
 

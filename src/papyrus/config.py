@@ -9,11 +9,11 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     [lmstudio]
     autostart = true      # run `lms server start` when LM Studio's server is off
 
-    [screen]              # triage's fast first stage (screen.py)
+    [screen]              # the classify stage's fast first step (screen.py)
     enabled = true        # also PAPYRUS_SCREEN=0
     threshold = 0.9       # P(personal) at which a file is set aside without asking the 4B model
 
-    [triage]              # the state every triage model reads (triage.build_state, pagetext.py)
+    [describe]            # the document description every model reads (describe.build_state, pagetext.py)
     state_tokens = 1000   # about this many tokens: the header, then pages from the front and the back
     tail_fraction = 0.2   # share of the page budget kept for the last pages
 
@@ -51,12 +51,12 @@ TEMPLATE = '''\
 # PAPYRUS_BACKEND / PAPYRUS_CLASSIFIER / PAPYRUS_LMSTUDIO_AUTOSTART environment
 # variables take precedence over this file.
 
-# Extraction model for `papyrus triage`: auto | lmstudio[:model] | apple
+# Extraction model (`papyrus extract`): auto | lmstudio[:model] | apple
 # auto = LM Studio (started if needed, see below), else Apple Foundation Models.
 backend = "auto"
 
 # Classifier for kind / library-vs-personal: auto | none | lmstudio[:model] | jev[:url] | openai:model@url
-# auto = PAPYRUS_JEV_URL if set, else LM Studio. Triage refuses to run without a
+# auto = PAPYRUS_JEV_URL if set, else LM Studio. `papyrus classify` refuses to run without a
 # classifier unless this is "none".
 classifier = "auto"
 
@@ -64,20 +64,20 @@ classifier = "auto"
 # Start LM Studio's local server (`lms server start`) when it isn't running.
 autostart = true
 
-# Triage's fast first stage: a small embedding model (84 MB, ~30 ms a file) sets obvious
+# The classify stage's fast first step: a small embedding model (84 MB, ~30 ms a file) sets obvious
 # personal paperwork aside, held for review, before the language model is asked.
 # [screen]
 # enabled = true
 # threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
 
-# What every triage model reads of a document: its names, folder, origin and PDF metadata, then
+# What every model reads of a document (the document description): its names, folder, origin and PDF metadata, then
 # pages from the front and, for a longer document, the back, within about this many tokens.
-# [triage]
+# [describe]
 # state_tokens = 1000
 # tail_fraction = 0.2       # share of the page budget kept for the last pages
 
 # `papyrus watch`: add new PDFs from these directories (not their subdirectories) as they
-# appear, then triage, promote, extract and enrich them in the background.
+# appear, then ingest them in the background: read, classify, extract, promote, index, match.
 [watch]
 dirs = ["~/Downloads", "~/Desktop"]
 # settle = 3            # seconds a file must stay unchanged before it is added
@@ -188,23 +188,24 @@ def screen() -> ScreenSettings:
 
 
 @dataclass(frozen=True)
-class TriageSettings:
+class DescribeSettings:
     state_tokens: int = 1000
     tail_fraction: float = 0.2
 
 
-def triage() -> TriageSettings:
-    """The [triage] table: the size of the state and the share of it kept for the last pages."""
-    section = load().get("triage") or {}
+def describe() -> DescribeSettings:
+    """The [describe] table: the size of the document description and the share of it kept for the
+    last pages."""
+    section = load().get("describe") or {}
     if not isinstance(section, dict):
-        raise ConfigError(f"{path()}: [triage] must be a table")
-    n = section.get("state_tokens", TriageSettings.state_tokens)
+        raise ConfigError(f"{path()}: [describe] must be a table")
+    n = section.get("state_tokens", DescribeSettings.state_tokens)
     if isinstance(n, bool) or not isinstance(n, int) or n < 300:
-        raise ConfigError(f"{path()}: triage.state_tokens must be a whole number of tokens >= 300, got {n!r}")
-    f = section.get("tail_fraction", TriageSettings.tail_fraction)
+        raise ConfigError(f"{path()}: describe.state_tokens must be a whole number of tokens >= 300, got {n!r}")
+    f = section.get("tail_fraction", DescribeSettings.tail_fraction)
     if isinstance(f, bool) or not isinstance(f, (int, float)) or not 0 <= f < 1:
-        raise ConfigError(f"{path()}: triage.tail_fraction must be in [0, 1), got {f!r}")
-    return TriageSettings(n, float(f))
+        raise ConfigError(f"{path()}: describe.tail_fraction must be in [0, 1), got {f!r}")
+    return DescribeSettings(n, float(f))
 
 
 WATCH_DIRS = ("~/Downloads", "~/Desktop")
