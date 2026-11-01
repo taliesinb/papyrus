@@ -73,7 +73,7 @@ METADATA_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
 # the menu's lines (Watch.stages), in pipeline order
 STAGE_ORDER = ("ocr", "classify", "metadata", "extract", "enrich")
 STAGE_LABELS = {"ocr": "Scanning", "classify": "Classifying", "metadata": "Extracting",
-                "extract": "Indexing full text", "enrich": "Enriching"}
+                "extract": "Indexing full text", "enrich": "Matching"}
 EMA_ALPHA = 0.2  # weight of the newest step in a stage's seconds-per-item average
 # a stage worked within this many seconds is "active": steps of other stages come in between
 # (each extracted document's full text and enrichment run before the next document's metadata)
