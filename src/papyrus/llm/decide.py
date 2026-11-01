@@ -124,6 +124,10 @@ class JevHTTPDecider:
     def info(self) -> ModelInfo:
         return ModelInfo(backend=self.backend, model=self._served_model or self.model)
 
+    def cache_params(self) -> dict[str, Any]:
+        """For the inference cache (inference.py): the wire mapping's version."""
+        return {"impl": "jev-systemone-1"}
+
     def available(self) -> bool:
         try:
             r = self._client.get("/v1/models", timeout=3.0)
@@ -353,6 +357,10 @@ class OpenAICompatDecider:
         self._context: int | None = None
         self.calls = 0  # chat requests made (for latency accounting)
         self.last_coverage: dict[str, float] = {}  # question key -> label mass seen in top_logprobs
+        self.last_usage: dict[str, int] | None = None  # tokens of the last decide() (inference cache)
+        self.last_params: dict[str, Any] | None = None
+        self._seed = 0
+        self._configured_method = method
 
     # -- Decider protocol -------------------------------------------------------------
     def info(self) -> ModelInfo:
@@ -368,11 +376,41 @@ class OpenAICompatDecider:
             return False
         return self.model in ids
 
-    def decide(self, state: str, questions: list[Question]) -> dict[str, Answer]:
+    def decide(self, state: str, questions: list[Question], seed: int = 0) -> dict[str, Answer]:
+        """`seed` goes to every request (voting: seed * vote_samples + i). LM Studio's MLX engine
+        ignores it; with logprobs at temperature 0 it doesn't matter."""
         out: dict[str, Answer] = {}
+        self._seed, self.last_usage = seed, {"prompt_tokens": 0, "completion_tokens": 0}
+        calls = self.calls
         for q in questions:
             out[q.key] = self._decide_one(state, q)
+        self.last_params = {"method": self.method, "requests": self.calls - calls}
         return out
+
+    # -- inference cache (inference.py) -------------------------------------------------
+    def cache_params(self) -> dict[str, Any]:
+        """What shapes the answer besides the question and the state."""
+        return {"impl": "openai-decide-1", "method": self._configured_method, "permutations": self.permutations,
+                "calibration_temperature": self.temperature, "assistant_prefill": self.assistant_prefill,
+                "system_prompt": self.system_prompt, "vote_samples": self.vote_samples,
+                "top_logprobs": self.top_logprobs}
+
+    def model_build(self) -> dict[str, Any] | None:
+        if self.backend != "lmstudio":
+            return {}
+        from .lmstudio import model_build
+        return model_build(self.base_url, self.model)
+
+    def seed_honoured(self, build: dict[str, Any]) -> bool | None:
+        from .lmstudio import seed_honoured
+        return seed_honoured(build) if self.backend == "lmstudio" else None
+
+    def model_loaded(self) -> bool | None:
+        if self.backend != "lmstudio":
+            return None
+        from .lmstudio import loaded_models
+        loaded = loaded_models(self.base_url)
+        return None if loaded is None else self.model in loaded
 
     # -- internals --------------------------------------------------------------------
     def _context_tokens(self) -> int | None:
@@ -398,7 +436,7 @@ class OpenAICompatDecider:
         return msgs
 
     def _chat(self, messages: list[dict[str, str]], **params: Any) -> dict[str, Any]:
-        body = {"model": self.model, "messages": messages, "stream": False, **params}
+        body = {"model": self.model, "messages": messages, "stream": False, "seed": self._seed, **params}
         self.calls += 1
         try:
             r = self._client.post(f"{self.base_url}/chat/completions", json=body)
@@ -408,7 +446,12 @@ class OpenAICompatDecider:
             raise BackendUnavailable(f"{self.base_url} error {r.status_code}: {r.text[:200]}")
         if r.status_code >= 400:
             raise ValueError(f"chat request rejected ({r.status_code}): {r.text[:300]}")
-        return r.json()
+        data = r.json()
+        usage = data.get("usage") or {}
+        if self.last_usage is not None:
+            for k in ("prompt_tokens", "completion_tokens"):
+                self.last_usage[k] += int(usage.get(k) or 0)
+        return data
 
     def _decide_one(self, state: str, q: Question) -> Answer:
         orders: list[list[int] | None] = [None]
@@ -485,8 +528,8 @@ class OpenAICompatDecider:
         counts: Counter[str] = Counter()
         alias = {k.lower(): v for k, v in prompt.aliases.items()}
         pattern = re.compile(r"[A-Za-z0-9]+")
-        for _ in range(self.vote_samples):
-            data = self._chat(messages, max_tokens=8, temperature=1.0)
+        for i in range(self.vote_samples):
+            data = self._chat(messages, max_tokens=8, temperature=1.0, seed=self._seed * self.vote_samples + i)
             text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
             for word in pattern.findall(text):
                 lab = alias.get(word.lower())

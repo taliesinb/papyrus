@@ -10,6 +10,8 @@
 //     -> {"ok":true, "tokens":int}
 //   {"op":"extract", "instructions":str, "prompt":str, "schema":{JSON Schema subset},
 //    "temperature":float?, "max_tokens":int?, "fit":bool? (default true),
+//    "seed":int? (temperature > 0: seeded sampling over the whole distribution, so the same
+//                seed gives the same answer; temperature 0 is greedy and needs none),
 //    "guardrails":"permissive"|"default"? (default permissive),
 //    "use_case":"general"|"contentTagging"? (default general),
 //    "guardrail_fallback":bool? (default true)}
@@ -286,6 +288,7 @@ final class Bridge {
         }
         let temperature = (req["temperature"] as? NSNumber)?.doubleValue ?? 0.0
         let maxTokens = (req["max_tokens"] as? NSNumber)?.intValue ?? 1024
+        let seed = (req["seed"] as? NSNumber)?.uint64Value
         let fit = req["fit"] as? Bool ?? true
         let guardrails = req["guardrails"] as? String ?? "permissive"
         let useCase = req["use_case"] as? String ?? "general"
@@ -356,9 +359,16 @@ final class Bridge {
             }
         }
 
-        let options: GenerationOptions = temperature <= 0
-            ? GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens)
-            : GenerationOptions(temperature: temperature, maximumResponseTokens: maxTokens)
+        let options: GenerationOptions
+        if temperature <= 0 {
+            options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: maxTokens)
+        } else if let seed {
+            options = GenerationOptions(samplingMode: .random(probabilityThreshold: 1.0, seed: seed),
+                                        temperature: temperature, maximumResponseTokens: maxTokens)
+            meta["seed"] = seed
+        } else {
+            options = GenerationOptions(temperature: temperature, maximumResponseTokens: maxTokens)
+        }
 
         let busyRetries = (req["busy_retries"] as? NSNumber)?.intValue ?? 2
         var attempt = 0

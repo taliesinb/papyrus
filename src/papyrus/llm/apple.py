@@ -164,6 +164,7 @@ class AppleFMBackend:
         self._lock = threading.Lock()
         self._availability: dict[str, Any] | None = None
         self.last_response: dict[str, Any] | None = None
+        self.last_usage: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ plumbing
 
@@ -300,6 +301,22 @@ class AppleFMBackend:
             self._raise(resp)
         return int(resp["tokens"])
 
+    # ------------------------------------------------------------------ inference cache (inference.py)
+
+    def cache_params(self) -> dict[str, Any]:
+        """Settings that shape the answer, beyond instructions, prompt and schema."""
+        return {"impl": "afm-extract-1", "guardrails": self.guardrails, "use_case": self.use_case,
+                "guardrail_fallback": self.guardrail_fallback}
+
+    def model_build(self) -> dict[str, Any]:
+        """The model ships with the OS: its release pins the weights."""
+        import platform
+
+        return {"macos": platform.mac_ver()[0], "darwin": os.uname().release}
+
+    def seed_honoured(self, build: dict[str, Any]) -> bool:
+        return True  # the bridge samples with SamplingMode.random(probabilityThreshold: 1, seed:)
+
     def extract(
         self,
         *,
@@ -308,7 +325,9 @@ class AppleFMBackend:
         schema: dict[str, Any],
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        seed: int = 0,
     ) -> dict[str, Any]:
+        self.last_usage = None
         a = self.availability()
         if not a.get("available"):
             raise BackendUnavailable(f"Apple Foundation Model unavailable: {a.get('reason')}")
@@ -326,6 +345,7 @@ class AppleFMBackend:
             "schema": _with_order(schema),
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "seed": seed,
             "fit": True,
             "guardrails": self.guardrails,
             "use_case": self.use_case,
@@ -337,6 +357,9 @@ class AppleFMBackend:
         resp.setdefault("wall_ms", round((time.monotonic() - t0) * 1000))
         resp["python_truncated"] = len(fitted) < len(prompt)
         self.last_response = resp
+        usage = resp.get("usage") or {}
+        if usage:
+            self.last_usage = {"prompt_tokens": usage.get("input_tokens"), "completion_tokens": usage.get("output_tokens")}
         if not resp.get("ok"):
             self._raise(resp)
         result = resp.get("result")

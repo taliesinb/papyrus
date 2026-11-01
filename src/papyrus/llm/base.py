@@ -13,6 +13,17 @@ Two kinds of question are asked of a document:
 
 Backends: LM Studio (OpenAI-compatible HTTP), Apple Foundation Models (Swift
 bridge), and any Jev-compatible `/v1/systemone` endpoint.
+
+For the inference cache (`papyrus.inference`, which wraps any Backend or Decider), an
+implementation may also offer:
+
+* a `seed: int = 0` keyword on `extract` / `decide` (passed only where the signature has it);
+* `cache_params() -> dict`: settings that shape answers besides the arguments (its prompt
+  layout's version, a decider's method…), so changing one makes a new cache key;
+* `model_build() -> dict | None`: what pins the weights (None: can't tell right now);
+* `seed_honoured(build) -> bool | None`, `model_loaded() -> bool | None`;
+* `last_usage` ({prompt_tokens, completion_tokens}) and `last_params` (what the last call did)
+  after each call.
 """
 
 from __future__ import annotations
@@ -62,7 +73,7 @@ class Backend(Protocol):
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> dict[str, Any]:
-        """Return a JSON object conforming to `schema`.
+        """Return a JSON object conforming to `schema`. (Implementations may take `seed`, see above.)
 
         `schema` uses a conservative JSON Schema subset that every backend must
         support: type object/array/string/integer/number/boolean, properties,

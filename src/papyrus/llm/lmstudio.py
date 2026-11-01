@@ -73,6 +73,25 @@ def loaded_models(base_url: str | None = None, timeout: float = 3.0) -> list[str
             and m.get("type") in ("llm", "vlm") and m.get("id")]
 
 
+def model_build(base_url: str | None, model: str, timeout: float = 3.0) -> dict[str, Any] | None:
+    """What pins a model's weights, as LM Studio reports them (/api/v0/models/<model>):
+    quantization, arch and format (mlx | gguf). None if the server doesn't answer."""
+    try:
+        r = httpx.get(f"{native_root(base_url)}/api/v0/models/{model}", timeout=timeout)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    return {"quantization": d.get("quantization"), "arch": d.get("arch"), "format": d.get("compatibility_type")}
+
+
+def seed_honoured(build: dict[str, Any]) -> bool | None:
+    """LM Studio accepts `seed`, but its MLX engine ignores it (same seed, different answers at
+    temperature 1, measured 2026-11-01 with qwen3.5-4b-mlx). llama.cpp's (gguf) is untested."""
+    return False if build.get("format") == "mlx" else None
+
+
 def unload_model(model: str) -> bool:
     """`lms unload MODEL`. True if it succeeded."""
     lms = lms_path()
@@ -132,9 +151,28 @@ class LMStudioBackend:
         self.model = model or os.environ.get("PAPYRUS_LMSTUDIO_MODEL") or DEFAULT_MODEL
         self._client = httpx.Client(timeout=timeout)
         self._ctx: int | None = None
+        self.last_usage: dict[str, Any] | None = None
+        self.last_params: dict[str, Any] | None = None
 
     def info(self) -> ModelInfo:
         return ModelInfo("lmstudio", self.model, self._context_tokens())
+
+    # inference cache (inference.py)
+
+    def cache_params(self) -> dict[str, Any]:
+        # the message layout below (schema in the system prompt, empty-think prefill, json_schema
+        # response_format): change the version when it changes, so cached answers aren't reused
+        return {"impl": "lmstudio-extract-1"}
+
+    def model_build(self) -> dict[str, Any] | None:
+        return model_build(self.base_url, self.model)
+
+    def seed_honoured(self, build: dict[str, Any]) -> bool | None:
+        return seed_honoured(build)
+
+    def model_loaded(self) -> bool | None:
+        loaded = loaded_models(self.base_url)
+        return None if loaded is None else self.model in loaded
 
     def _context_tokens(self) -> int | None:
         if self._ctx is None:
@@ -156,7 +194,7 @@ class LMStudioBackend:
             return False
 
     def extract(self, *, instructions: str, prompt: str, schema: dict[str, Any], max_tokens: int = 1024,
-                temperature: float = 0.0) -> dict[str, Any]:
+                temperature: float = 0.0, seed: int = 0) -> dict[str, Any]:
         system = (
             instructions.strip()
             + "\n\nRespond with a single JSON object only, matching this JSON Schema:\n"
@@ -174,18 +212,23 @@ class LMStudioBackend:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "seed": seed,
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "result", "strict": True, "schema": schema}},
         }
         last_err: Exception | None = None
-        for _attempt in range(2):
+        self.last_usage, self.last_params = None, None
+        for attempt in range(2):
             try:
                 r = self._client.post(f"{self.base_url}/chat/completions", json=body)
             except httpx.HTTPError as e:
                 raise BackendUnavailable(f"LM Studio not reachable at {self.base_url}: {e}") from e
             if r.status_code >= 400:
                 raise BackendUnavailable(f"LM Studio error {r.status_code}: {r.text[:300]}")
-            msg = r.json()["choices"][0]["message"]
+            data = r.json()
+            self.last_usage = data.get("usage")
+            self.last_params = {"temperature": body["temperature"], "attempts": attempt + 1}
+            msg = data["choices"][0]["message"]
             # LM Studio routes output of reasoning models into reasoning_content.
             text = (msg.get("content") or "").strip() or (msg.get("reasoning_content") or "")
             try:
