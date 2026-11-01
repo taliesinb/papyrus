@@ -152,74 +152,101 @@ def _record_context(conn: sqlite3.Connection, path: Path, st: os.stat_result, fi
         )
 
 
-def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None = None,
-         progress: Callable[[str, Path], None] | None = None) -> Counter:
-    opts = opts or ScanOptions()
+def ingest_path(conn: sqlite3.Connection, path: Path, opts: ScanOptions, *, host: str, now: str,
+                run_id: int | None, stats: Counter) -> tuple[str, int | None]:
+    """Scan one PDF path: what `scan` does for each file it finds (also `papyrus watch`'s way in).
+
+    Returns (outcome, file_id); outcome is one of unreadable | unchanged | not_pdf |
+    purged_skipped | new | dup. A path whose (size, mtime) match its filesystem context is only
+    touched. Otherwise the bytes are snapshotted (opts.store), hashed, skipped if purged, and
+    recorded with their first pages and the path's context."""
+    stats["seen"] += 1
+    try:
+        st = path.stat()
+    except OSError:
+        stats["unreadable"] += 1
+        return "unreadable", None
+    row = conn.execute(
+        "SELECT c.id, c.extra, r.file_id FROM contexts c LEFT JOIN context_refs r ON r.context_id=c.id"
+        " WHERE c.kind='filesystem' AND c.locator=?", (str(path),),
+    ).fetchone()
+    if row and row["file_id"]:
+        extra = json.loads(row["extra"] or "{}")
+        if extra.get("size") == st.st_size and extra.get("mtime") == db.to_iso(st.st_mtime):
+            conn.execute("UPDATE contexts SET last_seen_at=?, missing_at=NULL WHERE id=?", (now, row["id"]))
+            stats["unchanged"] += 1
+            return "unchanged", row["file_id"]
+    try:
+        if not looks_like_pdf(path):
+            stats["not_pdf"] += 1
+            return "not_pdf", None
+    except OSError:
+        stats["unreadable"] += 1
+        return "unreadable", None
+    # hash (and store) a snapshot, so the stored bytes are exactly the hashed ones
+    rel, src, size = None, path, st.st_size
+    try:
+        if opts.store:
+            tmp, method = store.snapshot(path)
+            sha = sha256_file(tmp)
+            if purge.is_purged(conn, sha):  # personal paperwork seen before: record nothing
+                tmp.unlink(missing_ok=True)
+                stats["purged_skipped"] += 1
+                return "purged_skipped", None
+            rel, created = store.commit(tmp, sha)
+            src, size = store.abs_path(rel), store.abs_path(rel).stat().st_size
+            if created:
+                stats[f"stored_{method}"] += 1
+        else:
+            sha = sha256_file(path)
+            if purge.is_purged(conn, sha):
+                stats["purged_skipped"] += 1
+                return "purged_skipped", None
+    except OSError:
+        stats["unreadable"] += 1
+        return "unreadable", None
+    with db.tx(conn):
+        file_id, new = add_file(conn, src, sha, size, name=path.name, stored_rel=rel,
+                                run_id=run_id, stats=stats)
+        _record_context(conn, path, st, file_id, host, now)
+    return ("new" if new else "dup"), file_id
+
+
+def mark_missing(conn: sqlite3.Connection, root: Path, now: str, stats: Counter) -> None:
+    """Known paths under `root` that no longer exist have gone missing (checked on disk, so a
+    shallow scan doesn't flag deeper files it didn't visit)."""
+    prefix = str(root).rstrip("/") + "/"
+    for r in conn.execute(
+        "SELECT id, locator FROM contexts WHERE kind='filesystem' AND missing_at IS NULL"
+        " AND (locator = ? OR substr(locator, 1, ?) = ?)", (str(root), len(prefix), prefix),
+    ).fetchall():
+        if not os.path.exists(r["locator"]):
+            conn.execute("UPDATE contexts SET missing_at=? WHERE id=?", (now, r["id"]))
+            stats["went_missing"] += 1
+
+
+def scan_roots(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions, *, run_id: int | None,
+               stats: Counter, progress: Callable[[str, Path], None] | None = None) -> Counter:
+    """The work of `scan`, inside a run the caller keeps (`papyrus watch` scans in its own runs)."""
     if opts.store:
         store.clean_tmp()
     host = socket.gethostname()
-    stats: Counter = Counter()
-    run_id = db.start_run(conn, "scan", {"roots": [str(r) for r in roots], "recursive": opts.recursive})
     for root in roots:
         root = root.expanduser().resolve()
         now = db.now_iso()
         for path in iter_pdfs(root, opts):
-            stats["seen"] += 1
-            try:
-                st = path.stat()
-            except OSError:
-                stats["unreadable"] += 1
-                continue
-            row = conn.execute(
-                "SELECT c.id, c.extra, r.file_id FROM contexts c LEFT JOIN context_refs r ON r.context_id=c.id"
-                " WHERE c.kind='filesystem' AND c.locator=?", (str(path),),
-            ).fetchone()
-            if row and row["file_id"]:
-                extra = json.loads(row["extra"] or "{}")
-                if extra.get("size") == st.st_size and extra.get("mtime") == db.to_iso(st.st_mtime):
-                    conn.execute("UPDATE contexts SET last_seen_at=?, missing_at=NULL WHERE id=?", (now, row["id"]))
-                    stats["unchanged"] += 1
-                    continue
-            if not looks_like_pdf(path):
-                stats["not_pdf"] += 1
-                continue
-            # hash (and store) a snapshot, so the stored bytes are exactly the hashed ones
-            rel, src, size = None, path, st.st_size
-            try:
-                if opts.store:
-                    tmp, method = store.snapshot(path)
-                    sha = sha256_file(tmp)
-                    if purge.is_purged(conn, sha):  # personal paperwork seen before: record nothing
-                        tmp.unlink(missing_ok=True)
-                        stats["purged_skipped"] += 1
-                        continue
-                    rel, created = store.commit(tmp, sha)
-                    src, size = store.abs_path(rel), store.abs_path(rel).stat().st_size
-                    if created:
-                        stats[f"stored_{method}"] += 1
-                else:
-                    sha = sha256_file(path)
-                    if purge.is_purged(conn, sha):
-                        stats["purged_skipped"] += 1
-                        continue
-            except OSError:
-                stats["unreadable"] += 1
-                continue
-            with db.tx(conn):
-                file_id, new = add_file(conn, src, sha, size, name=path.name, stored_rel=rel,
-                                        run_id=run_id, stats=stats)
-                _record_context(conn, path, st, file_id, host, now)
-            if progress:
-                progress("new" if new else "dup", path)
-        # known paths under this root that no longer exist have gone missing
-        # (checked on disk, so a shallow scan doesn't flag deeper files it didn't visit)
-        prefix = str(root).rstrip("/") + "/"
-        for r in conn.execute(
-            "SELECT id, locator FROM contexts WHERE kind='filesystem' AND missing_at IS NULL"
-            " AND (locator = ? OR substr(locator, 1, ?) = ?)", (str(root), len(prefix), prefix),
-        ).fetchall():
-            if not os.path.exists(r["locator"]):
-                conn.execute("UPDATE contexts SET missing_at=? WHERE id=?", (now, r["id"]))
-                stats["went_missing"] += 1
+            outcome, _ = ingest_path(conn, path, opts, host=host, now=now, run_id=run_id, stats=stats)
+            if progress and outcome in ("new", "dup"):
+                progress(outcome, path)
+        mark_missing(conn, root, now, stats)
+    return stats
+
+
+def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None = None,
+         progress: Callable[[str, Path], None] | None = None) -> Counter:
+    opts = opts or ScanOptions()
+    stats: Counter = Counter()
+    run_id = db.start_run(conn, "scan", {"roots": [str(r) for r in roots], "recursive": opts.recursive})
+    scan_roots(conn, roots, opts, run_id=run_id, stats=stats, progress=progress)
     db.finish_run(conn, run_id, dict(stats))
     return stats

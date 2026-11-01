@@ -18,7 +18,7 @@ Things to know about the model (macOS 27):
   conservative character estimate here, then an exact tokenizer-based fit in the bridge).
 * The system may refuse requests from non-app processes under memory pressure (reported as
   ``kind="unavailable", detail="system_busy"``); the bridge retries briefly, then we raise
-  ``BackendUnavailable`` so callers can fall back to another backend.
+  ``ModelBusy`` (a ``BackendUnavailable``) so callers can back off or fall back to another backend.
 * Content guardrails can reject innocuous documents. The bridge uses
   ``permissiveContentTransformations`` and, if guided generation still trips a guardrail, retries
   unguided (JSON as text) — see ``AppleFMGuardrailError`` for what is left.
@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from papyrus.llm.base import BackendUnavailable, ModelInfo
+from papyrus.llm.base import BackendUnavailable, ModelBusy, ModelInfo
 
 BIN_ENV = "PAPYRUS_AFM_BIN"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -351,6 +351,8 @@ class AppleFMBackend:
         msg = str(resp.get("error", "unknown error"))
         if kind == "unavailable":
             self._availability = None  # re-check next time
+            if resp.get("detail") == "system_busy":  # error 1013: refused under memory pressure
+                raise ModelBusy(f"Apple Foundation Model busy: {msg}")
             raise BackendUnavailable(f"Apple Foundation Model unavailable: {msg}")
         if kind == "guardrail":
             raise AppleFMGuardrailError(msg, kind=kind, response=resp)

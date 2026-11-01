@@ -3,6 +3,9 @@
 Also `ensure_server`: LM Studio's local API server is separate from the app, and is often
 off. When it is, and the URL is local, we start it with `lms server start` (unless
 `lmstudio.autostart = false` in the config). Models then load on first request.
+
+`loaded_models` and `unload_model` let a long-running caller (`papyrus watch`) see what is
+loaded before it asks for a model, and unload only what it loaded itself.
 """
 
 from __future__ import annotations
@@ -49,6 +52,42 @@ def server_up(base_url: str, timeout: float = 2.0) -> bool:
         return httpx.get(f"{base_url.rstrip('/')}/models", timeout=timeout).status_code == 200
     except httpx.HTTPError:
         return False
+
+
+def native_root(base_url: str | None = None) -> str:
+    """LM Studio's native REST API root: the OpenAI-compatible URL without its /v1."""
+    return (base_url or default_url()).rstrip("/").rsplit("/v1", 1)[0]
+
+
+def loaded_models(base_url: str | None = None, timeout: float = 3.0) -> list[str] | None:
+    """Language models loaded right now (LM Studio's /api/v0/models, state 'loaded'; embedding
+    models don't count). None if the server doesn't answer."""
+    try:
+        r = httpx.get(f"{native_root(base_url)}/api/v0/models", timeout=timeout)
+        if r.status_code != 200:
+            return None
+        data = r.json().get("data") or []
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+    return [m["id"] for m in data if isinstance(m, dict) and m.get("state") == "loaded"
+            and m.get("type") in ("llm", "vlm") and m.get("id")]
+
+
+def unload_model(model: str) -> bool:
+    """`lms unload MODEL`. True if it succeeded."""
+    lms = lms_path()
+    if lms is None:
+        return False
+    try:
+        return subprocess.run([lms, "unload", model], capture_output=True, text=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def forget_start_attempt(base_url: str | None = None) -> None:
+    """Let `ensure_server` try `lms server start` again (it tries once per process and URL; a
+    long-running process calls this when it retries after a while)."""
+    _start_attempted.discard((base_url or default_url()).rstrip("/"))
 
 
 def ensure_server(base_url: str | None = None, *, autostart: bool | None = None, wait_s: float = 20.0) -> bool:

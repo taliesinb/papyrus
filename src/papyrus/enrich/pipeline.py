@@ -338,6 +338,16 @@ def reset_enrichment(conn: sqlite3.Connection, work_id: int) -> None:
         works.reindex_work(conn, work_id)
 
 
+def unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
+    """Live works with no API claims or candidates yet; only those of `file_ids` if given."""
+    q = ("SELECT DISTINCT w.id FROM works w" + (" JOIN file_works fw ON fw.work_id=w.id" if file_ids else "")
+         + " WHERE w.status IN ('candidate','confirmed')"
+         + (f" AND fw.file_id IN ({','.join('?' * len(file_ids))})" if file_ids else "")
+         + " AND NOT EXISTS (SELECT 1 FROM assertions a WHERE a.subject_type='work' AND a.subject_id=w.id"
+           " AND (a.source LIKE 'api:%' OR a.field='enrich_candidates')) ORDER BY w.id")
+    return [r[0] for r in conn.execute(q, file_ids)]
+
+
 def enrich_work(
     conn: sqlite3.Connection,
     work_id: int,

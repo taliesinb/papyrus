@@ -25,6 +25,12 @@ class BackendUnavailable(RuntimeError):
     """Raised when a backend is not reachable / not supported on this machine."""
 
 
+class ModelBusy(BackendUnavailable):
+    """The model refused the request for now and may accept it later: Apple Foundation Models
+    under memory pressure (ModelManagerError 1013). A reason to back off, not a failure of the
+    document."""
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     backend: str  # "lmstudio" | "apple" | "jev"

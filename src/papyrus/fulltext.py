@@ -100,21 +100,24 @@ def readable_path(conn: sqlite3.Connection, file_id: int) -> Path | None:
     return None
 
 
-def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo: bool = False) -> list[int]:
-    """Files whose text layer is to be read in full: those of live works, or `file_ids`."""
+def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo: bool = False,
+                  live_only: bool = False) -> list[int]:
+    """Files whose text layer is to be read in full: those of live works, or `file_ids` (which
+    needn't belong to a live work, unless `live_only`)."""
     if file_ids:
         q = (f"SELECT id FROM files WHERE id IN ({','.join('?' * len(file_ids))}) AND purged_at IS NULL"
-             + ("" if redo else " AND fulltext_status <> 'done'"))
+             + ("" if redo else " AND fulltext_status <> 'done'")
+             + (f" AND {LIVE_FILE.format(f='id')}" if live_only else ""))
         return [r[0] for r in conn.execute(q + " ORDER BY id", file_ids)]
     q = ("SELECT f.id FROM files f WHERE f.text_status IN ('ok', 'no_text') AND " + LIVE_FILE.format(f="f.id")
          + ("" if redo else " AND f.fulltext_status = 'pending'") + " ORDER BY f.id")
     return [r[0] for r in conn.execute(q)]
 
 
-def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> dict[int, list[int]]:
+def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), live_only: bool = False) -> dict[int, list[int]]:
     """file_id -> pages that have no usable text layer and haven't been OCR'd yet."""
     # Explicit file_ids were extracted on request, so they needn't belong to a live work.
-    extracted = "f.fulltext_status = 'done'" + ("" if file_ids else f" AND {LIVE_FILE.format(f='f.id')}")
+    extracted = "f.fulltext_status = 'done'" + ("" if file_ids and not live_only else f" AND {LIVE_FILE.format(f='f.id')}")
     q = (f"""SELECT p.file_id, p.page FROM file_pages p JOIN files f ON f.id = p.file_id
              WHERE p.source = 'pdfium' AND length(trim(p.text)) < {MIN_TEXT}
                AND (({extracted}) OR (f.text_status = 'no_text' AND p.page <= {TRIAGE_PAGES}))"""
@@ -167,54 +170,64 @@ def ocr_file(conn: sqlite3.Connection, file_id: int, path: Path, pages: list[int
 def run(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: bool = False, ocr: bool = True,
         progress: Callable[[str, int, str], None] | None = None) -> Counter:
     """Both passes over whatever is pending (or over `file_ids`), as one recorded run."""
-    say = progress or (lambda state, fid, detail: None)
     stats: Counter = Counter()
     with db.recorded_run(conn, "extract", {"files": list(file_ids), "redo": redo, "ocr": ocr}) as (_run_id, rs):
         try:
-            for fid in pending_files(conn, file_ids, redo):
-                path = readable_path(conn, fid)
-                if path is None:
-                    conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
-                                 ("no readable copy (not in the store, and gone from disk)", fid))
-                    stats["error"] += 1
-                    say("error", fid, "no readable copy")
-                    continue
-                try:
-                    n = extract_file(conn, fid, path)
-                except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files
-                    conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
-                                 (f"{type(e).__name__}: {e}"[:500], fid))
-                    stats["error"] += 1
-                    say("error", fid, str(e)[:200])
-                    continue
-                stats["files"] += 1
-                stats["pages"] += n
-                say("text", fid, f"{n} pages")
-
-            targets = ocr_targets(conn, file_ids) if ocr else {}
-            if targets:
-                engine = VisionOCR()
-                if not engine.available():
-                    stats["ocr_skipped_pages"] = sum(map(len, targets.values()))
-                    say("no-ocr", 0, engine.reason)
-                    targets = {}
-                try:
-                    for fid, pages in targets.items():
-                        path = readable_path(conn, fid)
-                        if path is None:
-                            continue
-                        say("ocr", fid, f"{len(pages)} pages")
-                        got = ocr_file(conn, fid, path, pages, engine,
-                                       lambda done, total, fid=fid: say("ocr-progress", fid, f"{done}/{total}"))
-                        stats["ocr_pages"] += len(pages)
-                        stats["ocr_pages_with_text"] += got
-                        # An image-only file that never became a work was triaged blind: triage it again.
-                        if got and not conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (fid,)).fetchone():
-                            conn.execute("UPDATE files SET triage_status='pending' WHERE id=? AND text_status='no_text'",
-                                         (fid,))
-                            stats["retriage"] += 1
-                finally:
-                    engine.close()
+            process(conn, file_ids, redo=redo, ocr=ocr, progress=progress, stats=stats)
         finally:
             rs.update(stats)
+    return stats
+
+
+def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: bool = False, ocr: bool = True,
+            progress: Callable[[str, int, str], None] | None = None, stats: Counter | None = None,
+            live_only: bool = False) -> Counter:
+    """Both passes, inside a run the caller keeps. `live_only`: of `file_ids`, read past the first
+    pages only those of live works (`papyrus watch` passes files it hasn't vetted)."""
+    say = progress or (lambda state, fid, detail: None)
+    stats = Counter() if stats is None else stats
+    for fid in pending_files(conn, file_ids, redo, live_only):
+        path = readable_path(conn, fid)
+        if path is None:
+            conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
+                         ("no readable copy (not in the store, and gone from disk)", fid))
+            stats["error"] += 1
+            say("error", fid, "no readable copy")
+            continue
+        try:
+            n = extract_file(conn, fid, path)
+        except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files
+            conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
+                         (f"{type(e).__name__}: {e}"[:500], fid))
+            stats["error"] += 1
+            say("error", fid, str(e)[:200])
+            continue
+        stats["files"] += 1
+        stats["pages"] += n
+        say("text", fid, f"{n} pages")
+
+    targets = ocr_targets(conn, file_ids, live_only) if ocr else {}
+    if targets:
+        engine = VisionOCR()
+        if not engine.available():
+            stats["ocr_skipped_pages"] = sum(map(len, targets.values()))
+            say("no-ocr", 0, engine.reason)
+            targets = {}
+        try:
+            for fid, pages in targets.items():
+                path = readable_path(conn, fid)
+                if path is None:
+                    continue
+                say("ocr", fid, f"{len(pages)} pages")
+                got = ocr_file(conn, fid, path, pages, engine,
+                               lambda done, total, fid=fid: say("ocr-progress", fid, f"{done}/{total}"))
+                stats["ocr_pages"] += len(pages)
+                stats["ocr_pages_with_text"] += got
+                # An image-only file that never became a work was triaged blind: triage it again.
+                if got and not conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (fid,)).fetchone():
+                    conn.execute("UPDATE files SET triage_status='pending' WHERE id=? AND text_status='no_text'",
+                                 (fid,))
+                    stats["retriage"] += 1
+        finally:
+            engine.close()
     return stats
