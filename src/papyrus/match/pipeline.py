@@ -1,4 +1,4 @@
-"""Enrich a work in the database from external bibliographic APIs.
+"""Match a work in the database against external bibliographic APIs, and write what they know.
 
     match_work(conn, work_id) -> {'status': 'matched' | 'ambiguous' | 'not_found', ...}
 
@@ -235,7 +235,7 @@ def _link_authors(conn: sqlite3.Connection, work_id: int, merged: WorkRecord) ->
             (pid, (a.affiliations or [None])[0], work_id, r["position"]),
         )
         linked += pid is not None
-    # triage often truncates long author lists: append the rest when all existing rows matched
+    # the extraction model often truncates long author lists: append the rest when all existing rows matched
     if len(assigned) == len(rows) and len(authors) > len(rows):
         pos = max(r["position"] for r in rows) + 1
         for j, a in enumerate(authors):
@@ -325,7 +325,7 @@ def _conflict(conn: sqlite3.Connection, work_id: int, hint: candidates.Hint, rec
 
 
 def reset_match(conn: sqlite3.Connection, work_id: int) -> None:
-    """Undo what enrichment wrote for a work, keeping triage data and the claims as history."""
+    """Undo what matching wrote for a work, keeping the extracted metadata and the claims as history."""
     now = db.now_iso()
     with db.tx(conn):
         conn.execute("UPDATE assertions SET superseded_at=? WHERE subject_type='work' AND subject_id=?"

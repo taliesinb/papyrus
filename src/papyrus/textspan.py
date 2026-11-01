@@ -1,6 +1,6 @@
 """Locate a span of page text from short start/end anchor strings.
 
-Instead of having a (slow) model copy a 250-word abstract verbatim, triage asks
+Instead of having a (slow) model copy a 250-word abstract verbatim, extraction asks
 for its first and last few words; we cut the exact text out of the page.
 Matching is on normalised word tokens, so it survives ligatures, hyphenation,
 line breaks, diacritics and small model paraphrases of punctuation.

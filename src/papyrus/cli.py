@@ -551,7 +551,7 @@ def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
 
 
 @main.command()
-@click.option("--once", is_flag=True, help="Catch up (scan the watched directories, process what is pending) and exit.")
+@click.option("--once", is_flag=True, help="Catch up (scan the watched directories, ingest what is pending) and exit.")
 @click.option("--dir", "dirs", multiple=True, type=click.Path(file_okay=False, path_type=Path), metavar="DIR",
               help="Watch DIR instead of the config's [watch] dirs (repeatable).")
 @click.option("--poll", is_flag=True, help="Poll the directories instead of using FSEvents / inotify.")
@@ -894,7 +894,7 @@ def stats(ctx: click.Context) -> None:
 @click.pass_context
 def resolve_cmd(ctx: click.Context, context_kind: str | None, limit: int | None) -> None:
     """Link unresolved context refs that name a work (arXiv id, DOI) to works, creating and
-    enriching new candidate works where needed (resolve.py)."""
+    matching new candidate works where needed (resolve.py)."""
     from .resolve import resolve_refs
 
     conn = _conn(ctx)

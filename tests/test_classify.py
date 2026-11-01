@@ -288,7 +288,7 @@ def test_openai_primes_the_shared_prefix_once_per_state():
     assert [is_prime(b) for b in rec[3:]] == [True, False, False]
     assert d.last_params == {"method": "logprobs", "requests": 3, "primed": True}
     assert d.last_usage == {"prompt_tokens": 21, "completion_tokens": 3}  # the prime counts
-    d.classify("state three", [KIND])  # one question: no prime (triage-6 asks only `kind`)
+    d.classify("state three", [KIND])  # one question: no prime (prompt 0.6 asks only `kind`)
     assert [is_prime(b) for b in rec[6:]] == [False]
 
 

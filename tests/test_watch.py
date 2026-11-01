@@ -1,7 +1,7 @@
 """`papyrus watch` (watch/): debounce, ingestion through the scan path, back-off, model ledger.
 
 A fake watcher (events injected), a fake clock, a fake memory probe and the FakeBackend /
-FakeClassifier of test_triage_promote; enrichment's network is stubbed. Synthetic documents only."""
+FakeClassifier of test_ingest; matching's network is stubbed. Synthetic documents only."""
 
 import json
 import os
@@ -267,7 +267,7 @@ def test_new_file_is_ingested_once_settled_and_processed(tmp_path):
     assert runs[1][1]["status"] == "completed" and runs[1][1]["new_files"] == 1 and runs[1][1]["extracted"] == 1
     assert runs[1][1]["promote_created"] == 1 and runs[1][1]["indexed"] == 1 and runs[1][1]["match_not_found"] == 1
     assert json.loads((tmp_path / "papyrus-home" / "watch.json").read_text())["state"] == IDLE
-    # a copy of the same bytes: a second context for the same file, nothing to triage
+    # a copy of the same bytes: a second context for the same file, nothing to classify
     copy = dl / "copy.pdf"
     shutil.copy(f, copy)
     w.watcher.inject(copy)
@@ -299,7 +299,7 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
     assert _runs(conn)[-1][1]["purged_skipped"] == 1
-    assert be.prompts == []  # the classifier was sure: no extraction (triage-4), and never triaged again
+    assert be.prompts == []  # the classifier was sure: no extraction (prompt 0.4), and never classified again
     # the log holds ids and counts, never names, paths or text
     assert logs and not any(MARK in m or str(dl) in m or "Zebedee" in m or "Payslip" in m for m in logs)
 
@@ -417,7 +417,7 @@ def test_pausing_model_work_keeps_adding_files(tmp_path):
     status = json.loads(w.status_path.read_text())
     assert status["state"] == "paused" and status["paused"] is True and status["pending"]["classify"] == 1
     CliRunner().invoke(main, ["watch", "--resume"])
-    w.pump()  # notices the resume, triages
+    w.pump()  # notices the resume, classifies
     assert len(be.prompts) == 1 and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert json.loads(w.status_path.read_text())["state"] == IDLE
     assert any(m == "model work resumed" for m in logs)
@@ -453,7 +453,7 @@ def test_extract_and_enrich_go_on_while_model_work_waits(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, memory=Memory("critical"))
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
-    # a work promoted by an earlier run, still to be extracted and enriched
+    # a work promoted by an earlier run, still to be indexed and matched
     conn.execute("INSERT INTO works(kind, title) VALUES ('paper', 'Lecture notes on things')")
     conn.execute("INSERT INTO file_works(file_id, work_id, relation, source) VALUES (1, 1, 'full', 'test')")
     w.dirty = True
@@ -505,7 +505,7 @@ def test_sigterm_closes_the_run_as_interrupted(tmp_path):
     assert json.loads(w.status_path.read_text())["state"] == STOPPED and w.watcher.closed
 
 
-# --- triage in phases: classify everything, then extract everything ---------------------------
+# --- in phases: classify everything, then extract everything ---------------------------
 
 
 class Recording:
@@ -872,7 +872,7 @@ def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypat
     w, conn, dl, clock, logs = _watch(tmp_path)
     _pdf(dl / "a.pdf", "Lecture notes on things", old=True)
     w.catch_up()
-    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"  # triage went on
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"  # classifying went on
     until, state, reason = w.backoffs["match"]
     assert state == "rate-limited" and reason == "rate limited by OpenAlex" and until - clock() == 300
     stages = {s["stage"]: s for s in json.loads(w.status_path.read_text())["stages"]}

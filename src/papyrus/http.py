@@ -1,4 +1,4 @@
-"""Shared polite HTTP client for the enrichment sources.
+"""Shared polite HTTP client for the matching sources (match/), `papyrus download` and Slack.
 
 * User-Agent ``papyrus/<version> (mailto:<PAPYRUS_MAILTO>)`` so APIs can contact us
   (Crossref and OpenAlex route such requests to their "polite" pools).

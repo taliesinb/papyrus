@@ -1,5 +1,5 @@
 """Train the screen's weights (src/papyrus/data/screen.bin, the production classifier; see
-screen.py) on triaged files.
+screen.py) on classified files.
 
     uv run python tools/screen/export.py --out /tmp/training-local     # each library, any machine
     sqlite3 ~/.papyrus/release/papyrus.sqlite ".backup /tmp/lib.sqlite"
@@ -10,21 +10,21 @@ screen.py) on triaged files.
 
 Then commit data/screen.bin. (2026-11-01, input version 3: 157 files, 69 personal and 88 library,
 from this Mac and tali-macbook-air, whose schema-2 library was exported from an upgraded .backup
-copy (AGENTS.md); --personal 37, a personal document triage had promoted to a work. LOO AUC
+copy (AGENTS.md); --personal 37, a personal document the old triage had promoted to a work. LOO AUC
 0.9998; at P >= 0.9, 68 personal caught and one borderline library file flagged, held for
 review rather than purged.)
 
 Labelled files come from:
 
 * `--export NAME=DIR`: the output of export_training.py (one JSON per file) of a library, local
-  or another machine's. `ground_truth.is_personal` is the label; files pending triage, without a
+  or another machine's. `ground_truth.is_personal` is the label; files not yet classified and extracted, without a
   title, without text, or purged are left out.
 * `--db` + `--originals DIR`: files purged as personal paperwork keep only their sha256 in the
   library, so their inputs come from the originals, found by hashing the PDFs in DIR (read only).
 * `--personal` / `--library`: file ids of `--db` whose label you set yourself (by sha256, so
   they override the exports too).
 
-Each file is embedded at the screen's level (input version 3: triage's state, the export's
+Each file is embedded at the screen's level (input version 3: the document description, the export's
 `triage_prompt`, or for purged originals describe.render_state on the PDF itself; versions 1 and 2:
 screen.screen_input; prefix and model as in screen.py) straight from LM Studio, *not* through the
 inference cache: the cache would write the pages of purged documents back to disk.
@@ -128,7 +128,7 @@ def from_originals(name: str, db: Path, dirs: list[Path], version: int = 1) -> l
 
 
 def original_state(p: Path, info) -> str:
-    """Triage's state for a PDF that is not in the library (a purged original), as build_state
+    """The document description for a PDF that is not in the library (a purged original), as build_state
     would have given it: name, folder, size, download URL, PDF metadata, filename hint, pages."""
     froms = where_froms(p) or []
     hint = parse_filename(p.stem)
@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", type=Path, help="leave-one-out probabilities and metrics (keys, no text)")
     ap.add_argument("--input-version", type=int, default=3, choices=(1, 2, 3),
                     help="1: name, folder, size, host, first words; 2: also pages and PDF metadata; "
-                         "3: triage's state [3]")
+                         "3: the document description [3]")
     a = ap.parse_args(argv)
 
     recs: list[dict] = []

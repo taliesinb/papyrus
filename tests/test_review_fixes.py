@@ -29,7 +29,7 @@ def test_rejecting_a_work_releases_its_ids(tmp_path):
     classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("paper", True))
     action, wid = promote_file(conn, 1)
     assert action == "created" and find_work(conn, {"arxiv": "2411.00161"}, None, None) == wid
-    # re-triage says personal (held, below the purge threshold) -> promote rejects the work, frees the id
+    # classifying again says personal (held, below the purge threshold) -> promote rejects the work, frees the id
     classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("personal", False, p=0.7))
     assert promote_file(conn, 1)[0] == "rejected"
     assert conn.execute("SELECT count(*) FROM work_ids").fetchone()[0] == 0
@@ -156,7 +156,7 @@ def _claims(conn, field):
 
 
 def test_the_classifier_settles_library_ness_not_the_extraction_model(tmp_path):
-    """triage-4. A small extraction model called slides and manuals 'not library material', which
+    """Prompt 0.4. A small extraction model called slides and manuals 'not library material', which
     dropped their topics and abstract though the classifier kept them (2026-11-01, Qwen3.5-2B)."""
     conn = _lib(tmp_path, "slides.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = _SchemaBackend(dict(PAPER, is_library_material=False, kind="other"))
@@ -215,7 +215,7 @@ def test_promote_ignores_null_author_claims_already_stored(tmp_path):
 
 
 def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
-    """2026-11-01 (test variant): OpenAlex answered 429, and enrichment recorded the work as
+    """2026-11-01 (test variant): OpenAlex answered 429, and matching recorded the work as
     'ambiguous' after waiting 5 minutes. Not asked is not found: no claim, the work stays pending."""
     from papyrus.match import candidates, pipeline
 

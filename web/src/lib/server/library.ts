@@ -231,7 +231,7 @@ function build(version: number): Library {
 		fileToWorks.set(r.file_id, ws);
 	}
 
-	// Latest live summary per work (falls back to the file-level triage summary).
+	// Latest live summary per work (falls back to the file-level summary from extraction).
 	const summaries = new Map<number, string>();
 	for (const r of all<{ subject_type: string; subject_id: number; value: string }>(
 		`SELECT subject_type, subject_id, value FROM assertions

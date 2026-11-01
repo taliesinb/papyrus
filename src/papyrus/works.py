@@ -1,4 +1,4 @@
-"""Turn triaged files into works: dedupe by identifiers / title, link files, index.
+"""Promote classified and extracted files to works: dedupe by identifiers / title, link files, index.
 
 Resolution order for a field: user > api:* > classify:* > llm:* > heuristic:*.
 """
@@ -110,7 +110,7 @@ def release_ids(conn: sqlite3.Connection, work_id: int) -> None:
 
 
 def promote_file(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> tuple[str, int | None]:
-    """Create or link a work for a triaged file, or purge it if it is surely personal paperwork
+    """Create or link a work for a classified (and extracted) file, or purge it if it is surely personal paperwork
     (`purge.verdict`). Returns (action, work_id); action is one of created | linked |
     already_linked | rejected | purged | held (not library material, not sure enough to purge) |
     no_title."""

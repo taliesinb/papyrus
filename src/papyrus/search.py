@@ -9,7 +9,7 @@ ranking in TypeScript (keep the two in step).
 * **Works:** Reciprocal Rank Fusion (k=60) of the metadata ranking and the page ranking.
   bm25 values from two indexes aren't on one scale; ranks are.
 * **Privacy:** only files of live works (candidate or confirmed) are searched, unless asked
-  otherwise. Personal paperwork has its first pages in file_pages (triage needs them) and
+  otherwise. Personal paperwork has its first pages in file_pages (the classifier needs them) and
   must not turn up in search results.
 
 Gotchas:

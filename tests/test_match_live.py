@@ -1,4 +1,4 @@
-"""Live checks against the real APIs. Run with:  PAPYRUS_LIVE=1 uv run pytest tests/test_enrich_live.py
+"""Live checks against the real APIs. Run with:  PAPYRUS_LIVE=1 uv run pytest tests/test_match_live.py
 
 Responses are cached under ~/.cache/papyrus/http (PAPYRUS_HTTP_CACHE=0 to disable).
 Semantic Scholar without S2_API_KEY is frequently rate limited; such tests skip.

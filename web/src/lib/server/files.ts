@@ -6,7 +6,7 @@
 // taken the same path is not served by mistake.
 //
 // Only files of live works (candidate or confirmed) are served at all: the
-// library also knows personal paperwork that triage kept out (payslips, CVs;
+// library also knows personal paperwork that the classifier kept out (payslips, CVs;
 // waiting for review, or purged down to a hash), and file ids are easy to guess.
 
 import { execFile, spawnSync } from 'node:child_process';

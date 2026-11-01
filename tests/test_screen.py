@@ -1,4 +1,4 @@
-"""The screen (screen.py): triage's fast first stage. A fake embedder and two-dimensional
+"""The screen (screen.py): the classify stage's fast first step. A fake embedder and two-dimensional
 weights stand in for nomic-embed and the trained weights. Synthetic documents only."""
 
 import math

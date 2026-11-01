@@ -27,7 +27,7 @@ from .schema_lite import SchemaError, coerce, extract_json_object
 
 DEFAULT_URL = "http://localhost:1234/v1"
 # On a base M4 (120 GB/s) the 9B runs ~11 tok/s and ~60-100 tok/s prompt processing (60-75 s per
-# triage); the 4B matches it on kind/title/authors/year at ~15 s. One model for extraction and the
+# file); the 4B matches it on kind/title/authors/year at ~15 s. One model for extraction and the
 # classifier also avoids swapping two models on a 24 GB machine.
 DEFAULT_MODEL = "qwen3.5-4b-mlx"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}

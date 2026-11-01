@@ -64,7 +64,7 @@ def test_triage_and_promote_paper(tmp_path):
     assert "\nfolder: " in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
     assert r["ids"]["arxiv"] == "2412.06464" and r["ids"]["arxiv_version"] == "v3"
     claims = db.current_assertions(conn, "file", 1)
-    assert {c["source"] for c in claims["kind"]} == {"classify:fakedec:d"}  # triage-4: kind is the classifier's
+    assert {c["source"] for c in claims["kind"]} == {"classify:fakedec:d"}  # prompt 0.4: kind is the classifier's
     assert claims["abstract"][0]["value"] == "We study things in great detail."
     assert claims["abstract"][0]["source"] == "llm:fake:m#anchors"
     action, wid = promote_file(conn, 1)

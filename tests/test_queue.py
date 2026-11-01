@@ -14,7 +14,7 @@ from test_watch import Clock, _pdf, _watch
 
 
 @pytest.fixture(autouse=True)
-def _no_network(no_match_network):  # the watcher enriches what it promotes
+def _no_network(no_match_network):  # the watcher matches what it promotes
     pass
 
 
@@ -84,7 +84,7 @@ def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
 
     attempts = []
 
-    def finds_nothing(conn, wid, **kw):  # writes nothing: the work stays unenriched
+    def finds_nothing(conn, wid, **kw):  # writes nothing: the work stays unmatched
         attempts.append(wid)
         return {"status": "not_found", "work_id": wid}
 
@@ -94,7 +94,7 @@ def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
     w.catch_up()
     assert attempts == [1] and any("no_progress, trying again in 1 h" in m for m in logs)
     status = json.loads(w.status_path.read_text())
-    # enrichment has no finished step to learn from yet: no estimate rather than a wrong one
+    # matching has no finished step to learn from yet: no estimate rather than a wrong one
     assert status["pending"]["match"] == 1 and status["failed"] == 0 and status["eta_s"] is None
     w.close()
 
@@ -111,7 +111,7 @@ def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
 def test_eta_uses_the_inference_cache_for_triage(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, backend=FakeBackend(PAPER))
     _pdf(dl / "a.pdf", "Lecture notes on things")
-    w.catch_up()  # one document triaged through the cache: its three calls have timings
+    w.catch_up()  # one document classified and extracted through the cache: its three calls have timings
     from papyrus import inference
 
     per_doc = inference.store().document_estimate_s()

@@ -1,31 +1,30 @@
-"""The screen: a fast first stage of triage that sets obvious personal paperwork aside.
+"""The screen: the classify stage's fast first step, which sets obvious personal paperwork aside.
 
-Triage asks a 4B language model about every new file (~1 s for the classifier alone, 12-30 s with
-extraction). The screen embeds what it sees of a file first, with a small embedding model
+The classifier asks a 4B language model about every new file (~1 s; extraction takes 5-30 s more). The screen embeds what it sees of a file first, with a small embedding model
 (`llm/embed.py`, nomic-embed-text v1.5, ~30 ms), and scores it with a logistic regression:
 
-    input   version 3: triage's own state (`triage.build_state`), the text the classifier and the
-            extraction model read. Earlier weights used inputs of their own: version 1
+    input   version 3: the document description (`describe.build_state`), the text the classifier
+            and the extraction model read. Earlier weights used inputs of their own: version 1
             "File name: …\\nFolder: ~/…\\nSize: N KB\\nDownloaded from: host\\nFirst words: <128 words>",
             version 2 the same with "Pages: N" and "PDF metadata: title=…; creator=…" before the
             first words. The weights say which version they were trained on (`input_version`, 1
             if absent).
     p       sigmoid(w · e/|e| + b), e the embedding of "classification: " + input
 
-When p >= the threshold (default: the weights' own, 0.9), triage stops there: the file gets a
+When p >= the threshold (default: the weights' own, 0.9), classifying stops there: the file gets a
 `screen` claim ({p_personal, threshold, rejected: true}, source `screen:<backend>:<model>`), no
-extraction and no classifier, and promote *holds* it (no work, never served, its first pages kept
+classifier and no extraction, and promote *holds* it (no work, never served, its first pages kept
 for review: `papyrus purge --dry-run` lists it, `purge ID` erases it, `keep ID` sends it through
-full triage). It never purges on its own. Below the threshold triage goes on as before, and the
-claim (rejected: false) is kept for evaluation.
+the classifier and extraction). It never purges on its own. Below the threshold the classifier is
+asked as before, and the claim (rejected: false) is kept for evaluation.
 
 The screen is skipped for files without a text layer (from the name alone it misjudged library
-files), for files the user has judged (`keep`), with `papyrus triage --no-screen`, and when it
+files), for files the user has judged (`keep`), with `papyrus classify --no-screen`, and when it
 is turned off (`[screen] enabled = false`, `PAPYRUS_SCREEN=0`) or the embedding model is
 unavailable: it only ever saves work.
 
 The production weights are `data/screen.bin` (in the package), trained by
-`tools/screen/train.py` on the files of triaged libraries (exported by `tools/screen/export.py`)
+`tools/screen/train.py` on the files of classified libraries (exported by `tools/screen/export.py`)
 and committed; the format is in `write_weights`. They hold a direction and a bias, no text: the
 standardisation is folded into them.
 """
@@ -211,7 +210,7 @@ def screen_file(conn: sqlite3.Connection, file_id: int, screen: Screen, run_id: 
                 ) -> dict[str, Any] | None:
     """Screen one pending file and record the claim. Returns {p_personal, threshold, rejected,
     screen_s}, or None when the screen does not apply (no text layer, the user has judged it).
-    A rejected file is marked triaged; the caller stops there."""
+    A rejected file is marked classified and its extraction skipped; the caller stops there."""
     import time
 
     from . import inference

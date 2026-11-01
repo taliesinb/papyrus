@@ -98,7 +98,7 @@ def get_file(file_id: int, include_text: bool = False, page_from: int = 1, page_
     """A PDF file: PDF metadata, locations on disk, model/heuristic assertions, linked works;
     with include_text, the text of pages page_from..page_to (default: the first 2; at most 30)."""
     conn = _conn()
-    # Only files of live works: the others are personal paperwork that triage kept out of the library.
+    # Only files of live works: the others are personal paperwork the classifier kept out of the library.
     f = conn.execute(f"SELECT * FROM files WHERE id=? AND {LIVE_FILE.format(f='files.id')}", (file_id,)).fetchone()
     if not f:
         raise ValueError(f"no file {file_id}")

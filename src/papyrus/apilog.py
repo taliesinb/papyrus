@@ -1,4 +1,4 @@
-"""Append-only log of every HTTP exchange papyrus makes through `enrich.http.HttpClient`.
+"""Append-only log of every HTTP exchange papyrus makes through `http.HttpClient`.
 
 API responses carry more than we extract at the time (fields we ignore today, rate-limit
 headers, records we only skim). They are never thrown away: each attempt, retries and

@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The pipeline's state, polled from /api/version every 8 s: a pipeline run in
-	// progress (triage, enrich…) and, once it has written something, a button that
+	// progress (classify, match…) and, once it has written something, a button that
 	// reloads the page's data. The first status comes with the root layout's data.
 	import { refreshAll } from '$app/navigation';
 	import { page } from '$app/state';

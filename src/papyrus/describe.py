@@ -20,13 +20,14 @@ from typing import Any
 
 from . import pagetext
 
+# Prompt history (0.1 to 0.6 were recorded as triage-1 to triage-6 in older runs):
 # 0.1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
 # 0.2: model gives start/end anchors; the exact span is cut from the page text.
 # 0.3: the state gives the file's size, and caps each PDF metadata field at META_CHARS.
 # 0.4: with a classifier, it runs first and settles kind and library-ness: extraction no longer
 #           asks for `kind` / `is_library_material` (EXTRACT_SCHEMA_DECIDED), and runs only for files
 #           the classifier keeps (P(kind=personal) < 0.5) or the user kept: two stages,
-#           classify_file (triage_status 'classified') and extract_metadata.
+#           classify_file and extract_metadata.
 # 0.5: the state is about STATE_TOKENS tokens, not 4000 characters: a '--- document ---' and a
 #           '--- metadata ---' section of `key: value` lines, then pages from the front and, for a
 #           longer document, the back (pagetext.py: '...' marks text left out, '(no text)' pages
@@ -148,7 +149,7 @@ def render_state(d: Document, n_pages: int, page_text: Callable[[int], str], max
 
 def build_state(conn: sqlite3.Connection, file_id: int, max_tokens: int | None = None,
                 tail_fraction: float | None = None) -> str:
-    """What every triage model reads about a file (the screen, the classifier and the extraction
+    """What every model reads about a file (the screen, the classifier and the extraction
     model). Pages come from `file_pages` (the text layer or OCR) and, past what scanning stored,
     from papyrus's copy of the PDF, read on demand and not stored: personal paperwork stays at
     the pages scanning read."""

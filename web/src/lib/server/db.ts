@@ -1,6 +1,6 @@
 // Read-only access to the papyrus SQLite database.
 //
-// The Python pipeline (scan / triage / enrich) may be writing to the same
+// The Python pipeline (scan / classify / extract / index / match) may be writing to the same
 // file at any time. We open it with SQLITE_OPEN_READONLY plus
 // `PRAGMA query_only`, so this process can never take a write lock; in WAL
 // mode readers never block the writer and always see the last commit.

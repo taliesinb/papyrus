@@ -1,12 +1,12 @@
 """Purge: erase what papyrus knows about a document that is not library material.
 
-Scanning and triage keep, for every PDF, its first pages, paths, download URLs, PDF metadata,
+Scanning, classifying and extracting keep, for every PDF, its first pages, paths, download URLs, PDF metadata,
 a stored copy and the model's claims (title, "authors", a summary). For a payslip, a diary or
-a CV none of that belongs in the library, so once triage is sure a file is personal paperwork,
+a CV none of that belongs in the library, so once the classifier is sure a file is personal paperwork,
 `promote` purges it:
 
 * **kept** (a tombstone): the `files` row with `sha256`, `size` and `purged_at`, so the same
-  bytes are recognised and skipped wherever they turn up again without being triaged again; one
+  bytes are recognised and skipped wherever they turn up again without being classified again; one
   `purged` assertion saying why (`{by, p_personal, prompt_version}`); download contexts keep
   their URL (the link given to `papyrus download`, and `where_froms`); the API log is untouched.
 * **erased**: page text and its full-text index entries, the outline, PDF metadata, page
@@ -28,7 +28,7 @@ brought back with `papyrus keep PATH`.
 When: `verdict` says purge when the user said so (an `is_library_material` claim from `user`),
 or when the classifier's P(kind=personal) >= PURGE_THRESHOLD. Between 0.5 (where `works.is_library`
 stops promoting) and the threshold, or without a classifier, a personal-looking file is *held*:
-no work, not served, its first pages kept for review (`papyrus purge --held`). So is a file
+no work, not served, its first pages kept for review (`papyrus purge --dry-run`). So is a file
 the screen (screen.py) set aside: the screen alone never purges.
 """
 
@@ -61,7 +61,7 @@ def user_says(conn: sqlite3.Connection, file_id: int) -> bool | None:
 
 
 def verdict(conn: sqlite3.Connection, file_id: int) -> dict[str, Any] | None:
-    """Why this triaged file should be purged, or None (keep it, or hold it for review)."""
+    """Why this classified file should be purged, or None (keep it, or hold it for review)."""
     if conn.execute("SELECT 1 FROM file_works fw JOIN works w ON w.id=fw.work_id"
                     " WHERE fw.file_id=? AND w.status='confirmed'", (file_id,)).fetchone():
         return None  # the user confirmed its work
@@ -160,9 +160,9 @@ def checkpoint(conn: sqlite3.Connection) -> None:
 
 def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> tuple[str, int | None]:
     """The user says this (unpurged) file is library material: record it, then promote it. A file
-    with no title yet was never given metadata: one the screen set aside goes back to triage
+    with no title yet was never given metadata: one the screen set aside goes back to classify
     (which skips the screen for it from now on), one the classifier judged personal goes on to
-    metadata extraction (extract_status `pending`). Action `retriage` either way."""
+    metadata extraction (extract_status `pending`). Action `requeued` either way."""
     from .screen import rejected
     from .works import promote_file
 
@@ -183,7 +183,7 @@ def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> t
 
 def restore(conn: sqlite3.Connection, path: Path, run_id: int | None = None) -> tuple[str, int | None]:
     """Bring back a purged file from its original at `path`, as the user's library material:
-    the stored copy, first pages and the path come back, triage is pending again (a `user`
+    the stored copy, first pages and the path come back, classify and extract are pending again (a `user`
     claim makes promote keep it whatever the classifier says). Returns (action, file_id), action
     one of restored | unknown (never scanned) | or what `keep` returns for an unpurged file."""
     import socket
@@ -214,7 +214,7 @@ def restore(conn: sqlite3.Connection, path: Path, run_id: int | None = None) -> 
 
 
 def candidates(conn: sqlite3.Connection, held: bool = False) -> list[tuple[int, dict[str, Any] | None]]:
-    """Triaged, unpurged files that are not library material: (file_id, verdict). With `held`,
+    """Classified, unpurged files that are not library material: (file_id, verdict). With `held`,
     also those below the threshold (verdict None), for review."""
     from .works import is_library
 

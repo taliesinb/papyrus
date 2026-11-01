@@ -196,7 +196,7 @@ def test_download_end_to_end(tmp_path):
     run = json.loads(conn.execute("SELECT stats FROM runs WHERE command='download'").fetchone()[0])
     assert run["status"] == "completed" and run["failed"] == 2
 
-    # triage sees the link title and download URLs, and takes the arXiv id (with version) from them
+    # the description shows the link title and download URLs; detect_ids takes the arXiv id (with version) from them
     fid = conn.execute("SELECT file_id FROM context_refs r JOIN contexts c ON c.id=r.context_id"
                        " WHERE c.locator='https://arxiv.org/abs/2312.00429'").fetchone()[0]
     state = build_state(conn, fid)

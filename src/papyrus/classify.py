@@ -34,7 +34,7 @@ KINDS = {
 }
 
 # One question: library-ness is P(kind=personal) (works.is_library). The yes/no "is this library
-# material?" question was dropped in triage-6: biased towards yes, and nothing read its answer.
+# material?" question was dropped in prompt 0.6: biased towards yes, and nothing read its answer.
 CLASSIFICATIONS = [
     Question("kind", "choice", "What kind of document is this?", KINDS),
 ]
@@ -42,7 +42,7 @@ CLASSIFICATIONS = [
 
 def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier | None,
                   run_id: int | None = None, max_tokens: int | None = None, screen: Any = None) -> dict[str, Any]:
-    """Triage's first stage: the screen, then the classifier (kind, library or not).
+    """The classify stage: the screen, then the classifier (kind, library or not).
 
     Sets classify_status to `done`, and extract_status to `pending` when the file goes on to
     metadata extraction (library material, or no classifier to say otherwise; result status

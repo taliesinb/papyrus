@@ -1,4 +1,4 @@
-"""Full text: `papyrus extract`, page kinds, OCR, and search over every page (no model, no network)."""
+"""Full text: `papyrus index`, page kinds, OCR, and search over every page (no model, no network)."""
 
 from pathlib import Path
 
@@ -108,7 +108,7 @@ def test_extract_reads_every_page_of_live_works_only(tmp_path):
     assert f[0] == "done"
     # personal paperwork stays at the pages scanning read
     assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
-    # triage's state reads past them from the stored copy when the pages fit, without storing them
+    # the document description reads past them from the stored copy when the pages fit, without storing them
     assert "--- page 3 ---" in build_state(conn, paper)
     assert "--- page 3 ---" in build_state(conn, slip)
     assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
@@ -174,7 +174,7 @@ def test_ocr_first_pages_of_image_only_file_and_retriage(tmp_path, monkeypatch):
     conn = db.connect(tmp_path / "t.sqlite")
     scan(conn, [d], ScanOptions())
     fid = conn.execute("SELECT id FROM files").fetchone()[0]
-    conn.execute("UPDATE files SET classify_status='done', extract_status='done' WHERE id=?", (fid,))  # triaged blind
+    conn.execute("UPDATE files SET classify_status='done', extract_status='done' WHERE id=?", (fid,))  # classified blind
     fake = FakeOCR()
     monkeypatch.setattr(index, "VisionOCR", lambda: fake)
     stats = index.run(conn)

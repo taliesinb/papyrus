@@ -9,25 +9,25 @@ into a temporary file and read from there, so the real library is never written 
 
 Each file is <out>/<first 16 hex digits of sha256>.json with three sections:
 
-  inputs        what the triage classifiers see: filenames, paths, download URLs and link
+  inputs        what the screen and the classifier see: filenames, paths, download URLs and link
                 titles (filesystem/download contexts), size, page count, the PDF info
                 dictionary, the text of the first pages (pdfium text layer or Apple Vision
-                OCR, per page), the filename heuristic's hint, and `triage_prompt`, the exact
-                state string describe.build_state gives the models.
+                OCR, per page), the filename heuristic's hint, and `triage_prompt` (the key
+                predates the renaming), the document description describe.build_state gives the models.
   ground_truth  the library's current resolved view. `label_status` says where it comes from:
                   work               the file belongs to a live work: fields from `works`,
                                      `work_authors`, `work_ids`, `work_topics`
                   rejected_personal  its work was rejected as not library material
-                  not_promoted       triaged and judged personal, so no work was created
+                  not_promoted       classified as personal, so no work was created
                   not_promoted_no_title  judged library material but promote found no title
-                  pending_triage     not (re-)triaged since its text changed (e.g. after OCR):
+                  pending_triage     not (re-)classified and extracted since its text changed (e.g. after OCR):
                                      no verdict, labels are null
                   purged             erased as personal paperwork: a tombstone, no inputs left
                                      (train.py recovers them from the originals)
                 `sources` gives, per field, the provenance of the value where it can be traced
                 (api:*, classify:*, llm:*, heuristic:*, user). No label is user-reviewed unless
                 its source is `user` or `work_status` is `confirmed`.
-  predictions   the live triage claims on the file (every source, with confidence and the
+  predictions   the live screen, classifier and extraction claims on the file (every source, with confidence and the
                 classifier's probability distributions): the current classifiers' outputs.
 
 This contains the first pages of personal documents (payslips, CVs, tax certificates): keep the

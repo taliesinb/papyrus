@@ -15,7 +15,7 @@ Backends: LM Studio (OpenAI-compatible HTTP), Apple Foundation Models (Swift
 bridge), and any Jev-compatible `/v1/systemone` endpoint.
 
 A third contract, `Embedder` (LM Studio's `/v1/embeddings`, llm/embed.py), serves the screen
-(screen.py): a fast first stage of triage.
+(screen.py): the classify stage's fast first step.
 
 For the inference cache (`papyrus.inference`, which wraps any Backend or Classifier), an
 implementation may also offer:

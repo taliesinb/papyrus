@@ -181,7 +181,7 @@ def links_cmd(ctx: click.Context, workspace, days, since_date, dms, channels, ex
 @slack_group.command("import")
 @_filter_options
 @click.option("--resolve/--no-resolve", default=True,
-              help="Then link arXiv/DOI refs to works, creating and enriching new ones (default on).")
+              help="Then link arXiv/DOI refs to works, creating and matching new ones (default on).")
 @click.pass_context
 def import_cmd(ctx: click.Context, workspace, days, since_date, dms, channels, exclude_channels, domains,
                all_links: bool, resolve: bool) -> None:

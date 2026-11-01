@@ -21,7 +21,7 @@ same contract (llm/base.py) and adds:
 * **`before_call`**: run only on a miss, just before the model is asked (`papyrus watch` checks
   memory pressure and LM Studio there, so a cache hit costs neither);
 * **the call id** of the answer, as `last_call` (backend) / `last_calls[key]` (classifier), which
-  triage stores in `assertions.call_id`; on a hit, it is the original call's id;
+  classify and extract store in `assertions.call_id`; on a hit, it is the original call's id;
 * **the subject**: the sha256 of the document the call is about, set with `with subject(sha):`.
   It is what `purge` follows to delete every input and output file about a document.
 
@@ -306,7 +306,7 @@ class Store:
         most recently asked-about document (so the current models and prompts), each estimated by
         `estimate_s` at the median input length of its last `last` calls (the latest document's
         own length made it jumpy: a short one halved the estimate). None without history."""
-        # the latest document that went through full triage (the screen alone, an embedding,
+        # the latest document the language models were asked about (the screen alone, an embedding,
         # would make every document look like it takes 30 ms)
         r = self.conn.execute("SELECT c.subject FROM calls c JOIN queries q ON q.id=c.query_id WHERE c.status='ok'"
                               " AND c.subject IS NOT NULL AND q.kind<>'embed' ORDER BY c.started_at DESC LIMIT 1"

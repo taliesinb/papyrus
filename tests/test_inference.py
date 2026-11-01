@@ -1,4 +1,4 @@
-"""The inference cache (inference.py): keys, seeds, hits, failures, the call ids triage stores,
+"""The inference cache (inference.py): keys, seeds, hits, failures, the call ids classify and extract store,
 and purge leaving no text behind. Fake models only, except the live Apple seed test."""
 
 import json
@@ -25,7 +25,7 @@ MARK = "Quuxperson"  # in a payslip: must survive nowhere after a purge
 
 
 @pytest.fixture(autouse=True)
-def _no_network(no_match_network):  # the watcher enriches what it promotes
+def _no_network(no_match_network):  # the watcher matches what it promotes
     pass
 
 
@@ -199,7 +199,7 @@ def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
     sha = conn.execute("SELECT sha256 FROM files WHERE id=1").fetchone()[0]
     assert {c["subject"] for c in calls.values()} == {sha}
     title_call = dict(rows)["title"]
-    r = classify_and_extract(conn, 1, be, dec)  # e.g. `papyrus triage --all` with nothing changed
+    r = classify_and_extract(conn, 1, be, dec)  # e.g. `papyrus classify --all` with nothing changed
     assert r["cached"] and len(_calls()) == 2  # extract + the classifier's question, asked once
     again = dict(conn.execute("SELECT field, call_id FROM assertions WHERE subject_id=1 AND superseded_at IS NULL"
                               " AND field='title'").fetchall())
@@ -288,7 +288,7 @@ def test_watch_answers_from_the_cache_without_asking_for_memory(tmp_path):
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert len(be.prompts) == 1 and mem.calls == 2  # extract + the question, each gated
-    conn.execute("UPDATE files SET classify_status='pending', extract_status='pending'")  # asked to triage again
+    conn.execute("UPDATE files SET classify_status='pending', extract_status='pending'")  # asked to classify and extract again
     mem.level = "critical"
     w.dirty = True
     w.pump()

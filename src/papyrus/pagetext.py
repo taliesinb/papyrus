@@ -1,6 +1,6 @@
 """The pages of a document as the models see them: cleaned up, and chosen within a token budget.
 
-Triage's state (`triage.build_state`), which the screen, the classifier and the extraction model
+The document description (`describe.build_state`), which the screen, the classifier and the extraction model
 all read, shows a document's first pages and, for a longer one, its last ones:
 
 1. If every page fits in the budget, all of them, in order.

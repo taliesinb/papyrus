@@ -1,11 +1,11 @@
 """The watcher's work queue: `<library home>/queue.sqlite`, its own database.
 
-What is pending is still decided by the library (a file not triaged, a live work's file not
-extracted, a work without API data): `sync` mirrors that into `items`, one row per (stage, id).
+What is pending is still decided by the library (a file not read, classified or extracted, a
+live work's file not indexed, a work not matched): `sync` mirrors that into `items`, one row per (stage, id).
 What the queue adds is the watcher's own working state, which outlives a restart:
 
 * **retries**: a step that failed, or finished without changing anything (`no_progress`, e.g.
-  a work enrichment can find nothing for), is tried again after 1 h, 4 h, then 16 h; after the
+  a work matching can find nothing for), is tried again after 1 h, 4 h, then 16 h; after the
   fourth attempt the item is `failed` and left alone (`papyrus watch --retry-failed`);
 * **history**: how long each finished step took (`duration_ms`), from which `eta_s` estimates
   the time left;
@@ -17,7 +17,7 @@ public contract. Deleting queue.sqlite only forgets retries and timings.
 
 sync rules, per stage given the library's pending ids P:
     new id in P                  -> pending
-    done, but in P again         -> pending, attempts reset (e.g. OCR found text: triage again)
+    done, but in P again         -> pending, attempts reset (e.g. OCR found text: classify again)
     pending or failed, not in P  -> done (another process did it, or the file was purged)
     failed and in P              -> stays failed
 """
@@ -34,8 +34,8 @@ SCHEMA_VERSION = 1
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS items (
-    stage       TEXT NOT NULL,              -- extract | ocr | enrich | classify | metadata
-    item_id     INTEGER NOT NULL,           -- files.id (works.id for enrich) in papyrus.sqlite
+    stage       TEXT NOT NULL,              -- read | classify | extract | index | match
+    item_id     INTEGER NOT NULL,           -- files.id (works.id for match) in papyrus.sqlite
     state       TEXT NOT NULL,              -- pending | done | failed
     attempts    INTEGER NOT NULL DEFAULT 0, -- failed or fruitless tries so far
     next_at     REAL,                       -- not before this (epoch seconds): a retry
@@ -91,7 +91,7 @@ class Queue:
         c = self.conn
         c.execute("BEGIN")
         try:
-            # stages of an older papyrus (e.g. 'triage', split into classify + metadata): done
+            # stages of an older papyrus (e.g. 'triage', 'enrich', 'metadata'): done
             c.execute(f"UPDATE items SET state='done', updated_at=? WHERE state<>'done' AND stage NOT IN "
                       f"({','.join('?' * len(STAGES))})", (now, *STAGES))
             for stage, ids in pending.items():

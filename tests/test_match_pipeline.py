@@ -78,7 +78,7 @@ def test_build_hint(conn):
 
 
 def test_enrich_writes_everything(conn, fake_resolve):
-    # triage only got two of three authors, one in 'Family, Given' order
+    # extraction only got two of three authors, one in 'Family, Given' order
     wid = add_work(
         conn,
         "Gated Delta Networks: Improving Mamba2 with Delta Rule",

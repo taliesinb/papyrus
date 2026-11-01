@@ -1,4 +1,4 @@
--- papyrus schema, version 3.
+-- papyrus schema, version 0.5 (db.SCHEMA_VERSION).
 --
 -- Design notes (see docs/schema.md for the long form):
 --
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS meta (
 -- One row per pipeline invocation, so assertions can be traced and re-run.
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY,
-    command     TEXT NOT NULL,          -- e.g. 'scan', 'triage', 'enrich'
+    command     TEXT NOT NULL,          -- e.g. 'scan', 'classify', 'extract', 'promote', 'index', 'match', 'watch'
     args        TEXT,                   -- JSON
     backend     TEXT,                   -- e.g. 'lmstudio:qwen3.5-9b-mlx'
     prompt_version TEXT,
@@ -77,8 +77,8 @@ CREATE TABLE IF NOT EXISTS files (
     purged_at     TEXT
 );
 
--- Extracted text, one row per page (1-based). Scanning extracts the first
--- pages; `papyrus extract` fills in the rest for files of live works.
+-- Page text, one row per page (1-based). Scanning reads the first pages;
+-- `papyrus index` fills in the rest for files of live works.
 CREATE TABLE IF NOT EXISTS file_pages (
     id      INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,

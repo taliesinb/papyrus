@@ -91,7 +91,7 @@ def test_ensure_server_follows_config(monkeypatch):
     assert not lmstudio.ensure_server("http://localhost:1234/v1")
 
 
-# --- triage picks its models from the config and refuses to run without a classifier ---------
+# --- classify/extract pick their models from the config; no classifier, no classifying ---------
 
 def _no_classifier(spec):
     raise BackendUnavailable("LM Studio not reachable")
