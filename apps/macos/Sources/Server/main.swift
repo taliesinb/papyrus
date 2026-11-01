@@ -406,7 +406,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var left = todo > 0 ? " (\(todo) left" + (w.etaS.map { ", \(duration($0))" } ?? "") + ")" : ""
         if let failed = w.failed, failed > 0 { left += " · \(failed) failed" }
         switch w.state {
-        case "idle": return "Watching: idle" + left
+        case "idle": return "Watching: idle" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
         case "ingesting": return "Watching: adding new PDFs" + left
         case "waiting-memory": return "Watching: waiting for memory" + left
         case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left

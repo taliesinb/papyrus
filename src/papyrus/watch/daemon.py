@@ -139,6 +139,8 @@ class Watch:
         self.last_check = clock()
         self.last_autostart = -AUTOSTART_EVERY_S
         self.last_refresh = clock()
+        self.unreadable: list[Path] = []  # watched directories macOS won't let us read
+        self.last_access_check = clock()
         self.totals: Counter = Counter()
 
     # --- running ------------------------------------------------------------------------------
@@ -195,6 +197,12 @@ class Watch:
             self.dirty = True
         if now - self.last_check >= RECHECK_S:
             self.dirty = True
+        if self.unreadable and now - self.last_access_check >= 60:
+            self.last_access_check = now
+            if any(os.access(d, os.R_OK) and self._listable(d) for d in self.unreadable):
+                self.log("access granted: scanning the watched directories")
+                self.batch("access", catch_up=True)
+                return
         if ready or gone:
             self.batch("events", ready, gone)
         elif self.dirty:
@@ -209,6 +217,14 @@ class Watch:
             self.ledger.refresh()
         if self.ledger.release_idle():
             self._status(self.state, self.detail)
+
+    @staticmethod
+    def _listable(d: Path) -> bool:
+        try:
+            os.listdir(d)
+            return True
+        except OSError:
+            return False
 
     def _timeout(self) -> float:
         if self.dirty:
@@ -273,9 +289,20 @@ class Watch:
         if self.opts.store:
             store.clean_tmp()
         now, wall = db.now_iso(), time.time()
+        self.unreadable = []
         for root in self.dirs:
             if not root.is_dir():
                 c["dirs_missing"] += 1
+                continue
+            try:
+                os.listdir(root)
+            except PermissionError:
+                # macOS privacy: the app running the watcher hasn't been allowed into this folder. Skip
+                # it whole: everything in it would otherwise look deleted (mark_missing).
+                self.unreadable.append(root)
+                c["dirs_unreadable"] += 1
+                self.log(f"cannot read {root}: allow access in System Settings > Privacy & Security >"
+                         " Files and Folders; trying again every minute")
                 continue
             for path in scan.iter_pdfs(root, self.opts):
                 if not is_candidate(path.name):
@@ -507,6 +534,9 @@ class Watch:
         """The state between batches: waiting (if model work is pending and backing off) or idle."""
         if self.backoff_state and self.clock() < self.backoff_until and self.pending()["triage"]:
             self._status(self.backoff_state, self.backoff_reason)
+        elif self.unreadable:
+            n = len(self.unreadable)
+            self._status(IDLE, f"cannot read {n} watched folder{'s' if n > 1 else ''} (macOS privacy settings)")
         else:
             self._status(IDLE)
 

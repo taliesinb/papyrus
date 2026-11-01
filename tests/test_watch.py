@@ -304,6 +304,29 @@ def test_deleted_file_marks_its_context_missing(tmp_path):
     assert conn.execute("SELECT missing_at FROM contexts").fetchone()[0]
 
 
+def test_an_unreadable_folder_is_skipped_not_emptied(tmp_path):
+    """macOS refuses the app access until the user allows it: nothing in the folder may be marked
+    missing meanwhile, the status says why, and access granted later starts a scan."""
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    _pdf(dl / "a.pdf", "Lecture notes on things")
+    w.catch_up()
+    assert conn.execute("SELECT count(*) FROM contexts WHERE missing_at IS NULL").fetchone()[0] == 1
+    _pdf(dl / "b.pdf", "More lecture notes, on other things")
+    dl.chmod(0)
+    try:
+        w.catch_up()
+        assert conn.execute("SELECT count(*) FROM contexts WHERE missing_at IS NOT NULL").fetchone()[0] == 0
+        status = json.loads(w.status_path.read_text())
+        assert status["state"] == IDLE and "cannot read 1 watched folder" in status["detail"]
+        assert any("cannot read" in m for m in logs)
+    finally:
+        dl.chmod(0o755)
+    clock.advance(61)
+    w.pump()
+    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 2 and not w.unreadable
+    assert json.loads(w.status_path.read_text())["detail"] == ""
+
+
 # --- back-off -----------------------------------------------------------------------------------
 
 
