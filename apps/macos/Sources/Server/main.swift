@@ -422,9 +422,9 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if watchEnabled { startWatcher() } else { stopWatcher(); watcherNote = nil }
     }
 
-    /// The menu's lines about the watcher: "Watching for new docs" when there is nothing to do, else
-    /// one line per pipeline stage with work left. The stages take turns (one loop, local models),
-    /// so one is active and the others say "pending".
+    /// The menu's lines about the watcher: "Watching for new files" when there is nothing to do, else
+    /// "Ingesting N/M files" and one line per pipeline stage with work left. The stages take turns
+    /// (one loop, local models), so one is active and the others say "pending" (or why they wait).
     var watchLines: [String] {
         guard config.watch != nil else { return [] }
         // A live watcher's status first, whoever runs it (e.g. `papyrus watch --once` in a terminal).
@@ -434,16 +434,13 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return [watcher == nil ? "Watcher: not running" : "Watcher: starting…"]
         }
         var lines: [String] = []
-        switch w.state {
-        case "waiting-memory": lines.append("Waiting for memory")
-        case "lmstudio-unavailable": lines.append("LM Studio unavailable" + (w.detail.isEmpty ? "" : ": \(w.detail)"))
-        case "paused": lines.append("Model work paused")
-        case "idle" where !w.detail.isEmpty: lines.append(w.detail)
-        default: break
-        }
         let stages = w.stages ?? []
-        if stages.isEmpty {
-            lines.append("Watching for new docs")
+        if let i = w.ingesting, !stages.isEmpty {
+            lines.append("Ingesting \(i.done)/\(i.total) \(i.total == 1 ? "file" : "files")")
+        } else if stages.isEmpty {
+            lines.append("Watching for new files")
+        } else {
+            lines.append("Ingesting")
         }
         for s in stages {
             let one = s.unit.hasSuffix("s") ? String(s.unit.dropLast()) : s.unit
@@ -463,6 +460,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lines.append(line)
         }
         if let failed = w.failed, failed > 0 { lines.append("\(failed) failed (papyrus watch --retry-failed)") }
+        if w.state == "idle", !w.detail.isEmpty { lines.append(w.detail) }  // e.g. a folder it may not read
         return lines
     }
 
@@ -589,7 +587,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A watcher of this library (ours, or one started in a terminal) has items queued (due, or
     /// waiting for a retry). `/api/version` reports `watch` only while that process lives.
     var queueHasWork: Bool {
-        (library?.watch?.pending?.total ?? 0) > 0
+        (library?.watch?.pending ?? [:]).contains { $0.key != "failed" && $0.value > 0 }
     }
 
     /// `~12 min`, `~1 h 20 min`, `under a minute`.

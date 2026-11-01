@@ -44,8 +44,9 @@ def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier
                   run_id: int | None = None, max_tokens: int | None = None, screen: Any = None) -> dict[str, Any]:
     """Triage's first stage: the screen, then the classifier (kind, library or not).
 
-    Sets triage_status to `classified` when the file goes on to metadata extraction (library
-    material, or no classifier to say otherwise), else to `done`: set aside by the screen, or
+    Sets classify_status to `done`, and extract_status to `pending` when the file goes on to
+    metadata extraction (library material, or no classifier to say otherwise; result status
+    `classified`), else to `skipped` (result status `done`): set aside by the screen, or
     judged not library material (promote then purges or holds it, named by its file name: personal
     paperwork never gets a title, summary or topics from a model). The user's `keep` outranks the
     classifier."""
@@ -90,7 +91,8 @@ def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier
         if ids:
             db.assert_(conn, "file", file_id, "ids", ids, source="heuristic:regex", run_id=run_id)
             result["ids"] = ids
-        conn.execute("UPDATE files SET triage_status=? WHERE id=?", (status, file_id))
+        conn.execute("UPDATE files SET classify_status='done', extract_status=? WHERE id=?",
+                     ("pending" if status == "classified" else "skipped", file_id))
     result["status"], result["p_personal"], result["library"] = status, p_personal, library
     return result
 

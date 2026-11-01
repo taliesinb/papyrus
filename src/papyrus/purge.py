@@ -137,7 +137,7 @@ def purge_file(conn: sqlite3.Connection, file_id: int, why: dict[str, Any], run_
             # other contexts (a Slack message linking the file) are about the message: left as they are
         conn.execute(
             "UPDATE files SET page_count=NULL, pdf_title=NULL, pdf_author=NULL, pdf_subject=NULL, pdf_keywords=NULL,"
-            " pdf_creator=NULL, pdf_producer=NULL, pdf_created=NULL, pdf_modified=NULL, text_error=NULL,"
+            " pdf_creator=NULL, pdf_producer=NULL, pdf_created=NULL, pdf_modified=NULL, read_error=NULL,"
             " stored_path=NULL, purged_at=? WHERE id=?", (db.now_iso(), file_id))
         if stripped:
             _drop_orphan_topics(conn)
@@ -162,7 +162,7 @@ def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> t
     """The user says this (unpurged) file is library material: record it, then promote it. A file
     with no title yet was never given metadata: one the screen set aside goes back to triage
     (which skips the screen for it from now on), one the classifier judged personal goes on to
-    metadata extraction (triage_status `classified`). Action `retriage` either way."""
+    metadata extraction (extract_status `pending`). Action `retriage` either way."""
     from .screen import rejected
     from .works import promote_file
 
@@ -172,7 +172,10 @@ def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> t
     with db.tx(conn):
         db.assert_(conn, "file", file_id, "is_library_material", True, source="user", run_id=run_id)
         if retriage:
-            conn.execute("UPDATE files SET triage_status=? WHERE id=?", (status, file_id))
+            if status == "pending":  # the screen set it aside: classify it in full
+                conn.execute("UPDATE files SET classify_status='pending', extract_status='pending' WHERE id=?", (file_id,))
+            else:  # classified as personal: extract its metadata
+                conn.execute("UPDATE files SET extract_status='pending' WHERE id=?", (file_id,))
     if retriage:
         return "requeued", None
     return promote_file(conn, file_id, run_id=run_id)
@@ -199,7 +202,7 @@ def restore(conn: sqlite3.Connection, path: Path, run_id: int | None = None) -> 
     fid = r["id"]
     rel, _ = store.commit(tmp, sha)
     with db.tx(conn):
-        conn.execute("UPDATE files SET purged_at=NULL, triage_status='pending', fulltext_status='pending' WHERE id=?",
+        conn.execute("UPDATE files SET purged_at=NULL, classify_status='pending', extract_status='pending', index_status='pending' WHERE id=?",
                      (fid,))
         store.set_stored_path(conn, fid, rel)
         scan.first_read(conn, fid, store.abs_path(rel), path.name, run_id)
@@ -216,7 +219,7 @@ def candidates(conn: sqlite3.Connection, held: bool = False) -> list[tuple[int, 
     from .works import is_library
 
     out = []
-    for (fid,) in conn.execute("SELECT id FROM files WHERE triage_status='done' AND purged_at IS NULL ORDER BY id"
+    for (fid,) in conn.execute(f"SELECT id FROM files WHERE {db.MODELS_DONE} AND purged_at IS NULL ORDER BY id"
                                ).fetchall():
         why = verdict(conn, fid)
         if why or (held and not is_library(db.current_assertions(conn, "file", fid))

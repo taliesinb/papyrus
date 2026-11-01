@@ -104,7 +104,7 @@ def test_extract_reads_every_page_of_live_works_only(tmp_path):
     assert set(pages) == {1, 2, 3, 4} and pages[4]["kind"] == "references" and pages[3]["kind"] == "body"
     assert [tuple(r) for r in conn.execute("SELECT title, page FROM file_outline WHERE file_id=? ORDER BY position",
                                            (paper,))] == [("1 Introduction", 1), ("3 Method", 3), ("References", 4)]
-    f = conn.execute("SELECT fulltext_status FROM files WHERE id=?", (paper,)).fetchone()
+    f = conn.execute("SELECT index_status FROM files WHERE id=?", (paper,)).fetchone()
     assert f[0] == "done"
     # personal paperwork stays at the pages scanning read
     assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
@@ -174,14 +174,14 @@ def test_ocr_first_pages_of_image_only_file_and_retriage(tmp_path, monkeypatch):
     conn = db.connect(tmp_path / "t.sqlite")
     scan(conn, [d], ScanOptions())
     fid = conn.execute("SELECT id FROM files").fetchone()[0]
-    conn.execute("UPDATE files SET triage_status='done' WHERE id=?", (fid,))  # triaged blind
+    conn.execute("UPDATE files SET classify_status='done', extract_status='done' WHERE id=?", (fid,))  # triaged blind
     fake = FakeOCR()
     monkeypatch.setattr(index, "VisionOCR", lambda: fake)
     stats = index.run(conn)
     assert fake.calls == [[1, 2]] and stats["requeued"] == 1  # first pages only: not a work
     rows = conn.execute("SELECT page, source, text FROM file_pages WHERE file_id=? ORDER BY page", (fid,)).fetchall()
     assert [(r[0], r[1]) for r in rows] == [(1, "ocr:vision"), (2, "ocr:vision")] and "legible" in rows[0][2]
-    assert conn.execute("SELECT triage_status FROM files WHERE id=?", (fid,)).fetchone()[0] == "pending"
+    assert conn.execute("SELECT classify_status FROM files WHERE id=?", (fid,)).fetchone()[0] == "pending"
     assert conn.execute("SELECT count(*) FROM file_pages_fts WHERE file_pages_fts MATCH 'legible'").fetchone()[0] == 2
     index.run(conn)
     assert fake.calls == [[1, 2]]  # nothing left to OCR

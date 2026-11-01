@@ -157,16 +157,16 @@ def promote_file(conn: sqlite3.Connection, file_id: int, run_id: int | None = No
             names = [n.strip() for n in best(claims, "authors") or [] if isinstance(n, str) and n.strip()]
             for pos, name in enumerate(names):  # (claims stored before schema_lite dropped null items)
                 conn.execute("INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?,?,?,?)",
-                             (work_id, pos, name, "triage"))
+                             (work_id, pos, name, "extract"))
             for t in best(claims, "topics") or []:
                 field = (t.get("field") or "").strip().lower() or None
                 parent = topic_id(conn, "llm", field, "field", None) if field else None
                 tid = topic_id(conn, "llm", t["name"].strip().lower(), "topic", parent)
-                conn.execute("INSERT OR IGNORE INTO work_topics(work_id, topic_id, source) VALUES (?,?,'triage')",
+                conn.execute("INSERT OR IGNORE INTO work_topics(work_id, topic_id, source) VALUES (?,?,'extract')",
                              (work_id, tid))
             summary = best(claims, "summary")
             if summary:
-                db.assert_(conn, "work", work_id, "summary", summary, source="triage")
+                db.assert_(conn, "work", work_id, "summary", summary, source="extract")
         for scheme, value in ids.items():
             conn.execute("INSERT OR IGNORE INTO work_ids(work_id, scheme, value, source) VALUES (?,?,?,?)",
                          (work_id, scheme, value, "heuristic:regex"))
@@ -184,7 +184,7 @@ def promote_all(conn: sqlite3.Connection) -> dict[str, int]:
     from . import purge
 
     with db.recorded_run(conn, "promote", {}) as (run_id, stats):
-        for (fid,) in conn.execute("SELECT id FROM files WHERE triage_status='done' AND purged_at IS NULL"
+        for (fid,) in conn.execute(f"SELECT id FROM files WHERE {db.MODELS_DONE} AND purged_at IS NULL"
                                    " ORDER BY id").fetchall():
             action, _ = promote_file(conn, fid, run_id=run_id)
             stats[action] = stats.get(action, 0) + 1

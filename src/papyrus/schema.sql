@@ -57,14 +57,18 @@ CREATE TABLE IF NOT EXISTS files (
     pdf_producer  TEXT,
     pdf_created   TEXT,
     pdf_modified  TEXT,
-    -- text extraction state: pending | ok | no_text (scanned/image-only) | error
-    text_status   TEXT NOT NULL DEFAULT 'pending',
-    text_error    TEXT,
-    -- triage state: pending | done | error
-    triage_status TEXT NOT NULL DEFAULT 'pending',
-    -- full-text state: pending (only the first pages are in file_pages) | done (every page) |
-    -- error (text_error says why). Only files of live works are extracted in full.
-    fulltext_status TEXT NOT NULL DEFAULT 'pending',
+    -- the pipeline, one state per stage (scan -> read -> classify -> extract -> promote -> index -> match):
+    -- read: the first pages' text: pending | ok | no_text (scanned/image-only: OCR reads them) | error
+    read_status   TEXT NOT NULL DEFAULT 'pending',
+    read_error    TEXT,  -- why reading (or indexing) failed
+    -- classify: the screen and the classifier: pending | done | error
+    classify_status TEXT NOT NULL DEFAULT 'pending',
+    -- extract: the extraction model's metadata: pending | done | skipped (not library material:
+    -- personal paperwork gets no metadata)
+    extract_status TEXT NOT NULL DEFAULT 'pending',
+    -- index: pending (only the first pages are in file_pages) | done (every page, searchable) |
+    -- error (read_error says why). Only files of live works are indexed.
+    index_status  TEXT NOT NULL DEFAULT 'pending',
     -- where papyrus keeps its own copy, relative to the library root (NULL = not copied)
     stored_path   TEXT,
     first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

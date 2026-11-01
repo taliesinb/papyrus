@@ -15,8 +15,10 @@ export interface FileMeta {
 	pdfCreator: string | null;
 	pdfProducer: string | null;
 	pdfCreated: string | null;
-	textStatus: string;
-	triageStatus: string;
+	readStatus: string;
+	classifyStatus: string;
+	extractStatus: string;
+	indexStatus: string;
 	firstSeenAt: string;
 }
 
@@ -86,12 +88,14 @@ export function workDetail(lib: Library, id: number): WorkDetail | null {
 		pdf_creator: string | null;
 		pdf_producer: string | null;
 		pdf_created: string | null;
-		text_status: string;
-		triage_status: string;
+		read_status: string;
+		classify_status: string;
+		extract_status: string;
+		index_status: string;
 		first_seen_at: string;
 	}>(
 		`SELECT id, sha256, size, page_count, pdf_title, pdf_author, pdf_creator, pdf_producer, pdf_created,
-		        text_status, triage_status, first_seen_at
+		        read_status, classify_status, extract_status, index_status, first_seen_at
 		 FROM files WHERE id IN (SELECT value FROM json_each(?))`,
 		JSON.stringify(fileIds)
 	).map((r) => ({
@@ -104,8 +108,10 @@ export function workDetail(lib: Library, id: number): WorkDetail | null {
 		pdfCreator: r.pdf_creator,
 		pdfProducer: r.pdf_producer,
 		pdfCreated: r.pdf_created,
-		textStatus: r.text_status,
-		triageStatus: r.triage_status,
+		readStatus: r.read_status,
+		classifyStatus: r.classify_status,
+		extractStatus: r.extract_status,
+		indexStatus: r.index_status,
 		firstSeenAt: r.first_seen_at
 	}));
 
@@ -201,6 +207,7 @@ export function watchStatus(): WatchStatus | null {
 		failed?: number;
 		eta_s?: number | null;
 		paused?: boolean;
+		ingesting?: { done: number; total: number } | null;
 		stages?: {
 			stage: string;
 			label: string;
@@ -231,6 +238,7 @@ export function watchStatus(): WatchStatus | null {
 		failed: s.failed ?? 0,
 		etaS: s.eta_s ?? null,
 		paused: s.paused ?? false,
+		ingesting: s.ingesting ?? null,
 		stages: (s.stages ?? []).map((g) => ({
 			stage: g.stage,
 			label: g.label,

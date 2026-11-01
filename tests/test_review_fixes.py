@@ -48,7 +48,7 @@ def test_candidate_owned_by_other_work_is_not_merged(tmp_path, monkeypatch):
     conn.execute("INSERT INTO work_ids VALUES (?, 'doi', '10.1007/x', 'test')", (paper,))
     thesis = conn.execute("INSERT INTO works(kind, title) VALUES ('thesis', 'Hopf Algebras and Markov Chains')").lastrowid
     conn.execute("INSERT INTO work_ids VALUES (?, 'arxiv', '1412.8221', 'test')", (thesis,))
-    conn.execute("INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?, 0, 'Amy Pang', 'triage')",
+    conn.execute("INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?, 0, 'Amy Pang', 'extract')",
                  (thesis,))
     good = _rec("arxiv", "Hopf Algebras and Markov Chains", {"arxiv": "1412.8221"}, ["Amy Pang"], 1.0)
     other_doi = _rec("openalex", "Hopf algebras and Markov chains: two examples", {"doi": "10.1007/x"},
@@ -180,7 +180,7 @@ def test_held_files_get_no_metadata_from_a_model(tmp_path):
     be = FakeBackend(PAPER)
     classify_and_extract(conn, 1, be, FakeClassifier("personal", False, p=0.7))
     assert be.prompts == [] and not _claims(conn, "title") and not _claims(conn, "topics")
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert promote_file(conn, 1)[0] == "held"
 
 

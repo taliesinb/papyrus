@@ -91,13 +91,13 @@ def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, page
     try:
         info = read_pdf(path, max_pages=pages)
     except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files
-        conn.execute("UPDATE files SET text_status='error', text_error=? WHERE id=?", (str(e)[:500], file_id))
+        conn.execute("UPDATE files SET read_status='error', read_error=? WHERE id=?", (str(e)[:500], file_id))
         return "error"
     m = info.meta
     has_text = any(len(p) > 40 for p in info.pages)
     conn.execute(
         """UPDATE files SET page_count=?, pdf_title=?, pdf_author=?, pdf_subject=?, pdf_keywords=?,
-               pdf_creator=?, pdf_producer=?, pdf_created=?, pdf_modified=?, text_status=?, text_error=NULL
+               pdf_creator=?, pdf_producer=?, pdf_created=?, pdf_modified=?, read_status=?, read_error=NULL
            WHERE id=?""",
         (info.page_count, m["title"], m["author"], m["subject"], m["keywords"], m["creator"],
          m["producer"], m["created"], m["modified"], "ok" if has_text else "no_text", file_id),
@@ -152,7 +152,7 @@ def _record_context(conn: sqlite3.Connection, path: Path, st: os.stat_result, fi
         )
 
 
-def ingest_path(conn: sqlite3.Connection, path: Path, opts: ScanOptions, *, host: str, now: str,
+def scan_path(conn: sqlite3.Connection, path: Path, opts: ScanOptions, *, host: str, now: str,
                 run_id: int | None, stats: Counter) -> tuple[str, int | None]:
     """Scan one PDF path: what `scan` does for each file it finds (also `papyrus watch`'s way in).
 
@@ -235,7 +235,7 @@ def scan_roots(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions, *
         root = root.expanduser().resolve()
         now = db.now_iso()
         for path in iter_pdfs(root, opts):
-            outcome, _ = ingest_path(conn, path, opts, host=host, now=now, run_id=run_id, stats=stats)
+            outcome, _ = scan_path(conn, path, opts, host=host, now=now, run_id=run_id, stats=stats)
             if progress and outcome in ("new", "dup"):
                 progress(outcome, path)
         mark_missing(conn, root, now, stats)

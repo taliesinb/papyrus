@@ -6,12 +6,12 @@ are never extracted past those first pages.
 
 Two passes, each idempotent:
 
-1. **Text layer** (pypdfium2): for files with `fulltext_status='pending'`, every page's text, its
-   kind (`page_kind`) and the PDF outline (`file_outline`), then `fulltext_status='done'`.
+1. **Text layer** (pypdfium2): for files with `index_status='pending'`, every page's text, its
+   kind (`page_kind`) and the PDF outline (`file_outline`), then `index_status='done'`.
 2. **OCR** (Apple Vision, `ocr.py`) for pages with (almost) no text layer:
    * every such page of an extracted file;
-   * the first pages of image-only files (`text_status='no_text'`) that are not works yet, so
-     that triage can read them. Such a file goes back to `triage_status='pending'` if OCR found
+   * the first pages of image-only files (`read_status='no_text'`) that are not works yet, so
+     that the classifier can read them. Such a file goes back to `classify_status='pending'` if OCR found
      text, since its earlier triage saw none.
 
    Results are written in batches, so an interrupted run over a long scanned book keeps what it
@@ -106,22 +106,22 @@ def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo
     needn't belong to a live work, unless `live_only`)."""
     if file_ids:
         q = (f"SELECT id FROM files WHERE id IN ({','.join('?' * len(file_ids))}) AND purged_at IS NULL"
-             + ("" if redo else " AND fulltext_status <> 'done'")
+             + ("" if redo else " AND index_status <> 'done'")
              # qualified: a bare `id` inside LIVE_FILE's subquery would be works.id
              + (f" AND {LIVE_FILE.format(f='files.id')}" if live_only else ""))
         return [r[0] for r in conn.execute(q + " ORDER BY id", file_ids)]
-    q = ("SELECT f.id FROM files f WHERE f.text_status IN ('ok', 'no_text') AND " + LIVE_FILE.format(f="f.id")
-         + ("" if redo else " AND f.fulltext_status = 'pending'") + " ORDER BY f.id")
+    q = ("SELECT f.id FROM files f WHERE f.read_status IN ('ok', 'no_text') AND " + LIVE_FILE.format(f="f.id")
+         + ("" if redo else " AND f.index_status = 'pending'") + " ORDER BY f.id")
     return [r[0] for r in conn.execute(q)]
 
 
 def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), live_only: bool = False) -> dict[int, list[int]]:
     """file_id -> pages that have no usable text layer and haven't been OCR'd yet."""
     # Explicit file_ids were extracted on request, so they needn't belong to a live work.
-    extracted = "f.fulltext_status = 'done'" + ("" if file_ids and not live_only else f" AND {LIVE_FILE.format(f='f.id')}")
+    extracted = "f.index_status = 'done'" + ("" if file_ids and not live_only else f" AND {LIVE_FILE.format(f='f.id')}")
     q = (f"""SELECT p.file_id, p.page FROM file_pages p JOIN files f ON f.id = p.file_id
              WHERE p.source = 'pdfium' AND length(trim(p.text)) < {MIN_TEXT}
-               AND (({extracted}) OR (f.text_status = 'no_text' AND p.page <= {FIRST_PAGES}))"""
+               AND (({extracted}) OR (f.read_status = 'no_text' AND p.page <= {FIRST_PAGES}))"""
          + (f" AND f.id IN ({','.join('?' * len(file_ids))})" if file_ids else "")
          + " ORDER BY p.file_id, p.page")
     out: dict[int, list[int]] = {}
@@ -145,7 +145,7 @@ def extract_file(conn: sqlite3.Connection, file_id: int, path: Path) -> int:
         conn.execute("DELETE FROM file_outline WHERE file_id=?", (file_id,))
         conn.executemany("INSERT INTO file_outline(file_id, position, level, title, page) VALUES (?,?,?,?,?)",
                          [(file_id, pos, e.level, e.title, e.page) for pos, e in enumerate(info.outline)])
-        conn.execute("UPDATE files SET fulltext_status='done', page_count=?, text_error=NULL WHERE id=?",
+        conn.execute("UPDATE files SET index_status='done', page_count=?, read_error=NULL WHERE id=?",
                      (n, file_id))
     return n
 
@@ -190,7 +190,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
     for fid in pending_files(conn, file_ids, redo, live_only):
         path = readable_path(conn, fid)
         if path is None:
-            conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
+            conn.execute("UPDATE files SET index_status='error', read_error=? WHERE id=?",
                          ("no readable copy (not in the store, and gone from disk)", fid))
             stats["error"] += 1
             say("error", fid, "no readable copy")
@@ -198,7 +198,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
         try:
             n = extract_file(conn, fid, path)
         except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files
-            conn.execute("UPDATE files SET fulltext_status='error', text_error=? WHERE id=?",
+            conn.execute("UPDATE files SET index_status='error', read_error=? WHERE id=?",
                          (f"{type(e).__name__}: {e}"[:500], fid))
             stats["error"] += 1
             say("error", fid, str(e)[:200])
@@ -226,7 +226,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
                 stats["ocr_pages_with_text"] += got
                 # An image-only file that never became a work was triaged blind: triage it again.
                 if got and not conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (fid,)).fetchone():
-                    conn.execute("UPDATE files SET triage_status='pending' WHERE id=? AND text_status='no_text'",
+                    conn.execute("UPDATE files SET classify_status='pending', extract_status='pending' WHERE id=? AND read_status='no_text'",
                                  (fid,))
                     stats["requeued"] += 1
         finally:

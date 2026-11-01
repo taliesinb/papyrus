@@ -188,7 +188,7 @@
 									<span class="fname">{f.filename ?? `file #${f.id}`}</span>
 									<span class="fmeta">
 										<span class="rel">{f.relation}{f.version ? ` ${f.version}` : ''}</span>
-										{f.pageCount ?? '?'} pp · {formatSize(f.size)} · text {f.textStatus}
+										{f.pageCount ?? '?'} pp · {formatSize(f.size)} · read {f.readStatus}
 										{#if data.pagesWithText[f.id]}({data.pagesWithText[f.id]} pp indexed){/if}
 										{#if !f.available}<span class="bad">· not on disk</span>{/if}
 									</span>

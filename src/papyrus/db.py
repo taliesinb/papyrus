@@ -12,7 +12,17 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = "0.5"  # 0.x until the schema is stable (1.0); an old bare "4" reads as 0.4
+
+
+def version(v: object) -> tuple[int, ...]:
+    """'0.5' -> (0, 5); a bare '4' (before 0.x numbering) -> (0, 4)."""
+    parts = tuple(int(x) for x in str(v).split("."))
+    return (0, *parts) if len(parts) == 1 else parts
+
+
+# Files whose model stages are over: classified, and extracted or skipped (not library material).
+MODELS_DONE = "classify_status = 'done' AND extract_status IN ('done', 'skipped')"
 
 
 # A variant id: lowercase letters, digits and single dashes (as DeepSea's). No dots, so the
@@ -77,8 +87,8 @@ def init(conn: sqlite3.Connection) -> None:
     row = None
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    if row is not None and int(row[0]) != SCHEMA_VERSION:
-        newer = int(row[0]) > SCHEMA_VERSION
+    if row is not None and version(row[0]) != version(SCHEMA_VERSION):
+        newer = version(row[0]) > version(SCHEMA_VERSION)
         raise RuntimeError(f"database schema v{row[0]} is {'newer' if newer else 'older'} than this "
                            f"papyrus (v{SCHEMA_VERSION})" + ("" if newer else "; migrate it first"))
     conn.executescript(resources.files("papyrus").joinpath("schema.sql").read_text())

@@ -50,8 +50,8 @@ CREATE INDEX IF NOT EXISTS items_state ON items(state, stage, next_at);
 CREATE INDEX IF NOT EXISTS items_done ON items(stage, done_at) WHERE duration_ms IS NOT NULL;
 """
 
-STAGES = ("extract", "ocr", "enrich", "classify", "metadata")  # the order work is taken in: finish files first
-MODEL_STAGES = ("ocr", "classify", "metadata")  # ask a model (paused by watch.pause, gated by memory)
+STAGES = ("index", "read", "match", "classify", "extract")  # the order work is taken in: finish files first
+MODEL_STAGES = ("read", "classify", "extract")  # ask a model (paused by watch.pause, gated by memory)
 RETRY_S = (3600, 4 * 3600, 16 * 3600)  # after the 1st, 2nd, 3rd failure; the 4th gives up
 MAX_ATTEMPTS = len(RETRY_S) + 1
 
@@ -178,7 +178,7 @@ class Queue:
         per_item = per_item or {}
         total = 0.0
         for stage, n in self.counts().items():
-            if stage in ("failed", "triage") or not n:
+            if stage == "failed" or not n:
                 continue
             est = per_item.get(stage)
             est = self.median_s(stage) if est is None else est

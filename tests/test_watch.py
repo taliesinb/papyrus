@@ -256,7 +256,7 @@ def test_new_file_is_ingested_once_settled_and_processed(tmp_path):
     clock.advance(3)
     w.pump()
     f1 = conn.execute("SELECT * FROM files").fetchone()
-    assert f1["triage_status"] == "done" and f1["stored_path"] and f1["fulltext_status"] == "done"
+    assert f1["classify_status"] == "done" and f1["stored_path"] and f1["index_status"] == "done"
     work = conn.execute("SELECT * FROM works").fetchone()
     assert work["title"] == "A Study of Things"
     ctx = conn.execute("SELECT * FROM contexts").fetchone()
@@ -389,9 +389,9 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert be.prompts == [] and mem.calls == 1
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"  # not an error
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "pending"  # not an error
     status = json.loads(w.status_path.read_text())
-    assert status["state"] == WAITING_MEMORY and status["pending"]["triage"] == 1 and status["retry_at"]
+    assert status["state"] == WAITING_MEMORY and status["pending"]["classify"] == 1 and status["retry_at"]
     assert _runs(conn)[-1][1]["backoff_waiting-memory"] == 1
     w.pump()  # still backing off: no batch, no model call
     assert mem.calls == 1 and len(_runs(conn)) == 1
@@ -401,7 +401,7 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     mem.level = "normal"
     clock.advance(61)
     w.pump()
-    assert len(be.prompts) == 1 and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert len(be.prompts) == 1 and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert json.loads(w.status_path.read_text())["state"] == IDLE
 
 
@@ -413,12 +413,12 @@ def test_pausing_model_work_keeps_adding_files(tmp_path):
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1  # added
-    assert be.prompts == [] and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert be.prompts == [] and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "pending"
     status = json.loads(w.status_path.read_text())
-    assert status["state"] == "paused" and status["paused"] is True and status["pending"]["triage"] == 1
+    assert status["state"] == "paused" and status["paused"] is True and status["pending"]["classify"] == 1
     CliRunner().invoke(main, ["watch", "--resume"])
     w.pump()  # notices the resume, triages
-    assert len(be.prompts) == 1 and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert len(be.prompts) == 1 and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert json.loads(w.status_path.read_text())["state"] == IDLE
     assert any(m == "model work resumed" for m in logs)
 
@@ -426,14 +426,14 @@ def test_pausing_model_work_keeps_adding_files(tmp_path):
 def test_an_ocr_back_off_does_not_hold_triage(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path)
     _pdf(dl / "a.pdf", "Lecture notes on things")
-    w.backoffs["ocr"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
+    w.backoffs["read"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
     w.catch_up()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     w.backoffs["classify"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
-    conn.execute("UPDATE files SET triage_status='pending'")
+    conn.execute("UPDATE files SET classify_status='pending', extract_status='pending'")
     w.dirty = True
     w.pump()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "pending"
     assert json.loads(w.status_path.read_text())["state"] == WAITING_MEMORY
 
 
@@ -445,7 +445,7 @@ def test_apple_refusal_under_memory_pressure_is_a_back_off(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, backend=Busy(PAPER))
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "classified"  # extraction waits
+    assert conn.execute("SELECT extract_status FROM files").fetchone()[0] == "pending"  # extraction waits
     assert w.state == WAITING_MEMORY
 
 
@@ -458,7 +458,7 @@ def test_extract_and_enrich_go_on_while_model_work_waits(tmp_path):
     conn.execute("INSERT INTO file_works(file_id, work_id, relation, source) VALUES (1, 1, 'full', 'test')")
     w.dirty = True
     w.pump()
-    assert conn.execute("SELECT fulltext_status FROM files").fetchone()[0] == "done"
+    assert conn.execute("SELECT index_status FROM files").fetchone()[0] == "done"
     assert conn.execute("SELECT count(*) FROM assertions WHERE field='match_candidates'").fetchone()[0] == 1
 
 
@@ -469,7 +469,7 @@ def test_no_classifier_means_no_triage(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, models=models)
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "pending"
     assert w.state == LMSTUDIO_UNAVAILABLE
 
 
@@ -501,7 +501,7 @@ def test_sigterm_closes_the_run_as_interrupted(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         w.run()
     assert _runs(conn)[-1][1]["status"] == "interrupted"
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "classified"  # extraction interrupted
+    assert conn.execute("SELECT extract_status FROM files").fetchone()[0] == "pending"  # extraction interrupted
     assert json.loads(w.status_path.read_text())["state"] == STOPPED and w.watcher.closed
 
 
@@ -548,11 +548,11 @@ def test_triage_classifies_everything_before_extracting(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path)
     w.catch_up()
     assert order == ["classify"] * 3 + ["extract"] * 3  # one question a file, then extraction
-    assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["done"]
+    assert [r[0] for r in conn.execute("SELECT DISTINCT extract_status FROM files")] == ["done"]
     assert conn.execute("SELECT count(*) FROM file_works").fetchone()[0] == 3  # (one work: the same fake title)
     # normal memory pressure: the second model loads beside the first, nothing is unloaded
     assert lm.unloaded == [] and sorted(lm.loaded) == ["big-classifier", "small-extractor"]
-    assert "triage phase: metadata" in logs
+    assert "model phase: extract" in logs
 
 
 def test_under_pressure_the_watcher_swaps_its_own_models(tmp_path):
@@ -569,7 +569,7 @@ def test_a_model_the_user_loaded_is_not_swapped_out(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])  # theirs
     w.catch_up()
     assert order == ["classify"] * 3 and lm.unloaded == []  # extraction waits for its model
-    assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["classified"]
+    assert [r[0] for r in conn.execute("SELECT DISTINCT extract_status FROM files")] == ["pending"]
     assert json.loads(w.status_path.read_text())["state"] == LMSTUDIO_UNAVAILABLE
 
 
@@ -823,14 +823,14 @@ def test_the_performance_log_times_every_file_and_step(tmp_path):
     w.catch_up()
     evs = events.read(w.status_path.with_name(events.NAME))
     kinds = [e["event"] for e in evs]
-    assert kinds.count("ingest") == 3 and kinds[-1] == "drained" and "models" in kinds and "model" in kinds
+    assert kinds.count("scan") == 3 and kinds[-1] == "drained" and "models" in kinds and "model" in kinds
     steps = [e for e in evs if e["event"] == "step"]
-    assert {e["stage"] for e in steps} >= {"classify", "metadata"} and all("ms" in e for e in steps)
+    assert {e["stage"] for e in steps} >= {"classify", "extract"} and all("ms" in e for e in steps)
     assert all(e["result"] == "library" for e in steps if e["stage"] == "classify")
     drained = evs[-1]
-    assert drained["added"] == 3 and drained["steps"]["classify"] == 3 and drained["steps"]["metadata"] == 3
+    assert drained["added"] == 3 and drained["steps"]["classify"] == 3 and drained["steps"]["extract"] == 3
     text = events.summary(evs)
-    assert "classify" in text and "metadata" in text and "queue drained" in text and "library 3" in text
+    assert "classify" in text and "extract" in text and "queue drained" in text and "library 3" in text
     raw = w.status_path.with_name(events.NAME).read_text()
     assert str(tmp_path) not in raw and "Lecture" not in raw and ".pdf" not in raw  # ids and timings only
 
@@ -841,15 +841,15 @@ def test_status_lists_each_stage_with_its_average_and_time_left(tmp_path):
     stages = {s["stage"]: s for s in json.loads(w.status_path.read_text())["stages"]}
     assert stages["classify"]["state"] == "active" and stages["classify"]["pending"] == 1
     assert stages["classify"]["per_item_s"] is not None and stages["classify"]["eta_s"] is not None
-    assert stages["metadata"]["state"] == "pending" and stages["metadata"]["pending"] == 2
-    assert stages["metadata"]["per_item_s"] is None  # no history yet
-    assert [s for s in stages] == ["classify", "metadata"]  # pipeline order, only stages with work
+    assert stages["extract"]["state"] == "pending" and stages["extract"]["pending"] == 2
+    assert stages["extract"]["per_item_s"] is None  # no history yet
+    assert [s for s in stages] == ["classify", "extract"]  # pipeline order, only stages with work
     # a stage stays active while other stages' steps come in between (e.g. a document's full text)
-    w.last_worked["metadata"] = w.clock()
+    w.last_worked["extract"] = w.clock()
     w.clock.advance(10)
-    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["metadata"] == "active"
+    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["extract"] == "active"
     w.clock.advance(31)
-    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["metadata"] == "pending"
+    assert {s["stage"]: s["state"] for s in w.stages(w.pending())}["extract"] == "pending"
     w.pause_path.touch()
     w._settle()
     assert {s["state"] for s in json.loads(w.status_path.read_text())["stages"]} == {"paused"}
@@ -858,10 +858,10 @@ def test_status_lists_each_stage_with_its_average_and_time_left(tmp_path):
 def test_a_stage_average_starts_from_the_performance_log(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path)
     for ms in (2000, 4000):
-        w.events.emit("step", stage="metadata", id=1, ms=ms, outcome="done")
-    assert w.per_item_s("metadata") == 3.0
-    w._average("metadata", 8.0)
-    assert w.per_item_s("metadata") == pytest.approx(0.2 * 8 + 0.8 * 3)
+        w.events.emit("step", stage="extract", id=1, ms=ms, outcome="done")
+    assert w.per_item_s("extract") == 3.0
+    w._average("extract", 8.0)
+    assert w.per_item_s("extract") == pytest.approx(0.2 * 8 + 0.8 * 3)
 
 
 def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypatch):
@@ -872,8 +872,20 @@ def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypat
     w, conn, dl, clock, logs = _watch(tmp_path)
     _pdf(dl / "a.pdf", "Lecture notes on things", old=True)
     w.catch_up()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"  # triage went on
-    until, state, reason = w.backoffs["enrich"]
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"  # triage went on
+    until, state, reason = w.backoffs["match"]
     assert state == "rate-limited" and reason == "rate limited by OpenAlex" and until - clock() == 300
     stages = {s["stage"]: s for s in json.loads(w.status_path.read_text())["stages"]}
-    assert stages["enrich"]["state"] == "waiting" and stages["enrich"]["reason"] == "rate limited by OpenAlex"
+    assert stages["match"]["state"] == "waiting" and stages["match"]["reason"] == "rate limited by OpenAlex"
+
+
+def test_status_counts_files_ingested_since_the_watcher_woke(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    w.batch("startup", catch_up=True, limit=2)  # three files added, two classified
+    assert json.loads(w.status_path.read_text())["ingesting"] == {"done": 0, "total": 3}
+    w.batch("more", limit=4)  # the third classified, then two extracted, promoted, indexed, matched
+    ing = json.loads(w.status_path.read_text())["ingesting"]
+    assert ing["total"] == 3 and 0 < ing["done"] < 3
+    w.catch_up()
+    status = json.loads(w.status_path.read_text())
+    assert status["ingesting"] is None and status["stages"] == []  # the menu: "Watching for new files"

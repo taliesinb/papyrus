@@ -256,17 +256,17 @@ def test_cli_process_triages_promotes_and_enriches_new_files(tmp_path, monkeypat
     client, _ = _web(tmp_path)
     h.set_default_client(client)
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(dict(PAPER, title="Polygraphs")))
-    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")  # triage refuses to run without a classifier otherwise
+    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")  # classify refuses to run without a classifier otherwise
     enriched = []
     monkeypatch.setattr(pipeline, "match_work", lambda conn, wid, run_id=None: enriched.append(wid) or
                         {"status": "nomatch"})
     try:
-        r = CliRunner().invoke(main, ["--db", str(tmp_path / "t.sqlite"), "download", "--process",
+        r = CliRunner().invoke(main, ["--db", str(tmp_path / "t.sqlite"), "download", "--ingest",
                                       "https://arxiv.org/abs/2312.00429", "https://nope.example/x.pdf"])
     finally:
         h.set_default_client(None)
     assert r.exit_code == 0, r.output
-    assert "triaging 1 files" in r.output and "failed=1" in r.output
+    assert "classifying 1 files" in r.output and "failed=1" in r.output
     assert enriched == [1]
     conn = db.connect(tmp_path / "t.sqlite")
     assert conn.execute("SELECT title FROM works").fetchone()[0] == "Polygraphs"

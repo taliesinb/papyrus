@@ -103,7 +103,7 @@ def test_unsure_personal_file_is_held_and_purge_command(tmp_path, monkeypatch):
     r = CliRunner().invoke(main, ["purge", "1"])  # the user's decision
     assert r.exit_code == 0 and "purged=1" in r.output, r.output
     assert db.current_assertions(conn, "file", 1)["purged"][0]["value"] == {"by": "user"}
-    assert CliRunner().invoke(main, ["files"]).output.split()[3] == "purged"
+    assert CliRunner().invoke(main, ["files"]).output.split()[2] == "purged"
 
 
 def test_purging_a_works_only_file_strips_the_work(tmp_path):
@@ -127,7 +127,7 @@ def test_confirmed_work_and_user_claim_are_never_purged(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPYRUS_DB", str(tmp_path / "t.sqlite"))
     r = CliRunner().invoke(main, ["keep", "1"])  # the user says it's library material
     assert r.exit_code == 0 and "requeued" in r.output, r.output  # held: no title yet
-    assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "classified"
+    assert conn.execute("SELECT extract_status FROM files WHERE id=1").fetchone()[0] == "pending"
     classify_and_extract(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=1.0))  # the classifier disagrees
     assert promote_file(conn, 1)[0] == "created"
     assert purge.verdict(conn, 1) is None and promote_file(conn, 1)[0] == "already_linked"
@@ -146,7 +146,7 @@ def test_keep_path_brings_back_a_purged_file(tmp_path, monkeypatch):
     r = CliRunner().invoke(main, ["keep", str(path)])
     assert r.exit_code == 0 and "restored (file 1)" in r.output, r.output
     f = conn.execute("SELECT * FROM files WHERE id=1").fetchone()
-    assert f["purged_at"] is None and f["triage_status"] == "pending" and store.is_stored(f["stored_path"], f["size"])
+    assert f["purged_at"] is None and f["classify_status"] == "pending" and store.is_stored(f["stored_path"], f["size"])
     assert conn.execute("SELECT count(*) FROM file_pages WHERE file_id=1").fetchone()[0] == 1
     assert conn.execute("SELECT locator FROM contexts").fetchone()[0] == str(path.resolve())
     classify_and_extract(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=1.0))

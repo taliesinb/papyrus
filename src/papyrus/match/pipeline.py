@@ -333,7 +333,7 @@ def reset_match(conn: sqlite3.Connection, work_id: int) -> None:
         conn.execute("DELETE FROM work_authors WHERE work_id=? AND source=?", (work_id, MATCH_SOURCE))
         conn.execute("UPDATE work_authors SET person_id=NULL WHERE work_id=?", (work_id,))
         conn.execute("DELETE FROM work_ids WHERE work_id=? AND source LIKE 'api:%'", (work_id,))
-        conn.execute("DELETE FROM work_topics WHERE work_id=? AND source<>'triage'", (work_id,))
+        conn.execute("DELETE FROM work_topics WHERE work_id=? AND source<>'extract'", (work_id,))
         conn.execute("UPDATE works SET venue=NULL, date=NULL, updated_at=? WHERE id=?", (now, work_id))
         works.reindex_work(conn, work_id)
 

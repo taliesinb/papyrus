@@ -30,7 +30,7 @@ export interface FileRef {
 	version: string | null;
 	pageCount: number | null;
 	size: number;
-	textStatus: string;
+	readStatus: string;
 	filename: string | null;
 	available: boolean;
 }
@@ -149,10 +149,12 @@ export interface WatchStatus {
 	detail: string;
 	retryAt: string | null;
 	/** The watcher's queue: items per stage, due or waiting for a retry. */
-	/** `triage` is classify + metadata, the two triage phases. */
-	pending: { triage: number; classify?: number; metadata?: number; extract: number; enrich: number; ocr: number } | null;
-	/** The triage phase in progress: classify | metadata. */
+	/** Queue items per stage. */
+	pending: { read: number; classify: number; extract: number; index: number; match: number } | null;
+	/** The model phase in progress: classify | extract. */
 	phase?: string;
+	/** Since the watcher woke up: files through the pipeline (or set aside), of those in it. */
+	ingesting: { done: number; total: number } | null;
 	/** Items the queue gave up on (`papyrus watch --retry-failed`). */
 	failed: number;
 	/** Seconds of work left, from past timings; null while there is no history. */

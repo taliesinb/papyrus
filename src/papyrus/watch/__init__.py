@@ -6,7 +6,7 @@
 * `models.py`: which LM Studio models the watcher may ask for, and which it may unload;
 * `daemon.py`: the loop, its recorded runs, the status file.
 
-The pipeline itself is the CLI's: `scan.ingest_path` → `triage.triage_file` →
+The pipeline itself is the CLI's: `scan.scan_path` → `triage.triage_file` →
 `works.promote_file` → `fulltext.process` → `enrich.pipeline.match_work`.
 """
 

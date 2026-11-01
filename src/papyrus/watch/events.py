@@ -4,10 +4,10 @@ Every line has `t` (UTC, ISO 8601, milliseconds) and `event`:
 
     start     pid, dirs, prompt_version
     models    extract, classify, screen (model tags, when a batch first needs them)
-    ingest    id, outcome (new | dup | purged_skipped | ...), ms   (a file added: snapshot, hash, first pages)
-    step      stage (extract | ocr | enrich | classify | metadata), id, ms, outcome (done | no_progress |
+    scan      id, outcome (new | dup | purged_skipped | ...), ms   (a file added: snapshot, hash, first pages)
+    step      stage (read | classify | extract | index | match), id, ms, outcome (done | no_progress |
               backoff | error), phase, and for classify: result (screened | library | not_library),
-              p_personal; for metadata: cached
+              p_personal; for extract: cached
     model     msg (a model loaded, unloaded or swapped, from watch/models.ModelLedger)
     backoff   stage, state, reason, delay_s
     drained   the queue went empty: busy_s since the work started, steps per stage, files added
@@ -83,7 +83,7 @@ def summary(events: list[dict[str, Any]], all_sessions: bool = False) -> str:
         starts = [i for i, e in enumerate(events) if e.get("event") == "start"]
         events = events[starts[-1]:] if starts else events
     first, last = _t(events[0]), _t(events[-1])
-    work = [e for e in events if e.get("event") in ("ingest", "step")]
+    work = [e for e in events if e.get("event") in ("scan", "step")]
     lines = [f"session from {events[0]['t']} to {events[-1]['t']} ({last - first:.0f} s)"]
     if work:
         w0, w1 = _t(work[0]), _t(work[-1])
@@ -94,7 +94,7 @@ def summary(events: list[dict[str, Any]], all_sessions: bool = False) -> str:
         if e.get("event") == "models":
             lines.append("models: " + ", ".join(f"{k} {v}" for k, v in e.items() if k not in ("t", "event") and v))
             break
-    ingests = [e for e in events if e.get("event") == "ingest"]
+    ingests = [e for e in events if e.get("event") == "scan"]
     if ingests:
         lines.append("")
         lines.append("files added   " + _secs([e.get("ms", 0) for e in ingests]))
@@ -105,7 +105,7 @@ def summary(events: list[dict[str, Any]], all_sessions: bool = False) -> str:
         by = defaultdict(list)
         for e in steps:
             by[e["stage"]].append(e)
-        for stage in ("classify", "metadata", "extract", "ocr", "enrich"):
+        for stage in ("read", "classify", "extract", "index", "match"):
             es = by.get(stage) or []
             if not es:
                 continue

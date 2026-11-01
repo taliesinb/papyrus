@@ -106,11 +106,11 @@ def scan(ctx: click.Context, roots: tuple[Path, ...], recursive: bool, max_depth
 @click.option("-n", "--dry-run", is_flag=True, help="Only show the parsed links and what would be fetched.")
 @click.option("--refetch", is_flag=True, help="Fetch even URLs that are already in the library.")
 @click.option("-j", "--jobs", default=4, show_default=True, help="Hosts fetched in parallel.")
-@click.option("--process", "and_process", is_flag=True,
-              help="Then triage, promote and enrich the new files (see `papyrus process`).")
+@click.option("--ingest", "and_ingest", is_flag=True,
+              help="Then ingest the new files (see `papyrus ingest`).")
 @click.pass_context
 def download(ctx: click.Context, urls: tuple[str, ...], clipboard: bool, from_stdin: bool,
-             files: tuple, dry_run: bool, refetch: bool, jobs: int, and_process: bool) -> None:
+             files: tuple, dry_run: bool, refetch: bool, jobs: int, and_ingest: bool) -> None:
     """Download documents from URLs into the library's store.
 
     Links can be given as arguments, with -c/--clipboard, - or --stdin, and -f/--file; as
@@ -169,8 +169,8 @@ def download(ctx: click.Context, urls: tuple[str, ...], clipboard: bool, from_st
     stats, outcomes = do_download(conn, links, jobs=jobs, refetch=refetch, progress=progress)
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
     new_ids = sorted({o.file_id for o in outcomes if o.state == "new" and o.file_id})
-    if and_process and new_ids:
-        ctx.invoke(process, file_ids=tuple(new_ids))
+    if and_ingest and new_ids:
+        ctx.invoke(ingest, file_ids=tuple(new_ids))
 
 
 @main.command("store")
@@ -189,76 +189,70 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
     click.echo(f"store: {store.root()}\n" + " ".join(f"{k}={v}" for k, v in sorted(stats.items())))
 
 
+def _purged_skipped(conn: sqlite3.Connection, file_ids: tuple[int, ...]) -> list[int]:
+    purged = {r[0] for r in conn.execute(
+        f"SELECT id FROM files WHERE purged_at IS NOT NULL AND id IN ({','.join('?' * len(file_ids))})", file_ids)}
+    if purged:
+        click.echo(f"skipping purged files: {' '.join(map(str, sorted(purged)))}", err=True)
+    return [i for i in file_ids if i not in purged]
+
+
 @main.command()
 @click.argument("file_ids", nargs=-1, type=int)
-@click.option("--backend", default=None,
-              help="Extraction model: auto | lmstudio[:model] | apple  [default: from config, else auto]")
 @click.option("--classifier", "--decider", "classifier_spec", default=None,
-              help="Jev-style classifier for kind/is-library: auto | none | lmstudio[:model] | jev:<url>  "
+              help="Classifier (kind, so library or personal): auto | none | lmstudio[:model] | jev:<url>  "
                    "[default: from config, else auto]")
-@click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
+@click.option("--all", "redo_all", is_flag=True, help="Classify files already classified, too.")
 @click.option("--fresh", is_flag=True, help="Ask the models even where the inference cache has the answer.")
-@click.option("--no-screen", is_flag=True, help="Skip the fast first stage: ask the language models about every file.")
+@click.option("--no-screen", is_flag=True, help="Skip the screen: ask the classifier about every file.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
-           redo_all: bool, fresh: bool, no_screen: bool, limit: int | None) -> None:
-    """Ask local models what each file is: first the classifier (kind, library or personal) for
-    every pending file, then the extraction model (title, authors, abstract, summary, topics...)
-    for those it classified as library material. Personal paperwork gets no metadata.
+def classify(ctx: click.Context, file_ids: tuple[int, ...], classifier_spec: str | None, redo_all: bool,
+             fresh: bool, no_screen: bool, limit: int | None) -> None:
+    """Classify each file: what kind of document it is, so whether it is library material.
 
-    The backend and classifier come from --backend/--classifier, else PAPYRUS_BACKEND/PAPYRUS_CLASSIFIER,
-    else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
-    if it is off. Triage stops if no classifier is available, unless the classifier is 'none'.
-    Answers go through the inference cache (<home>/inference.sqlite): a question already asked
-    about the same text is answered from it (marked 'cached').
-
-    First, the screen (a small embedding model, ~30 ms a file) sets aside files it is sure are
+    First the screen (a small embedding model, ~30 ms a file) sets aside files it is sure are
     personal paperwork: they are held for review (`papyrus purge --dry-run`) without asking the
-    language models. Turn it off with --no-screen, `[screen] enabled = false` or PAPYRUS_SCREEN=0."""
+    classifier. Turn it off with --no-screen, `[screen] enabled = false` or PAPYRUS_SCREEN=0. Then
+    the classifier. Library material goes on to `papyrus extract`; anything else gets no metadata.
+
+    The classifier comes from --classifier, else PAPYRUS_CLASSIFIER, else <home>/config.toml (see
+    `papyrus config`), else auto. LM Studio's server is started if it is off. Classifying stops
+    if no classifier is available, unless it is 'none' (then every file goes on to extraction,
+    whose own yes/no is unreliable). Answers go through the inference cache (<home>/inference.sqlite)."""
     from . import config, inference
-    from .llm import get_backend
-    from .llm.base import BackendUnavailable
     from .classify import classify_file
     from .describe import PROMPT_VERSION
-    from .extract import extract_metadata
+    from .llm.base import BackendUnavailable
     from .watch.system import memory_pressure
 
     conn = _conn(ctx)
     try:
-        backend, classifier_spec = config.backend(backend), config.classifier(classifier_spec)
-        be = get_backend(backend)
-    except (config.ConfigError, BackendUnavailable) as e:
+        classifier_spec = config.classifier(classifier_spec)
+    except config.ConfigError as e:
         raise click.ClickException(str(e)) from e
-    dec = None
+    clf = None
     if classifier_spec != "none":
         from .llm.classify import get_classifier
         try:
-            dec = get_classifier(None if classifier_spec == "auto" else classifier_spec)
-            if not dec.available():
-                raise BackendUnavailable(f"classifier {dec.info().tag} is not available")
+            clf = get_classifier(None if classifier_spec == "auto" else classifier_spec)
+            if not clf.available():
+                raise BackendUnavailable(f"classifier {clf.info().tag} is not available")
         except BackendUnavailable as e:
             # Without a classifier, kind and library-vs-personal rest on the extraction model's own
             # answers, which proved unreliable (exam papers and a CV promoted to works).
             raise click.ClickException(
-                f"no classifier: {e}.\nTriage without one misjudges personal vs library documents. "
+                f"no classifier: {e}.\nWithout one, personal and library documents are told apart badly. "
                 f"Start LM Studio, or pass --classifier none (or set classifier = \"none\" in "
-                f"{config.path()}) to triage anyway.") from e
-    if file_ids:  # purged files have nothing left to triage
-        purged = {r[0] for r in conn.execute(
-            f"SELECT id FROM files WHERE purged_at IS NOT NULL AND id IN ({','.join('?' * len(file_ids))})", file_ids)}
-        if purged:
-            click.echo(f"skipping purged files: {' '.join(map(str, sorted(purged)))}", err=True)
-        ids = [i for i in file_ids if i not in purged]
+                f"{config.path()}) to go on anyway.") from e
+    if file_ids:
+        ids = _purged_skipped(conn, file_ids)
     else:
-        where = ("text_status IN ('ok','no_text') AND purged_at IS NULL"
-                 + ("" if redo_all else " AND triage_status<>'done'"))
+        where = ("read_status IN ('ok','no_text') AND purged_at IS NULL"
+                 + ("" if redo_all else " AND classify_status <> 'done'"))
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
-    # Already classified (an earlier run stopped between the phases): straight to extraction.
-    classified = {r[0] for r in conn.execute("SELECT id FROM files WHERE triage_status='classified'")} if not redo_all else set()
     ids = ids[:limit] if limit else ids
-    be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
-    dec = inference.cached_classifier(dec, fresh=fresh, pressure=memory_pressure) if dec else None
+    clf = inference.cached_classifier(clf, fresh=fresh, pressure=memory_pressure) if clf else None
     scr = None
     if not no_screen and ids:
         from .screen import get_screen
@@ -268,60 +262,99 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
         except (config.ConfigError, OSError, ValueError) as e:
             raise click.ClickException(f"screen: {e}") from e
         if scr is None and config.screen().enabled:
-            click.echo("(screen unavailable: LM Studio doesn't offer its embedding model; asking the language "
-                       "models about every file)", err=True)
+            click.echo("(screen unavailable: LM Studio doesn't offer its embedding model; asking the classifier "
+                       "about every file)", err=True)
         if scr is not None:
             scr.embedder = inference.cached_embedder(scr.embedder, fresh=fresh, pressure=memory_pressure)
-    click.echo(f"triaging {len(ids)} files with " + (f"{scr.tag} (P >= {scr.threshold:g}), then " if scr else "")
-               + be.info().tag + (f" + {dec.info().tag}" if dec else ""))
-    with db.recorded_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag,
+    click.echo(f"classifying {len(ids)} files with " + (f"{scr.tag} (P >= {scr.threshold:g}), then " if scr else "")
+               + (clf.info().tag if clf else "no classifier"))
+    with db.recorded_run(conn, "classify", {"files": len(ids)}, backend=clf.info().tag if clf else None,
                          prompt_version=PROMPT_VERSION) as (run_id, stats):
         stats.update(ok=0, error=0)
-        # Phase 1: classify every file (one model), phase 2: extract metadata for those classified
-        # as library material (possibly another model): each model is used once, not per file.
-        to_extract = [fid for fid in ids if fid in classified]
-        for fid in [i for i in ids if i not in classified]:
+        for fid in ids:
             try:
-                r = classify_file(conn, fid, dec, run_id=run_id, screen=scr)
+                r = classify_file(conn, fid, clf, run_id=run_id, screen=scr)
             except Exception as e:  # keep going; record the failure
                 stats["error"] += 1
-                conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (fid,))
+                conn.execute("UPDATE files SET classify_status='error' WHERE id=?", (fid,))
                 click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
                 continue
             stats["ok"] += 1
             if r.get("screened"):
                 stats["screened"] = stats.get("screened", 0) + 1
-                s = r["screen"]
-                click.echo(f"{fid:5} - {'personal':13} {s['screen_s']:5.2f}s screen P(personal)={s['p_personal']:.2f}")
+                sc = r["screen"]
+                click.echo(f"{fid:5} - {'personal':13} {sc['screen_s']:5.2f}s screen P(personal)={sc['p_personal']:.2f}")
                 continue
             kind = r.get("kind", ("?",))[0]
             took = f"{r.get('classify_s', 0):5.1f}s" if "classify_s" in r else "     -"
             if r["status"] == "classified":
-                to_extract.append(fid)
-                click.echo(f"{fid:5} + {kind:13} {took:>6} classified")
+                stats["library"] = stats.get("library", 0) + 1
+                click.echo(f"{fid:5} + {kind:13} {took:>6}")
             else:
                 stats["not_library"] = stats.get("not_library", 0) + 1
                 click.echo(f"{fid:5} - {kind:13} {took:>6} P(personal)={r['p_personal']:.2f}: no metadata")
-        if to_extract:
-            click.echo(f"extracting metadata of {len(to_extract)} files with {be.info().tag}")
-        for fid in to_extract:
+    click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
+
+
+@main.command()
+@click.argument("file_ids", nargs=-1, type=int)
+@click.option("--backend", default=None,
+              help="Extraction model: auto | lmstudio[:model] | apple  [default: from config, else auto]")
+@click.option("--all", "redo_all", is_flag=True, help="Extract the metadata of library files already extracted, too.")
+@click.option("--fresh", is_flag=True, help="Ask the model even where the inference cache has the answer.")
+@click.option("-n", "--limit", type=int)
+@click.pass_context
+def extract(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, redo_all: bool, fresh: bool,
+            limit: int | None) -> None:
+    """Extract the bibliographic metadata (title, authors, year, venue, abstract, summary,
+    topics) of the files `papyrus classify` kept as library material, with the extraction model.
+
+    The model comes from --backend, else PAPYRUS_BACKEND, else <home>/config.toml, else auto.
+    Answers go through the inference cache (marked 'cached')."""
+    from . import config, inference
+    from .describe import PROMPT_VERSION
+    from .extract import extract_metadata
+    from .llm import get_backend
+    from .llm.base import BackendUnavailable
+    from .watch.system import memory_pressure
+
+    conn = _conn(ctx)
+    try:
+        be = get_backend(config.backend(backend))
+    except (config.ConfigError, BackendUnavailable) as e:
+        raise click.ClickException(str(e)) from e
+    if file_ids:
+        ids = _purged_skipped(conn, file_ids)
+    else:
+        states = "('pending', 'done')" if redo_all else "('pending')"
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM files WHERE purged_at IS NULL AND classify_status = 'done'"
+            f" AND extract_status IN {states} ORDER BY id")]
+    ids = ids[:limit] if limit else ids
+    be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
+    click.echo(f"extracting the metadata of {len(ids)} files with {be.info().tag}")
+    with db.recorded_run(conn, "extract", {"files": len(ids)}, backend=be.info().tag,
+                         prompt_version=PROMPT_VERSION) as (run_id, stats):
+        stats.update(ok=0, error=0)
+        for fid in ids:
             try:
                 r = extract_metadata(conn, fid, be, run_id=run_id)
-            except Exception as e:  # stays 'classified': the next run extracts it
+            except Exception as e:  # stays pending: the next run extracts it
                 stats["error"] += 1
                 click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
                 continue
+            stats["ok"] += 1
             e = r["extracted"]
             took = "cached" if r.get("cached") else f"{r['extract_s']:5.1f}s"
-            click.echo(f"{fid:5} + {'metadata':13} {took:>6} {r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
+            click.echo(f"{fid:5} {took:>6} {r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 
 @main.command()
 @click.pass_context
 def promote(ctx: click.Context) -> None:
-    """Create/link works from triaged files (dedupes by arXiv/DOI/ISBN and title); purge files
-    that are surely personal paperwork (P(kind=personal) >= 0.9), hold the less sure ones."""
+    """Create/link works from classified and extracted files (dedupes by arXiv/DOI/ISBN and title);
+    purge files that are surely personal paperwork (P(kind=personal) >= 0.9), hold the less sure ones."""
     from .works import promote_all
     stats = promote_all(_conn(ctx))
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
@@ -334,7 +367,7 @@ def promote(ctx: click.Context) -> None:
 def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> None:
     """Erase personal paperwork from the library, down to a tombstone (sha256, size, URL).
 
-    Without FILE_IDS: every triaged file the classifier is sure is personal (P(kind=personal) >= 0.9;
+    Without FILE_IDS: every classified file the classifier is sure is personal (P(kind=personal) >= 0.9;
     promote already does this as it goes), and a list of the files held for review (personal,
     but less sure). With FILE_IDS: those files, as your decision. Page text, paths, filenames,
     PDF metadata, model claims and the stored copy are erased; the same bytes are skipped from
@@ -386,7 +419,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
 @click.argument("targets", nargs=-1, required=True)
 @click.pass_context
 def keep_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
-    """Mark files as library material whatever triage said: TARGETS are file ids, or paths of
+    """Mark files as library material whatever the classifier said: TARGETS are file ids, or paths of
     originals (which also brings back a purged file: its copy, first pages and path)."""
     from . import purge
 
@@ -409,25 +442,26 @@ def keep_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
                 action, fid = purge.restore(conn, p, run_id)
                 where = f" (file {fid})" if fid and action == "restored" else ""
             stats[action] = stats.get(action, 0) + 1
-            hint = {"restored": "; now `papyrus process` triages it", "no_title": "; `papyrus process` triages it",
-                    "requeued": "; the screen had set it aside: `papyrus process` triages it in full",
+            hint = {"restored": "; now `papyrus ingest` ingests it", "no_title": "; `papyrus ingest` extracts it",
+                    "requeued": "; `papyrus ingest` extracts its metadata",
                     "unknown": "; not in the library: `papyrus scan` it"}.get(action, "")
             click.echo(f"{t}: {action}{where}{hint}")
 
 
 @main.command()
 @click.argument("file_ids", nargs=-1, type=int)
-@click.option("--all", "redo_all", is_flag=True, help="Re-read the text layer of files already extracted.")
+@click.option("--all", "redo_all", is_flag=True, help="Re-read the text layer of files already indexed.")
 @click.option("--no-ocr", is_flag=True, help="Skip OCR of pages without a text layer.")
 @click.option("-v", "--verbose", is_flag=True)
 @click.pass_context
-def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_ocr: bool, verbose: bool) -> None:
-    """Read every page of the files of live works into the full-text index.
+def index(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_ocr: bool, verbose: bool) -> None:
+    """Index every page of the files of live works for full-text search (and read with OCR the
+    pages that have no text layer).
 
-    Scanning reads only the first pages (for triage). This reads the rest, labels references,
+    Scanning reads only the first pages (for classifying). This reads the rest, labels references,
     index and contents pages (they rank lower in search), keeps the PDF outline (to label hits
     with their section), and OCRs pages without a text layer with Apple Vision (needs the bridge
-    in tools/afm-bridge). Files of personal paperwork are not extracted unless given as FILE_IDS."""
+    in tools/afm-bridge). Files of personal paperwork are not indexed unless given as FILE_IDS."""
     from .index import run
 
     def progress(state: str, file_id: int, detail: str) -> None:
@@ -439,16 +473,16 @@ def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_oc
             click.echo(f"{file_id:5} {state:12} {detail}")
 
     stats = run(_conn(ctx), file_ids, redo=redo_all, ocr=not no_ocr, progress=progress)
-    click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())) or "nothing to extract")
+    click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())) or "nothing to index")
 
 
 @main.command()
 @click.argument("work_ids", nargs=-1, type=int)
-@click.option("--all", "redo_all", is_flag=True, help="Also re-enrich works that already have API data.")
-@click.option("--reset", is_flag=True, help="Undo previous enrichment of the given works first (keeps it as history).")
+@click.option("--all", "redo_all", is_flag=True, help="Also match works that already have API data.")
+@click.option("--reset", is_flag=True, help="Undo previous matches of the given works first (keeps them as history).")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
+def match(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
     """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
     identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
     from .match.pipeline import match_work, reset_match
@@ -464,7 +498,7 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
     else:
         ids = _unmatched_works(conn)
     ids = ids[:limit] if limit else ids
-    with db.recorded_run(conn, "enrich", {"works": len(ids), "reset": reset}) as (run_id, stats):
+    with db.recorded_run(conn, "match", {"works": len(ids), "reset": reset}) as (run_id, stats):
         for wid in ids:
             try:
                 if reset:
@@ -489,28 +523,31 @@ def _unmatched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -
 @main.command()
 @click.argument("file_ids", nargs=-1, type=int)
 @click.option("--backend", default=None,
-              help="Extraction model for triage: auto | lmstudio[:model] | apple  [default: from config, else auto]")
+              help="Extraction model: auto | lmstudio[:model] | apple  [default: from config, else auto]")
 @click.option("--classifier", "--decider", "classifier_spec", default=None,
-              help="Classifier for triage: auto | none | lmstudio[:model] | jev:<url>  [default: from config, else auto]")
-@click.option("-n", "--limit", type=int, help="Triage at most N pending files.")
+              help="Classifier: auto | none | lmstudio[:model] | jev:<url>  [default: from config, else auto]")
+@click.option("-n", "--limit", type=int, help="Classify at most N pending files.")
 @click.pass_context
-def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
-            limit: int | None) -> None:
-    """Triage, promote, extract and enrich whatever is pending: `triage && promote && extract && enrich`.
-    Promote purges what the classifier is sure is personal paperwork (see `papyrus purge`).
+def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
+           limit: int | None) -> None:
+    """Ingest whatever is pending, after `papyrus scan`: classify, extract, promote, index, match
+    (`papyrus watch` does the same as files arrive). Promote purges what the classifier is sure is
+    personal paperwork (see `papyrus purge`).
 
-    With FILE_IDS, triages those files and enriches only their works. Stops before promoting
-    if triage can't run (e.g. no classifier available)."""
-    click.echo("== triage")
-    ctx.invoke(triage, file_ids=file_ids, backend=backend, classifier_spec=classifier_spec, limit=limit)
+    With FILE_IDS, classifies and extracts those files and matches only their works. Stops before
+    promoting if classifying can't run (e.g. no classifier available)."""
+    click.echo("== classify")
+    ctx.invoke(classify, file_ids=file_ids, classifier_spec=classifier_spec, limit=limit)
+    click.echo("== extract")
+    ctx.invoke(extract, file_ids=file_ids, backend=backend)
     click.echo("== promote")
     ctx.invoke(promote)
-    click.echo("== extract")
-    ctx.invoke(extract)  # everything pending: new works' files, whether or not they were in FILE_IDS
+    click.echo("== index")
+    ctx.invoke(index)  # everything pending: new works' files, whether or not they were in FILE_IDS
     pending = _unmatched_works(_conn(ctx), file_ids)
-    click.echo(f"== enrich ({len(pending)} works)")
+    click.echo(f"== match ({len(pending)} works)")
     if pending:
-        ctx.invoke(enrich, work_ids=tuple(pending))
+        ctx.invoke(match, work_ids=tuple(pending))
 
 
 @main.command()
@@ -524,14 +561,14 @@ def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, 
 @click.option("--perf-all", "perf", flag_value="all", help="The same, over every session.")
 @click.option("--retry-failed", is_flag=True, help="Give the queue's failed items another round of attempts, and exit.")
 @click.option("--pause", "pause", flag_value=True, default=None,
-              help="Pause model work (triage, OCR) of this library's watcher, running or not, and exit. New "
+              help="Pause model work (read, classify, extract) of this library's watcher, running or not, and exit. New "
                    "files are still added. Lasts until --resume.")
 @click.option("--resume", "pause", flag_value=False, help="Resume model work, and exit.")
 @click.pass_context
 def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, show_status: bool, perf: str | None,
           retry_failed: bool, pause: bool | None) -> None:
     """Add new PDFs from ~/Downloads and ~/Desktop (config: [watch] dirs) as they appear, and
-    triage, promote, extract and enrich them one at a time, at background priority.
+    ingest them (read, classify, extract, promote, index, match), at background priority.
 
     Runs in the foreground; Papyrus Server.app (macOS) or a systemd user service (Linux) runs it
     in the background. One watcher per library. Model work waits under memory pressure, while
@@ -699,26 +736,29 @@ def show_work(ctx: click.Context, work_id: int) -> None:
 
 
 @main.command("files")
-@click.option("--status", help="Filter by triage status (pending/done/error).")
+@click.option("--status", help="Filter by classify status (pending/done/error).")
 @click.option("--json", "as_json", is_flag=True)
 @click.pass_context
 def list_files(ctx: click.Context, status: str | None, as_json: bool) -> None:
     """List known files with their current locations."""
     conn = _conn(ctx)
-    q = """SELECT f.id, f.page_count, f.text_status, f.triage_status, f.size, f.stored_path, f.purged_at,
+    q = """SELECT f.id, f.page_count, f.read_status, f.classify_status, f.extract_status, f.index_status, f.size,
+                  f.stored_path, f.purged_at,
                   (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
                     WHERE r.file_id=f.id AND c.kind='filesystem' AND c.missing_at IS NULL) AS paths,
                   (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
                     WHERE r.file_id=f.id AND c.kind='download') AS urls
-           FROM files f""" + (" WHERE f.triage_status=?" if status else "") + " ORDER BY f.id"
+           FROM files f""" + (" WHERE f.classify_status=?" if status else "") + " ORDER BY f.id"
     rows = [dict(r) for r in conn.execute(q, (status,) if status else ())]
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
     for r in rows:
         first = (r["paths"] or r["urls"] or r["stored_path"] or "(no current path)").split("\n")[0]
-        triage = "purged" if r["purged_at"] else r["triage_status"]
-        click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {r['text_status']:8} {triage:8} {first}")
+        state = ("purged" if r["purged_at"]
+                 else f"read {r['read_status']}, classify {r['classify_status']}, extract {r['extract_status']},"
+                      f" index {r['index_status']}")
+        click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {state}  {first}")
 
 
 def _page_line(h) -> str:
@@ -840,9 +880,9 @@ def stats(ctx: click.Context) -> None:
     conn = _conn(ctx)
     for table in ["files", "works", "people", "contexts", "context_refs", "assertions", "runs"]:
         click.echo(f"{table:14} {conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]}")
-    for r in conn.execute("SELECT text_status, triage_status, fulltext_status, count(*) n FROM files"
-                          " WHERE purged_at IS NULL GROUP BY 1, 2, 3"):
-        click.echo(f"  files text={r[0]} triage={r[1]} fulltext={r[2]}: {r[3]}")
+    for r in conn.execute("SELECT read_status, classify_status, extract_status, index_status, count(*) n FROM files"
+                          " WHERE purged_at IS NULL GROUP BY 1, 2, 3, 4"):
+        click.echo(f"  files read={r[0]} classify={r[1]} extract={r[2]} index={r[3]}: {r[4]}")
     click.echo(f"  files purged: {conn.execute('SELECT count(*) FROM files WHERE purged_at IS NOT NULL').fetchone()[0]}")
     for r in conn.execute("SELECT source, kind, count(*) FROM file_pages GROUP BY 1, 2 ORDER BY 1, 2"):
         click.echo(f"  pages {r[0]}/{r[1]}: {r[2]}")

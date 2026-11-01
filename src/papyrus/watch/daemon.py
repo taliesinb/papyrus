@@ -1,39 +1,44 @@
-"""`papyrus watch`: add new PDFs as they appear, then process them one at a time, out of the way.
+"""`papyrus watch`: ingest new PDFs as they appear, one step at a time, out of the way.
 
     start ─▶ catch-up batch: scan the watched directories once (events were missed while the
-       │     watcher was down), promote what was triaged but never promoted, process
+       │     watcher was down), promote what was classified and extracted but never promoted
        ▼
     loop ─▶ watcher events ─▶ Debouncer (settled files, gone paths) ─▶ batch
                          └──▶ pending work (after a back-off, every RECHECK_S) ──▶ batch
 
-A **batch** is one `db.recorded_run(conn, "watch", …)`: it ingests the settled files through
-`scan.ingest_path` (snapshot, sha256 dedupe, purged tombstones, provenance, exactly as `papyrus
-scan`), then works through pending steps, one item each, new files first:
+A **batch** is one `db.recorded_run(conn, "watch", …)`: it **scans** the settled files through
+`scan.scan_path` (snapshot, sha256 dedupe, purged tombstones, provenance, exactly as `papyrus
+scan`), then works through the pipeline's pending steps, one item each, new files first:
 
-1. **extract** the text layer of a live work's file (`index.process`, `live_only`);
-2. **ocr** pages without a text layer (live works' files, and the first pages of image-only files
-   before they are triaged);
-3. **enrich** a work that has no API data yet;
-4. **triage** a pending file, then **promote** it (which purges sure personal paperwork). Triage
-   starts with the screen (screen.py), whose embedding model is small enough to load beside the
-   language model; what it sets aside is held without asking the language model.
+1. **index** a live work's file for full-text search (`index.process`, `live_only`);
+2. **read** pages without a text layer with OCR (live works' files, and the first pages of
+   image-only files before they are classified);
+3. **match** a work that has no API data yet (match/);
+4. **classify** a pending file (the screen first, screen.py, then the classifier), and promote it
+   at once if it isn't library material (which purges sure personal paperwork);
+5. **extract** the metadata of a file classified as library material, then **promote** it.
+
+Classify and extract run in phases (`_next_task`): every pending file is classified, then every
+classified file extracted, so the two models can differ and each is loaded once per phase.
 
 A batch ends when nothing is left, after BATCH_STEPS steps (so runs stay short and new files
-don't wait), or with the model steps backing off. Triage's models sit behind the inference
-cache (inference.py), with the gate inside it: an answer the cache has costs no model call and
-no check. Otherwise model work (triage, OCR) is gated: before every model call the memory
-pressure is read, and for LM Studio the `ModelLedger` checks what is loaded (see models.py). Under pressure, with LM Studio off or busy with another model, or when
-Apple's model refuses (error 1013, `ModelBusy`), the step is left pending and model work waits
-(`Backoff`); extract and enrich go on. What is pending, and when to try again, is the work
-queue's (queue.py, `<home>/queue.sqlite`, synced from the library before every step): a step that
-fails, or finishes without changing anything, is retried after 1 h, 4 h and 16 h, then left as
-`failed` (triage also marks the file `error`, as `papyrus triage` does).
+don't wait), or with the model steps backing off. The models sit behind the inference cache
+(inference.py), with the gate inside it: an answer the cache has costs no model call and no
+check. Otherwise model work (read, classify, extract) is gated: before every model call the memory
+pressure is read, and for LM Studio the `ModelLedger` checks what is loaded (see models.py). Under
+pressure, with LM Studio off or busy with another model, or when Apple's model refuses (error
+1013, `ModelBusy`), the step is left pending and model work waits (`Backoff`); index and match go
+on. What is pending, and when to try again, is the work queue's (queue.py, `<home>/queue.sqlite`,
+synced from the library before every step): a step that fails, or finishes without changing
+anything, is retried after 1 h, 4 h and 16 h, then left as `failed` (a failed classify also marks
+the file `error`, as `papyrus classify` does).
 
 Privacy: the log names file and work ids, counts and states only, never titles, paths, page
 text or exception messages (an OSError's message holds the path).
 
-Status: `<library home>/watch.json` (state, pending counts, back-off), read by the web server's
-/api/version for the menu bar, and by `papyrus watch --status`.
+Status: `<library home>/watch.json` (state, per-stage lines, ingesting N/M, back-off), read by
+the web server's /api/version for the menu bar, and by `papyrus watch --status`. Performance:
+`<library home>/watch-events.jsonl` (events.py, `papyrus watch --perf`).
 """
 
 from __future__ import annotations
@@ -68,12 +73,12 @@ EXIT_LOCKED = 75  # another watcher holds the library's lock (EX_TEMPFAIL): don'
 EXIT_REPLACED = 70  # a database file was replaced under the watcher; a copy is in <home>/rescued-*
 EXIT_RESCUED = 78  # a rescued-* copy waits to be restored: refuse to start (EX_CONFIG)
 
-CLASSIFY_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status IN ('pending', 'error')")
-EXTRACT_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
+CLASSIFY_PENDING = "read_status IN ('ok', 'no_text') AND purged_at IS NULL AND classify_status IN ('pending', 'error')"
+EXTRACT_PENDING = "purged_at IS NULL AND classify_status = 'done' AND extract_status = 'pending'"
 # the menu's lines (Watch.stages), in pipeline order
-STAGE_ORDER = ("ocr", "classify", "metadata", "extract", "enrich")
-STAGE_LABELS = {"ocr": "Scanning", "classify": "Classifying", "metadata": "Extracting",
-                "extract": "Indexing full text", "enrich": "Matching"}
+STAGE_ORDER = ("read", "classify", "extract", "index", "match")
+STAGE_LABELS = {"read": "Reading", "classify": "Classifying", "extract": "Extracting", "index": "Indexing",
+                "match": "Matching"}
 EMA_ALPHA = 0.2  # weight of the newest step in a stage's seconds-per-item average
 # a stage worked within this many seconds is "active": steps of other stages come in between
 # (each extracted document's full text and enrichment run before the next document's metadata)
@@ -85,8 +90,8 @@ def default_log(msg: str) -> None:
 
 
 def resolve_models() -> tuple[Any, Any]:
-    """The triage backend and classifier from the config, as `papyrus triage` picks them. Raises
-    Backoff when there is none: triage never runs without a classifier unless it is `none`."""
+    """The extraction model and classifier from the config, as `papyrus extract` / `classify` pick
+    them. Raises Backoff when there is no classifier: none is used only if the config says `none`."""
     from .. import config
     from ..llm import get_backend
     from ..llm.classify import get_classifier
@@ -105,7 +110,7 @@ def resolve_models() -> tuple[Any, Any]:
             if not dec.available():
                 raise BackendUnavailable(f"classifier {dec.info().tag} is not available")
         except BackendUnavailable as e:
-            raise Backoff(LMSTUDIO_UNAVAILABLE, "no classifier (triage needs one unless classifier = \"none\")",
+            raise Backoff(LMSTUDIO_UNAVAILABLE, "no classifier (classifying needs one unless classifier = \"none\")",
                           delay=LMSTUDIO_DELAY) from e
     return be, dec
 
@@ -146,7 +151,7 @@ class Watch:
                                             room=lambda m: system.has_room(lmstudio.model_size(m)))
         self.resolve_models = models or (lambda: resolve_models())
         self.resolve_screen = screen or (lambda: resolve_screen())
-        self.screen: Any = None  # triage's first stage (screen.py), resolved with the models
+        self.screen: Any = None  # the classify stage's first step (screen.py), resolved with the models
         self.debouncer = Debouncer(self.dirs, settle_s, clock)
         self.status_path = status_path or db.library_home() / "watch.json"
         self.opts = scan.ScanOptions(store=store)
@@ -155,12 +160,12 @@ class Watch:
         self.host = socket.gethostname()
         self.started = db.now_iso()
         self.state, self.detail = STARTING, ""
-        # model work waiting, per stage: an OCR that can't run under "warn" mustn't hold triage
+        # model work waiting, per stage: an OCR that can't run under "warn" mustn't hold classifying
         self.backoffs: dict[str, tuple[float, str, str]] = {}  # stage -> (until, state, reason)
         self.memory_delay = MEMORY_DELAY
         self.queue = queue or Queue(db.library_home() / "queue.sqlite", wall)
         self.models: tuple[Any, Any] | None = None
-        self.phase = "classify"  # the triage phase in progress: classify | metadata
+        self.phase = "classify"  # the model phase in progress: classify | extract
         self.last_level: str | None = None  # memory pressure at the last gate, recorded with the call
         self.ocr_ok: bool | None = None
         self.dirty = True  # there may be pending work: look
@@ -299,7 +304,7 @@ class Watch:
         from ..describe import PROMPT_VERSION
 
         c: Counter = Counter()
-        self.models = None  # resolved again on the batch's first triage (the config may have changed)
+        self.models = None  # resolved again on the batch's first model step (the config may have changed)
         with db.recorded_run(self.conn, "watch", {"trigger": trigger, "files": len(ready), "dirs": len(self.dirs)},
                              prompt_version=PROMPT_VERSION) as (run_id, rs):
             try:
@@ -369,14 +374,14 @@ class Watch:
                 if recent:
                     self.debouncer.add(path)
                 else:
-                    self._ingest(path, run_id, c, now)
+                    self._scan_file(path, run_id, c, now)
                     self.debouncer.seen(path)
             scan.mark_missing(self.conn, root, now, c)
 
     def _take(self, ready: list[Path], gone: list[Path], run_id: int, c: Counter) -> None:
         now = db.now_iso()
         for path in ready:
-            self._ingest(path, run_id, c, now)
+            self._scan_file(path, run_id, c, now)
         for path in gone:
             n = self.conn.execute("UPDATE contexts SET missing_at=? WHERE kind='filesystem' AND locator=?"
                                   " AND missing_at IS NULL", (now, str(path))).rowcount
@@ -384,7 +389,8 @@ class Watch:
 
     def _busy(self) -> dict[str, Any]:
         if self.busy is None:
-            self.busy = {"since": self.wall(), "steps": Counter(), "added": 0}
+            self.busy = {"since": self.wall(), "steps": Counter(), "added": 0, "files": set()}
+            self.busy["files"] = self._pending_files()
         return self.busy
 
     def _drained(self) -> None:
@@ -394,13 +400,15 @@ class Watch:
         b, self.busy = self.busy, None
         self.events.emit("drained", busy_s=round(self.wall() - b["since"], 1), steps=dict(b["steps"]), added=b["added"])
 
-    def _ingest(self, path: Path, run_id: int, c: Counter, now: str) -> None:
+    def _scan_file(self, path: Path, run_id: int, c: Counter, now: str) -> None:
         t0 = time.monotonic()
-        outcome, fid = scan.ingest_path(self.conn, path, self.opts, host=self.host, now=now, run_id=run_id, stats=c)
+        outcome, fid = scan.scan_path(self.conn, path, self.opts, host=self.host, now=now, run_id=run_id, stats=c)
         if outcome not in ("unchanged", "seen", None):
             busy = self._busy()
             busy["added"] += outcome == "new"
-            self.events.emit("ingest", id=fid, outcome=outcome, ms=round((time.monotonic() - t0) * 1000))
+            if outcome == "new" and fid is not None:
+                busy["files"].add(fid)
+            self.events.emit("scan", id=fid, outcome=outcome, ms=round((time.monotonic() - t0) * 1000))
         if outcome in ("new", "dup"):
             self.dirty = True
             self.log(f"file {fid} added ({outcome})")
@@ -487,9 +495,9 @@ class Watch:
                                  (str(path),)).fetchone() is not None
 
     def _promote_backlog(self, run_id: int, c: Counter) -> None:
-        """Files triaged (by `papyrus triage`, or a watcher that stopped) but never promoted."""
+        """Files classified and extracted (by the CLI, or a watcher that stopped) but never promoted."""
         for (fid,) in self.conn.execute(
-                "SELECT f.id FROM files f WHERE f.triage_status='done' AND f.purged_at IS NULL"
+                f"SELECT f.id FROM files f WHERE {db.MODELS_DONE} AND f.purged_at IS NULL"
                 " AND NOT EXISTS (SELECT 1 FROM file_works fw WHERE fw.file_id=f.id) ORDER BY f.id").fetchall():
             try:
                 self._promote(fid, run_id, c, quiet=True)
@@ -515,16 +523,16 @@ class Watch:
 
         ocr = self.ocr and self.ocr_ok is not False
         return {
-            "extract": index.pending_files(self.conn),
-            "ocr": list(index.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
-            "enrich": unmatched_works(self.conn),
+            "index": index.pending_files(self.conn),
+            "read": list(index.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
+            "match": unmatched_works(self.conn),
             "classify": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {CLASSIFY_PENDING} ORDER BY id")],
-            "metadata": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {EXTRACT_PENDING} ORDER BY id")],
+            "extract": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {EXTRACT_PENDING} ORDER BY id")],
         }
 
     @property
     def paused(self) -> bool:
-        """Model work (triage, OCR) is paused: `<home>/watch.pause` exists (the menu bar's Pause
+        """Model work (read, classify, extract) is paused: `<home>/watch.pause` exists (the menu bar's Pause
         Model Work, `papyrus watch --pause`). Files are still added, extracted and enriched."""
         return self.pause_path.exists()
 
@@ -543,13 +551,13 @@ class Watch:
         # classified, then classify what arrived meanwhile, and so on. The two may be different
         # models; each phase runs as far as it can, so a model is loaded (or swapped in) once
         # per phase, not once per file.
-        other = {"classify": "metadata", "metadata": "classify"}[self.phase]
+        other = {"classify": "extract", "extract": "classify"}[self.phase]
         free = [s for s in free if s != other]
         task = self.queue.next(free)
         if task is None and other not in waiting:
             task = self.queue.next([other])
             if task is not None:
-                self.log(f"triage phase: {other}")
+                self.log(f"model phase: {other}")
                 self.phase = other
         return task
 
@@ -558,7 +566,7 @@ class Watch:
 
     def _step(self, task: tuple[str, int], run_id: int, c: Counter) -> None:
         stage, i = task
-        what = "work" if stage == "enrich" else "file"
+        what = "work" if stage == "match" else "file"
         t0 = time.monotonic()
         self.step_detail = {}
         outcome = "done"
@@ -582,7 +590,7 @@ class Watch:
             outcome = f"error:{type(e).__name__}"
             c[f"{stage}_error"] += 1
             if stage == "classify":  # (a failed metadata step stays `classified` and is retried)
-                self.conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (i,))
+                self.conn.execute("UPDATE files SET classify_status='error' WHERE id=?", (i,))
             self.log(f"{what} {i} {stage} failed ({type(e).__name__})")
             self._retry(task, type(e).__name__)
         finally:
@@ -597,11 +605,11 @@ class Watch:
     def _retry(self, task: tuple[str, int], error: str) -> None:
         stage, i = task
         delay = self.queue.retry(stage, i, error)
-        what = "work" if stage == "enrich" else "file"
+        what = "work" if stage == "match" else "file"
         self.log(f"{what} {i} {stage}: " + (f"{error}, trying again in {delay / 3600:.0f} h" if delay
                                               else f"{error}, giving up (papyrus watch --retry-failed)"))
 
-    def _extract(self, fid: int, run_id: int, c: Counter) -> None:
+    def _index(self, fid: int, run_id: int, c: Counter) -> None:
         s = index.process(self.conn, (fid,), ocr=False, live_only=True)
         if s.get("files"):
             c["indexed"] += s["files"]
@@ -609,7 +617,7 @@ class Watch:
             c["extract_error"] += s["error"]
         self.log(f"file {fid} extracted ({s.get('pages', 0)} pages)" if s.get("files") else f"file {fid} extract failed")
 
-    def _ocr(self, fid: int, run_id: int, c: Counter) -> None:
+    def _read(self, fid: int, run_id: int, c: Counter) -> None:
         self._gate("local", None)  # Apple Vision, in the bridge
         s = index.process(self.conn, (fid,), ocr=True, live_only=True)
         if s.get("ocr_skipped_pages"):
@@ -622,7 +630,7 @@ class Watch:
                 c[k] += s[k]
         self.log(f"file {fid} OCR: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)} pages read")
 
-    def _enrich(self, wid: int, run_id: int, c: Counter) -> None:
+    def _match(self, wid: int, run_id: int, c: Counter) -> None:
         from .. import http
         from ..match.pipeline import match_work
 
@@ -659,7 +667,7 @@ class Watch:
         if r["status"] == "done":
             self._promote(fid, run_id, c)
 
-    def _metadata(self, fid: int, run_id: int, c: Counter) -> None:
+    def _extract(self, fid: int, run_id: int, c: Counter) -> None:
         from ..extract import extract_metadata
 
         be, _ = self._models(run_id)
@@ -695,7 +703,7 @@ class Watch:
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
             self.events.emit("models", extract=tag, classify=dec.info().tag if dec is not None else None,
                              screen=self.screen.tag if self.screen else None)
-            self.log("triage with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
+            self.log("classify with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
                      + tag + (f" + {dec.info().tag}" if dec is not None else " (no classifier)"))
         return self.models
 
@@ -739,9 +747,9 @@ class Watch:
         self.events.emit("backoff", stage=stage, state=b.state, reason=b.reason, delay_s=round(delay))
 
     def _waiting(self) -> tuple[float, str, str] | None:
-        """The back-off to show: the triage phases' if one has work, else OCR's."""
+        """The back-off to show: the model phases' if one has work, else reading's (OCR)."""
         counts, now = self.pending(), self.clock()
-        for stage in ("classify", "metadata", "ocr"):
+        for stage in ("classify", "extract", "read"):
             b = self.backoffs.get(stage)
             if b and now < b[0] and counts[stage]:
                 return b
@@ -790,8 +798,10 @@ class Watch:
             else:
                 worked = self.last_worked.get(stage)
                 state, reason = ("active" if worked is not None and now - worked <= ACTIVE_S else "pending"), None
-            entry = {"stage": stage, "label": STAGE_LABELS[stage], "unit": "works" if stage == "enrich" else "docs",
-                     "pending": n, "state": state, "per_item_s": round(per, 2) if per is not None else None,
+            # the menu counts files; matching works on works (a work's files are matched together)
+            files = len(self._files_of(self._library_pending()["match"])) if stage == "match" else n
+            entry = {"stage": stage, "label": STAGE_LABELS[stage], "unit": "files",
+                     "pending": files, "state": state, "per_item_s": round(per, 2) if per is not None else None,
                      "eta_s": round(n * per) if per is not None else None}
             if reason:
                 entry["reason"] = reason
@@ -799,18 +809,37 @@ class Watch:
         return out
 
     def pending(self) -> dict[str, int]:
-        """Items in the queue per stage (due, or waiting for a retry), and `failed`; `triage` is
-        classify + metadata (what the menu bar showed before the two were split)."""
-        counts = self.queue.counts()
-        counts["triage"] = counts.get("classify", 0) + counts.get("metadata", 0)
-        return counts
+        """Items in the queue per stage (due, or waiting for a retry), and `failed`."""
+        return self.queue.counts()
+
+    def _files_of(self, works: list[int]) -> set[int]:
+        if not works:
+            return set()
+        return {r[0] for r in self.conn.execute(
+            f"SELECT file_id FROM file_works WHERE work_id IN ({','.join('?' * len(works))})", works)}
+
+    def _pending_files(self) -> set[int]:
+        """Files some stage still has to do something with (matching: the files of its works)."""
+        lp = self._library_pending()
+        files = set().union(*(set(lp[s]) for s in ("read", "classify", "extract", "index")))
+        return files | self._files_of(lp["match"])
+
+    def ingesting(self) -> dict[str, int] | None:
+        """Since the watcher woke up (the queue was last empty): `total` files in the pipeline, what
+        was pending then plus what arrived since, and `done`, those no stage has left (matched, or
+        set aside: held, purged, not library material). None while there is nothing to do."""
+        if self.busy is None:
+            return None
+        pending = self._pending_files()
+        self.busy["files"] |= pending
+        return {"done": len(self.busy["files"] - pending), "total": len(self.busy["files"])}
 
     def eta_s(self) -> float | None:
-        """Seconds of work left: triage from the inference cache's timings (what the models took
+        """Seconds of work left: classify and extract from the inference cache's timings (what the models took
         for the questions of the latest document), the other stages from the queue's history."""
         try:
             store = inference.store()
-            per = {"classify": store.document_estimate_s("classify"), "metadata": store.document_estimate_s("extract")}
+            per = {"classify": store.document_estimate_s("classify"), "extract": store.document_estimate_s("extract")}
         except Exception:  # noqa: BLE001  an estimate must never stop the watcher
             per = {}
         return self.queue.eta_s(per)
@@ -818,7 +847,7 @@ class Watch:
     def _settle(self) -> None:
         """The state between batches: paused or waiting (if model work is pending), or idle."""
         counts = self.pending()
-        if self.paused and (counts["triage"] or counts["ocr"]):  # triage: classify + metadata
+        if self.paused and any(counts.get(s) for s in MODEL_STAGES):
             self._status(PAUSED, "model work paused (papyrus watch --resume)")
         elif waiting := self._waiting():
             self._status(waiting[1], waiting[2])
@@ -847,7 +876,8 @@ class Watch:
                 data["pending"] = counts
                 data["phase"] = self.phase
                 data["stages"] = self.stages(counts)
-                data["eta_s"] = self.eta_s() if any(v for k, v in counts.items() if k != "triage") else 0.0
+                data["eta_s"] = self.eta_s() if any(counts.values()) else 0.0
+                data["ingesting"] = self.ingesting()
             except Exception:  # noqa: BLE001  a status write must never stop the watcher
                 pass
         tmp = self.status_path.with_name(self.status_path.name + ".tmp")

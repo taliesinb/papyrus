@@ -97,23 +97,24 @@ def _no_classifier(spec):
     raise BackendUnavailable("LM Studio not reachable")
 
 
-def test_triage_refuses_without_classifier_unless_none(tmp_path, monkeypatch):
+def test_classify_refuses_without_classifier_unless_none(tmp_path, monkeypatch):
     _lib(tmp_path, "paper.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     specs = []
     monkeypatch.setattr(llm, "get_backend", lambda spec: specs.append(spec) or FakeBackend(PAPER))
     monkeypatch.setattr(classify, "get_classifier", _no_classifier)
     runner, db_arg = CliRunner(), ["--db", str(tmp_path / "t.sqlite")]
 
-    r = runner.invoke(main, [*db_arg, "triage"])
+    r = runner.invoke(main, [*db_arg, "classify"])
     assert r.exit_code == 1 and "no classifier" in r.output and "--classifier none" in r.output
-    assert specs == ["auto"]
 
     _write('backend = "lmstudio:qwen3.5-9b-mlx"\nclassifier = "none"\n')
-    r = runner.invoke(main, [*db_arg, "triage"])
+    r = runner.invoke(main, [*db_arg, "classify"])
+    assert r.exit_code == 0 and "classifying 1 files with" in r.output and "no classifier" in r.output, r.output
+    r = runner.invoke(main, [*db_arg, "extract"])
     assert r.exit_code == 0, r.output
-    assert "triaging 1 files with fake:m" in r.output and specs[-1] == "lmstudio:qwen3.5-9b-mlx"
+    assert "extracting the metadata of 1 files with fake:m" in r.output and specs[-1] == "lmstudio:qwen3.5-9b-mlx"
 
-    r = runner.invoke(main, [*db_arg, "triage", "--all", "--backend", "apple"])
+    r = runner.invoke(main, [*db_arg, "extract", "--all", "--backend", "apple"])
     assert r.exit_code == 0 and specs[-1] == "apple"  # the command line beats the file
 
 

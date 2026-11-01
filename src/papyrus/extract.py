@@ -76,7 +76,7 @@ EXTRACT_SCHEMA_DECIDED: dict[str, Any] = {
 def extract_metadata(conn: sqlite3.Connection, file_id: int, backend: Backend, run_id: int | None = None,
                      max_tokens: int | None = None) -> dict[str, Any]:
     """Triage's second stage, for `classified` files: title, authors, year, venue, summary,
-    topics, language and the abstract, from the extraction model. Sets triage_status to `done`.
+    topics, language and the abstract, from the extraction model. Sets extract_status to `done`.
 
     After a classifier, the model isn't asked for kind or library-ness (EXTRACT_SCHEMA_DECIDED).
     Without one (classifier "none"), it is, and its own answer gates topics and the abstract."""
@@ -125,7 +125,7 @@ def extract_metadata(conn: sqlite3.Connection, file_id: int, backend: Backend, r
         if extracted["abstract"]:
             db.assert_(conn, "file", file_id, "abstract", extracted["abstract"], source=abstract_source,
                        run_id=run_id, call_id=ecall)
-        conn.execute("UPDATE files SET triage_status='done' WHERE id=?", (file_id,))
+        conn.execute("UPDATE files SET extract_status='done' WHERE id=?", (file_id,))
     result["extracted"] = extracted
     return result
 

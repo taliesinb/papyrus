@@ -84,10 +84,6 @@ extension PapyrusConfig {
 struct LibraryStatus: Decodable {
     struct Counts: Decodable { var works: Int; var files: Int; var people: Int; var pages: Int }
     struct Run: Decodable { var id: Int; var command: String; var backend: String? }
-    struct Pending: Decodable {
-        var triage: Int; var extract: Int; var enrich: Int; var ocr: Int?
-        var total: Int { triage + extract + enrich + (ocr ?? 0) }
-    }
     /// `papyrus watch`'s state: idle | ingesting | waiting-memory | lmstudio-unavailable | starting;
     /// its queue (items per stage, given up on) and the seconds of work left, when it can tell.
     /// One pipeline stage with work left (watch/daemon.py `Watch.stages`): active (worked now),
@@ -97,9 +93,13 @@ struct LibraryStatus: Decodable {
         var stage: String; var label: String; var unit: String; var pending: Int; var state: String
         var reason: String?; var perItemS: Double?; var etaS: Double?
     }
+    /// Since the watcher woke up: files through the whole pipeline (or set aside) of those in it.
+    struct Ingesting: Decodable { var done: Int; var total: Int }
     struct Watch: Decodable {
-        var state: String; var detail: String; var retryAt: String?; var pending: Pending?
-        var failed: Int?; var etaS: Double?; var paused: Bool?; var stages: [Stage]?
+        var state: String; var detail: String; var retryAt: String?
+        /// queue items per stage (read, classify, extract, index, match), and `failed`
+        var pending: [String: Int]?
+        var failed: Int?; var etaS: Double?; var paused: Bool?; var stages: [Stage]?; var ingesting: Ingesting?
     }
     var counts: Counts
     var running: [Run]

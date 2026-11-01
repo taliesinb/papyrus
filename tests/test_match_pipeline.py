@@ -41,7 +41,7 @@ def add_work(conn, title, year=None, ids=(), authors=()):
         )
     for i, name in enumerate(authors):
         conn.execute(
-            "INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?,?,?, 'triage')", (wid, i, name)
+            "INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?,?,?, 'extract')", (wid, i, name)
         )
     return wid
 

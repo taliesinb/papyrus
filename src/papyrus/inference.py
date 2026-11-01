@@ -59,7 +59,7 @@ from typing import Any, Callable, Iterator
 from . import db
 from .llm.base import Answer, BackendUnavailable, ModelBusy, ModelInfo, Question
 
-SCHEMA_VERSION = 2  # 2: 16-digit ids and hashes, flat directories, calls.input_hash/output_hash
+SCHEMA_VERSION = "0.2"  # 0.2: 16-digit ids and hashes, flat directories, calls.input_hash/output_hash
 HASH_CHARS = 16
 _subject: contextvars.ContextVar[str | None] = contextvars.ContextVar("papyrus_inference_subject", default=None)
 
@@ -114,7 +114,7 @@ class Store:
             row = None
             if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
                 row = c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            if row is not None and int(row[0]) != SCHEMA_VERSION:
+            if row is not None and db.version(row[0]) != db.version(SCHEMA_VERSION):
                 raise RuntimeError(f"{self.path}: inference schema v{row[0]}, this papyrus has v{SCHEMA_VERSION}")
             c.executescript(resources.files("papyrus").joinpath("inference.sql").read_text())
             if row is None:

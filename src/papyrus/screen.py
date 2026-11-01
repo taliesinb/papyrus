@@ -231,7 +231,7 @@ def screen_file(conn: sqlite3.Connection, file_id: int, screen: Screen, run_id: 
         db.assert_(conn, "file", file_id, "screen", value, source=screen.tag, confidence=round(p, 4),
                    run_id=run_id, call_id=call_id)
         if value["rejected"]:
-            conn.execute("UPDATE files SET triage_status='done' WHERE id=?", (file_id,))
+            conn.execute("UPDATE files SET classify_status='done', extract_status='skipped' WHERE id=?", (file_id,))
     return {**value, "screen_s": round(time.monotonic() - t0, 3)}
 
 

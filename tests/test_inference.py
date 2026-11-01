@@ -288,11 +288,11 @@ def test_watch_answers_from_the_cache_without_asking_for_memory(tmp_path):
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert len(be.prompts) == 1 and mem.calls == 2  # extract + the question, each gated
-    conn.execute("UPDATE files SET triage_status='pending'")  # asked to triage again
+    conn.execute("UPDATE files SET classify_status='pending', extract_status='pending'")  # asked to triage again
     mem.level = "critical"
     w.dirty = True
     w.pump()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert len(be.prompts) == 1 and mem.calls == 2 and w.state != "waiting-memory"
     assert conn.execute("SELECT count(*) FROM assertions WHERE call_id IS NOT NULL").fetchone()[0] > 0
 

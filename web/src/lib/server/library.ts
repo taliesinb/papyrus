@@ -205,10 +205,10 @@ function build(version: number): Library {
 		version: string | null;
 		page_count: number | null;
 		size: number;
-		text_status: string;
+		read_status: string;
 	}>(
 		// Files of live works only: a rejected work (not library material) lists no files, paths or URLs.
-		`SELECT fw.work_id, fw.file_id, fw.relation, fw.version, f.page_count, f.size, f.text_status
+		`SELECT fw.work_id, fw.file_id, fw.relation, fw.version, f.page_count, f.size, f.read_status
 		 FROM file_works fw JOIN files f ON f.id = fw.file_id JOIN works w ON w.id = fw.work_id
 		 WHERE w.status IN ('candidate', 'confirmed')`
 	)) {
@@ -221,7 +221,7 @@ function build(version: number): Library {
 			version: r.version,
 			pageCount: r.page_count,
 			size: r.size,
-			textStatus: r.text_status,
+			readStatus: r.read_status,
 			filename: live ? basename(live.locator) : ctx[0]?.locator ? basename(ctx[0].locator) : null,
 			available: fileAvailable(r.file_id)
 		});

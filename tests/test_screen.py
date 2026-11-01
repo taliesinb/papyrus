@@ -73,7 +73,7 @@ def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_pa
     claims = db.current_assertions(conn, "file", 1)
     c = claims["screen"][0]
     assert c["source"] == "screen:fake:embed-test" and c["value"]["rejected"] and c["value"]["p_personal"] > 0.99
-    assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "done"
+    assert conn.execute("SELECT classify_status FROM files WHERE id=1").fetchone()[0] == "done"
     assert not is_library(claims)
     # held, never purged by the screen alone; listed for review
     assert purge.verdict(conn, 1) is None
@@ -117,7 +117,7 @@ def test_keep_sends_a_screened_file_through_full_triage(tmp_path):
     scr = _screen()
     classify_and_extract(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True), screen=scr)
     assert purge.keep(conn, 1) == ("requeued", None)
-    assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "pending"
+    assert conn.execute("SELECT classify_status FROM files WHERE id=1").fetchone()[0] == "pending"
     be = FakeBackend(PAPER)
     r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert "screen" not in r and len(be.prompts) == 1  # the user has judged it: no screen
@@ -142,7 +142,7 @@ def test_the_watcher_screens_before_asking_the_language_model(tmp_path, no_match
     _pdf(dl / f"Payslip_{MARK}.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1.00")
     w.catch_up()
     assert be.prompts == [] and lm.loaded == ["gemma"]
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
     assert any("set aside by the screen" in m for m in logs) and not any(MARK in m for m in logs)
     assert purge.candidates(conn, held=True) == [(1, None)]
     w.close()
