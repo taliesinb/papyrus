@@ -146,5 +146,10 @@ export interface WatchStatus {
 	state: 'starting' | 'idle' | 'ingesting' | 'waiting-memory' | 'lmstudio-unavailable';
 	detail: string;
 	retryAt: string | null;
-	pending: { triage: number; extract: number; enrich: number } | null;
+	/** The watcher's queue: items per stage, due or waiting for a retry. */
+	pending: { triage: number; extract: number; enrich: number; ocr: number } | null;
+	/** Items the queue gave up on (`papyrus watch --retry-failed`). */
+	failed: number;
+	/** Seconds of work left, from past timings; null while there is no history. */
+	etaS: number | null;
 }

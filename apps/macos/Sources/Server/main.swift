@@ -61,6 +61,9 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var tailscaleNote: String?
 
     lazy var watchLog = RunLog(name: "watch", config: config)
+    /// The scroll; its paper is solid while the watcher's queue has work.
+    lazy var emptyIcon = menuBarImage(initial: config.initial) ?? NSImage(systemSymbolName: "scroll", accessibilityDescription: config.name)
+    lazy var filledIcon = menuBarImage(initial: config.initial, filled: true) ?? emptyIcon
     var watcher: Process?
     var watcherStopping = false
     var watcherFailures: [Date] = []
@@ -93,7 +96,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         log.line("launch: \(Bundle.main.bundlePath) \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?")) variant \(config.variant) port \(config.port)")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = menuBarImage(initial: config.initial) ?? NSImage(systemSymbolName: "scroll", accessibilityDescription: config.name)
+        statusItem.button?.image = emptyIcon
         statusItem.button?.toolTip = config.serverName
         // Each variant's item keeps its own place in the menu bar.
         statusItem.autosaveName = config.variantName
@@ -399,13 +402,15 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let note = watcherNote, watcher == nil { return "Watcher: \(note)" }
         guard watcher != nil else { return "Watcher: not running" }
         guard let w = library?.watch else { return "Watcher: starting…" }
-        let todo = w.pending.map { $0.triage + $0.extract + $0.enrich } ?? 0
+        let todo = w.pending?.total ?? 0
+        var left = todo > 0 ? " (\(todo) left" + (w.etaS.map { ", \(duration($0))" } ?? "") + ")" : ""
+        if let failed = w.failed, failed > 0 { left += " · \(failed) failed" }
         switch w.state {
-        case "idle": return "Watching: idle"
-        case "ingesting": return "Watching: adding new PDFs" + (todo > 0 ? " (\(todo) steps left)" : "")
-        case "waiting-memory": return "Watching: waiting for memory" + (todo > 0 ? " (\(todo) steps left)" : "")
-        case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))")
-        default: return "Watching: \(w.state)"
+        case "idle": return "Watching: idle" + left
+        case "ingesting": return "Watching: adding new PDFs" + left
+        case "waiting-memory": return "Watching: waiting for memory" + left
+        case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
+        default: return "Watching: \(w.state)" + left
         }
     }
 
@@ -516,6 +521,20 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .running: button.appearsDisabled = false
         default: button.appearsDisabled = true
         }
+        let image = queueHasWork ? filledIcon : emptyIcon
+        if button.image !== image { button.image = image }
+    }
+
+    /// The watcher runs and its queue has items (due, or waiting for a retry).
+    var queueHasWork: Bool {
+        watchEnabled && watcher != nil && (library?.watch?.pending?.total ?? 0) > 0
+    }
+
+    /// `~12 min`, `~1 h 20 min`, `under a minute`.
+    func duration(_ seconds: Double) -> String {
+        if seconds < 60 { return "under a minute" }
+        let minutes = Int((seconds / 60).rounded())
+        return minutes < 60 ? "~\(minutes) min" : "~\(minutes / 60) h" + (minutes % 60 > 0 ? " \(minutes % 60) min" : "")
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

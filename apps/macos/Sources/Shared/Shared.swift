@@ -84,9 +84,16 @@ extension PapyrusConfig {
 struct LibraryStatus: Decodable {
     struct Counts: Decodable { var works: Int; var files: Int; var people: Int; var pages: Int }
     struct Run: Decodable { var id: Int; var command: String; var backend: String? }
-    struct Pending: Decodable { var triage: Int; var extract: Int; var enrich: Int }
-    /// `papyrus watch`'s state: idle | ingesting | waiting-memory | lmstudio-unavailable | starting.
-    struct Watch: Decodable { var state: String; var detail: String; var retryAt: String?; var pending: Pending? }
+    struct Pending: Decodable {
+        var triage: Int; var extract: Int; var enrich: Int; var ocr: Int?
+        var total: Int { triage + extract + enrich + (ocr ?? 0) }
+    }
+    /// `papyrus watch`'s state: idle | ingesting | waiting-memory | lmstudio-unavailable | starting;
+    /// its queue (items per stage, given up on) and the seconds of work left, when it can tell.
+    struct Watch: Decodable {
+        var state: String; var detail: String; var retryAt: String?; var pending: Pending?
+        var failed: Int?; var etaS: Double?
+    }
     var counts: Counts
     var running: [Run]
     var version: String
@@ -134,9 +141,11 @@ final class RunLog {
 /// The menu-bar image: the scroll glyph (boxicons "scroll", MIT) from the bundle as a template image,
 /// cropped to the mark so that it spans `height` points (as tall as its neighbours' marks), with
 /// `initial` (a variant's first letter) set inside the scroll's paper. Release and the variants
-/// draw the scroll at the same size.
-func menuBarImage(height: CGFloat = 18, initial: String?, glyph url: URL? = Bundle.main.url(forResource: "glyph", withExtension: "svg")) -> NSImage? {
-    guard let url, let glyph = NSImage(contentsOf: url) else { return nil }
+/// draw the scroll at the same size. `filled` (the watcher has work queued) draws the paper solid
+/// (`glyph-filled.svg`), with the initial cut out of it.
+func menuBarImage(height: CGFloat = 18, initial: String?, filled: Bool = false, glyph: URL? = nil) -> NSImage? {
+    guard let url = glyph ?? Bundle.main.url(forResource: filled ? "glyph-filled" : "glyph", withExtension: "svg"),
+          let glyph = NSImage(contentsOf: url) else { return nil }
     glyph.size = NSSize(width: 24, height: 24)
     // The mark spans 2…22 of the 24-unit viewBox on both axes.
     let unit = height / 20
@@ -154,8 +163,11 @@ func menuBarImage(height: CGFloat = 18, initial: String?, glyph url: URL? = Bund
         }
         // Centre the capital on the paper: its baseline sits half a cap height below the middle.
         let baseline = paper.midY - font.capHeight / 2
+        // On the solid paper the letter is a hole (template images show only alpha).
+        if filled { NSGraphicsContext.current?.compositingOperation = .destinationOut }
         (initial as NSString).draw(at: NSPoint(x: paper.midX - size.width / 2, y: baseline + font.descender),
                                    withAttributes: [.font: font, .foregroundColor: NSColor.black])
+        NSGraphicsContext.current?.compositingOperation = .sourceOver
         return true
     }
     image.isTemplate = true

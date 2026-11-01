@@ -184,9 +184,14 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
     unloads any model it loaded), waiting up to 10 s.
   * Watch for New PDFs (on by default) stops and starts it.
 * **The menu's watcher line** comes from `/api/version`'s `watch` (the
-  library's `watch.json`): Watching: idle, adding new PDFs (n steps left),
-  waiting for memory, or LM Studio unavailable (with the reason, such as
-  "another model is loaded"). Show Watcher Log opens its log.
+  library's `watch.json`): Watching: idle, adding new PDFs, waiting for
+  memory, or LM Studio unavailable (with the reason, such as "another model
+  is loaded"). While the queue has items it adds how many are left and an
+  estimate of the time ("12 left, ~6 min"), and how many it gave up on. Show
+  Watcher Log opens its log.
+* **The menu-bar scroll's paper is solid** while the watcher's queue has
+  items (due, or waiting for a retry), drawn from `Resources/glyph-filled.svg`;
+  a variant's initial is then cut out of the paper.
 * **Single instance:** a second copy exits at once.
 * **Privacy prompts:** macOS attributes file access to the process that
   spawned the server and the watcher, so its prompts name "Papyrus Server"
@@ -232,4 +237,5 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
 | `Sources/Papyrus/main.swift` | Papyrus.app |
 | `Tools/make-icon.swift` | renders the glyph on a rounded tile (every iconset size), or full-bleed (`--png`, for `web/static/apple-touch-icon.png`) |
 | `Resources/glyph.svg` | [boxicons](https://github.com/box-icons/boxicons-core) "scroll" (MIT): the Dock icon, the menu-bar template image and (recoloured) `web/static/favicon.svg` |
+| `Resources/glyph-filled.svg` | the same scroll with its paper solid: the menu bar while the watcher has work queued |
 | `build.py` | variants (`variant.yml`); builds, signs and installs both apps of each |

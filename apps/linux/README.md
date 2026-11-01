@@ -91,8 +91,11 @@ release by default, others with `--watch`, recorded as `watch:` in
   minutes stop it), except after exit status 75: another watcher already
   holds the library's lock (`RestartPreventExitStatus=75`). Start it again
   with `systemctl --user restart` once that one has gone.
-* Its state is in `~/.papyrus/<variant>/watch.json`, and `papyrus watch
-  --status` prints it.
+* Its state is in `~/.papyrus/<variant>/watch.json` (with the queue's counts
+  and an estimate of the time left), and `papyrus watch --status` prints it.
+  Failed steps are retried after 1 h, 4 h and 16 h from
+  `~/.papyrus/<variant>/queue.sqlite`; `papyrus watch --retry-failed` revives
+  the ones it gave up on.
 
 `--uninstall` stops, disables and deletes the units, deletes the installed web
 build and withdraws the tailnet path. The library and the logs stay.

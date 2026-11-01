@@ -327,6 +327,12 @@ The seed is part of the inference cache's key either way.
 * **`uv run` forwards SIGTERM** to the watcher and passes its exit status
   through, so Papyrus Server.app can supervise `uv run … papyrus watch`
   directly. SIGTERM closes the open run as `interrupted`.
+* **Its queue (`<home>/queue.sqlite`) mirrors the library**, synced before
+  every step: to queue work, make it pending in the library (e.g.
+  `triage_status='pending'`), not in the queue. A step that leaves its item
+  pending counts as `no_progress` and is retried later (1 h, 4 h, 16 h, then
+  `failed`), which is what stops an enrichment that finds nothing from
+  looping.
 * **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
   not involved; `scan.ingest_path` is the shared per-file body.
 * **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and
@@ -358,7 +364,10 @@ with the same decorators.
   (`LMStudio`: what is loaded, what was unloaded) and `FakeBackend` /
   `FakeDecider`. Call `pump()` once after injecting (the settle timer starts
   there), advance the clock, then `pump()` again. Use `_pdf(..., old=True)`
-  for files the catch-up scan should take at once.
+  for files the catch-up scan should take at once. The watcher enriches what
+  it promotes: a test module that runs it (even through `test_watch`'s
+  helpers) must use conftest's `no_enrich_network` fixture, or it calls the
+  real APIs (it did, twice: 12 s and 2 min test runs).
 * **Live tests** must skip themselves when the service isn't reachable
   (LM Studio, the AFM bridge, `PAPYRUS_LIVE` for the network).
 * **Regressions found by reviewing real data** go into

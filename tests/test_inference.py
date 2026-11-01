@@ -25,10 +25,8 @@ MARK = "Quuxperson"  # in a payslip: must survive nowhere after a purge
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    from papyrus.enrich import match
-
-    monkeypatch.setattr(match, "resolve", lambda hint, **kw: [])  # the watcher enriches what it promotes
+def _no_network(no_enrich_network):  # the watcher enriches what it promotes
+    pass
 
 
 class SeededBackend(FakeBackend):

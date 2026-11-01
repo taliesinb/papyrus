@@ -175,7 +175,8 @@ def assemble(out: Path, name: str, bundle_id: str, executable: Path, plist: byte
     for helper in helpers:
         shutil.copy2(helper, contents / "MacOS" / helper.name)
     shutil.copy2(icns, resources / "AppIcon.icns")
-    shutil.copy2(HERE / "Resources" / "glyph.svg", resources / "glyph.svg")
+    for glyph in ("glyph.svg", "glyph-filled.svg"):  # the menu bar's scroll, and its solid paper (work queued)
+        shutil.copy2(HERE / "Resources" / glyph, resources / glyph)
     (resources / "papyrus-app.json").write_text(json.dumps(config, indent=2) + "\n")
     if web_build:
         copy_web(web_build, resources / "web")

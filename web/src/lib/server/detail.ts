@@ -192,7 +192,15 @@ export function pipelineStatus(): PipelineStatus {
 
 /** The watcher's status file, if its process is alive (a watcher that crashed leaves the file behind). */
 export function watchStatus(): WatchStatus | null {
-	let s: { state?: string; detail?: string; pid?: number; retry_at?: string; pending?: WatchStatus['pending'] };
+	let s: {
+		state?: string;
+		detail?: string;
+		pid?: number;
+		retry_at?: string;
+		pending?: WatchStatus['pending'];
+		failed?: number;
+		eta_s?: number | null;
+	};
 	try {
 		s = JSON.parse(readFileSync(join(libraryHome(), 'watch.json'), 'utf8'));
 	} catch {
@@ -208,6 +216,8 @@ export function watchStatus(): WatchStatus | null {
 		state: s.state as WatchStatus['state'],
 		detail: s.detail ?? '',
 		retryAt: s.retry_at ?? null,
-		pending: s.pending ?? null
+		pending: s.pending ?? null,
+		failed: s.failed ?? 0,
+		etaS: s.eta_s ?? null
 	};
 }

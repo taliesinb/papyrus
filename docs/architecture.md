@@ -77,9 +77,22 @@ background:
    another model loaded, when Apple's model refuses (error 1013, `ModelBusy`),
    or without a decider. Extract and enrich go on meanwhile. It unloads only
    the models it loaded, after `unload_after` seconds idle (600) and at exit.
-6. **Status:** `<home>/watch.json` (idle | ingesting | waiting-memory |
-   lmstudio-unavailable), served in `/api/version` for the menu bar; one
-   watcher per library (`<home>/watch.lock`, an flock).
+6. **The work queue** (`watch/queue.py`, `<home>/queue.sqlite`): what is
+   pending is still the library's (files not triaged, live works' files not
+   extracted, works without API data). Before every step the queue mirrors it,
+   one row per (stage, id), and adds the watcher's own working state:
+   * **retries:** a step that fails, or finishes without changing anything
+     (`no_progress`), is tried again after 1 h, 4 h and 16 h, then marked
+     `failed` (`papyrus watch --retry-failed`). They survive restarts;
+   * **history:** each finished step's duration.
+7. **Status:** `<home>/watch.json` (idle | ingesting | waiting-memory |
+   lmstudio-unavailable, the queue's counts, `eta_s`), served in
+   `/api/version` for the menu bar; one watcher per library
+   (`<home>/watch.lock`, an flock). **The estimate of time left:** triage per
+   document from the inference cache (`Store.document_estimate_s`: the
+   questions asked about the latest document, each estimated from its own
+   history), the other stages from the queue's median step durations. The
+   menu-bar scroll's paper is solid while the queue has items.
 
 Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
 
@@ -98,7 +111,7 @@ Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
 |---|---|
 | `schema.sql`, `db.py` | DDL; connect/init; `tx`, `assert_`, `current_assertions`, `recorded_run` |
 | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames; `ingest_path` (one path, shared with `watch`), `scan_roots`, `mark_missing` |
-| `watch/` | `papyrus watch`: `sources.py` (FSEvents / inotify / polling), `debounce.py` (finished files, partial files), `system.py` (background priority, memory pressure, the instance lock), `models.py` (`ModelLedger`: never a second LM Studio model, unload only our own), `daemon.py` (`Watch`: catch-up, batches, steps, back-off, `watch.json`) |
+| `watch/` | `papyrus watch`: `sources.py` (FSEvents / inotify / polling), `debounce.py` (finished files, partial files), `system.py` (background priority, memory pressure, the instance lock), `models.py` (`ModelLedger`: never a second LM Studio model, unload only our own), `queue.py` (`Queue`: `<home>/queue.sqlite`, synced from the library; retries, step durations, `eta_s`), `daemon.py` (`Watch`: catch-up, batches, steps, back-off, `watch.json`) |
 | `store.py` | the managed store: `snapshot` (clone or copy into `store/tmp`), `commit` (rename to `store/ab/<sha256>.pdf`, read-only), `backfill`, `check` |
 | `download.py` | link parsing (RTF / HTML / text, Safari's copied tabs), URL → PDF resolution, `fetch`, recording `download` contexts |
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
@@ -228,6 +241,7 @@ and a CV to works.
 | `watch`: memory pressure gates *loading*, not using | On this 24 GB M4, `kern.memorystatus_vm_pressure_level` reads 2 (warn) while LM Studio holds the 4B model. Refusing at warn would mean never triaging with the model already loaded; loading a model at warn is what swaps. So: critical stops every model call, warn stops only calls that may load something (an LM Studio model that isn't loaded, Apple FM, Vision OCR). |
 | `watch`: unload only models it loaded itself, idle for 10 min | LM Studio is shared with the user and other agents. A model loaded before the watcher asked, or reloaded by someone after it went away, is not the watcher's (`ModelLedger.refresh`). |
 | `watch` runs inside Papyrus Server.app on macOS, not as a launchd agent | macOS asks for access to `~/Downloads` and `~/Desktop` on behalf of the responsible app. As a child of Papyrus Server.app, the prompt names that app, which already carries the usage strings; a launchd agent running `python3` would get a prompt naming Python, or nothing. The app also gives the menu-bar status and an on/off item for free. |
+| `watch`'s queue mirrors the library rather than replacing it | `papyrus triage`, `process`, `keep` and other agents change what is pending behind the watcher's back. A queue that was the source of truth would go stale; one synced from the library before every step can't, and it keeps only what the library has no place for: retries, failures, step durations. Its own database, since that is working state, not knowledge, and losing it only forgets retries. |
 | `watch` defaults to the `release` variant only | Every variant's watcher would add the same `~/Downloads` to its own library. Other variants opt in (`--watch`, recorded in `variant.yml`). |
 
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
@@ -304,10 +318,6 @@ Roughly by value:
   links and "download these tabs" still need a path; the likely shape is the
   same: the server runs `papyrus download`/`scan` as recorded runs, rather
   than the web server opening the database for writing.
-* **The watcher's queue in a database of its own.** `watch` works on the one
-  library database today; splitting what is pending (and its retries) into
-  a separate queue database is a later step. Failed steps are retried after
-  6 h, tracked only in memory.
 * **The watcher:** subdirectories of watched directories are not watched
   (FSEvents would allow it; inotify needs a watch per directory). A model
   the watcher loaded and the user then started using is unloaded after 10

@@ -116,8 +116,8 @@ class LMStudio:
 
 
 @pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
-    monkeypatch.setattr(match, "resolve", lambda hint, **kw: [])
+def _no_network(no_enrich_network):
+    pass
 
 
 def _pdf(path: Path, text: str, old: bool = True) -> Path:
@@ -138,7 +138,7 @@ def _watch(tmp_path, *, backend=None, decider=None, memory=None, lm=None, models
     lm = lm or LMStudio()
     w = Watch(conn, [dl], watcher=FakeWatcher(), memory=memory or Memory(), clock=clock, log=logs.append,
               ledger=ModelLedger(lm.list_loaded, lm.unload, idle_s=600, clock=clock, log=logs.append),
-              models=models or (lambda: (be, dec)), ocr=False, **kw)
+              models=models or (lambda: (be, dec)), ocr=False, wall=clock, **kw)
     w._start_watcher()
     return w, conn, dl.resolve(), clock, logs
 
