@@ -73,11 +73,11 @@ def test_conflict_reasons(tmp_path):
 def test_recorded_run_closes_on_interrupt_and_crash(tmp_path):
     conn = db.connect(tmp_path / "t.sqlite")
     with pytest.raises(KeyboardInterrupt):
-        with db.recorded_run(conn, "triage") as (rid, stats):
+        with db.recorded_run(conn, "classify") as (rid, stats):
             stats["ok"] = 2
             raise KeyboardInterrupt
     with pytest.raises(ValueError):
-        with db.recorded_run(conn, "triage"):
+        with db.recorded_run(conn, "classify"):
             raise ValueError("boom")
     with db.recorded_run(conn, "scan"):
         pass

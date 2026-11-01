@@ -40,7 +40,6 @@ Next on the list:
 * Slack: resolve PDF links and uploads (arXiv/DOI links are done:
   `papyrus slack import`); Safari Reading List and Twitter contexts
 * embeddings with `sqlite-vec`
-* a managed file store
 
 The full list is under "Open issues" in
 [`docs/architecture.md`](docs/architecture.md).

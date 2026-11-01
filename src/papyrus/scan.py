@@ -78,7 +78,7 @@ def add_file(conn: sqlite3.Connection, path: Path, sha: str, size: int, *, name:
 
 def first_read(conn: sqlite3.Connection, file_id: int, path: Path, name: str | None, run_id: int | None) -> str:
     """What scanning learns about new bytes: the first pages, PDF info and a filename hint."""
-    status = extract_first_pages(conn, file_id, path)
+    status = read_first_pages(conn, file_id, path)
     hint = parse_filename(Path(name).stem) if name else None
     if hint:
         db.assert_(conn, "file", file_id, "filename_hint",
@@ -87,7 +87,7 @@ def first_read(conn: sqlite3.Connection, file_id: int, path: Path, name: str | N
     return status
 
 
-def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = FIRST_PAGES) -> str:
+def read_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = FIRST_PAGES) -> str:
     try:
         info = read_pdf(path, max_pages=pages)
     except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files

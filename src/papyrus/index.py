@@ -130,7 +130,7 @@ def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), live_o
     return out
 
 
-def extract_file(conn: sqlite3.Connection, file_id: int, path: Path) -> int:
+def index_file(conn: sqlite3.Connection, file_id: int, path: Path) -> int:
     """Read every page's text layer and the outline into the database. Returns the page count."""
     info = read_pdf(path, max_pages=None, outline=True)  # outside the transaction
     n = info.page_count
@@ -196,7 +196,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
             say("error", fid, "no readable copy")
             continue
         try:
-            n = extract_file(conn, fid, path)
+            n = index_file(conn, fid, path)
         except Exception as e:  # pdfium raises PdfiumError on broken/encrypted files
             conn.execute("UPDATE files SET index_status='error', read_error=? WHERE id=?",
                          (f"{type(e).__name__}: {e}"[:500], fid))
