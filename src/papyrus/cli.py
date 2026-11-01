@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from . import db
+from . import db, envfile
 
 
 def _sigterm(signum, frame):  # noqa: ARG001
@@ -62,6 +62,7 @@ def main(ctx: click.Context, variant: str | None, db_path: Path | None) -> None:
     """Local library of papers, books and other documents."""
     # turn `kill`/SIGTERM into KeyboardInterrupt so runs are closed as 'interrupted'
     signal.signal(signal.SIGTERM, _sigterm)
+    envfile.load()  # API keys and the contact address from ~/.papyrus/env (the app gets no shell environment)
     if variant:
         os.environ["PAPYRUS_VARIANT"] = variant  # library_home() and the config read it
     _check_home(db_path)
@@ -394,7 +395,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
         held = [fid for fid, why in found if not why]
     for fid in held:
         claims = db.current_assertions(conn, "file", fid)
-        probs = (kind_probs(claims) or ({}, None))[0]
+        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("classify:")), {})
         title = next((c["value"] for c in claims.get("title", [])), "") or _filename(conn, fid)
         by = ""
         if not probs and (p := screen_rejected(claims)) is not None:

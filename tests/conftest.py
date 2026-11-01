@@ -6,6 +6,7 @@ def _isolated_library(tmp_path, monkeypatch):
     """Keep every test's managed store, config and HTTP cache out of the user's ~/.papyrus/<variant>,
     ignore the user's model settings, and never start a real LM Studio server."""
     monkeypatch.setenv("PAPYRUS_HOME", str(tmp_path / "papyrus-home"))
+    monkeypatch.setenv("PAPYRUS_ROOT", str(tmp_path / "papyrus-root"))  # not the real ~/.papyrus/env (keys)
     monkeypatch.setenv("PAPYRUS_HTTP_CACHE", "0")
     monkeypatch.setenv("PAPYRUS_LMSTUDIO_AUTOSTART", "0")
     monkeypatch.setenv("PAPYRUS_SCREEN", "0")  # the screen's embedding model is LM Studio's too
