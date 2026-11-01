@@ -149,7 +149,7 @@ def ground_truth(conn: sqlite3.Connection, f: sqlite3.Row, claims: dict[str, lis
         rid = next(r["work_id"] for r in links if r["status"] == "rejected")
         return {"label_status": "rejected_personal", "in_library": False, "is_personal": True, **personal,
                 "work_id": rid, "work_status": "rejected"}
-    if f["triage_status"] != "done":
+    if not (f["classify_status"] == "done" and f["extract_status"] in ("done", "skipped")):  # db.MODELS_DONE
         return {"label_status": "pending_triage", "in_library": False, "is_personal": None, **empty}
     if not works.is_library(claims):
         return {"label_status": "not_promoted", "in_library": False, "is_personal": True, **personal}
@@ -175,7 +175,7 @@ def record(conn: sqlite3.Connection, f: sqlite3.Row) -> dict[str, Any]:
         "page_count": f["page_count"],
         "pdf_info": {k: f[f"pdf_{k}"] for k in
                      ["title", "author", "subject", "keywords", "creator", "producer", "created", "modified"]},
-        "text_status": f["text_status"],
+        "text_status": f["read_status"],  # (the export format keeps its key)
         "text_sources": sorted({p["source"] for p in pg}),
         "text": "\n\n".join(p["text"] for p in pg),
         "pages": pg,

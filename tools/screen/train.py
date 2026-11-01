@@ -78,8 +78,9 @@ def from_exports(name: str, d: Path, version: int = 1) -> list[dict]:
             continue
         path = inp.get("path")
         if version >= 3:
-            if int(r["export"]["prompt_version"].rpartition("-")[2]) < 5:
-                sys.exit(f"{d}: exported with {r['export']['prompt_version']}; input version 3 needs triage-5's "
+            pv = str(r["export"]["prompt_version"])  # "triage-5" before 0.x numbering, now "0.6"
+            if db.version(pv.rpartition("-")[2] if pv.startswith("triage-") else pv) < (0, 5):
+                sys.exit(f"{d}: exported with {r['export']['prompt_version']}; input version 3 needs 0.5's "
                          "state: export again with the current code")
             out.append({"key": f"{name}:{r['file_id']}", "source": name, "sha256": r["sha256"],
                         "label": 1 if gt["is_personal"] else 0, "input": inp["triage_prompt"]})
