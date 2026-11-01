@@ -398,10 +398,12 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// One line for the menu: what the watcher is doing.
     var watchLine: String? {
         guard config.watch != nil else { return nil }
-        if !watchEnabled { return "Not watching for new PDFs" }
-        if let note = watcherNote, watcher == nil { return "Watcher: \(note)" }
-        guard watcher != nil else { return "Watcher: not running" }
-        guard let w = library?.watch else { return "Watcher: starting…" }
+        // A live watcher's status first, whoever runs it (e.g. `papyrus watch --once` in a terminal).
+        guard let w = library?.watch else {
+            if !watchEnabled { return "Not watching for new PDFs" }
+            if let note = watcherNote, watcher == nil { return "Watcher: \(note)" }
+            return watcher == nil ? "Watcher: not running" : "Watcher: starting…"
+        }
         let todo = w.pending?.total ?? 0
         var left = todo > 0 ? " (\(todo) left" + (w.etaS.map { ", \(duration($0))" } ?? "") + ")" : ""
         if let failed = w.failed, failed > 0 { left += " · \(failed) failed" }
@@ -525,9 +527,10 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if button.image !== image { button.image = image }
     }
 
-    /// The watcher runs and its queue has items (due, or waiting for a retry).
+    /// A watcher of this library (ours, or one started in a terminal) has items queued (due, or
+    /// waiting for a retry). `/api/version` reports `watch` only while that process lives.
     var queueHasWork: Bool {
-        watchEnabled && watcher != nil && (library?.watch?.pending?.total ?? 0) > 0
+        (library?.watch?.pending?.total ?? 0) > 0
     }
 
     /// `~12 min`, `~1 h 20 min`, `under a minute`.
