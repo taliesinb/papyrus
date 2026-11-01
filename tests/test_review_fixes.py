@@ -125,9 +125,22 @@ def test_state_gives_size_and_caps_long_metadata(tmp_path):
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     conn.execute("UPDATE files SET size=2500000, pdf_keywords=? WHERE id=1", ("topic; " * 500,))
     state = build_state(conn, 1)
-    assert "\nSize: 2.5 MB\n" in state and "We study things in great detail" in state
-    meta = next(line for line in state.splitlines() if line.startswith("PDF metadata:"))
-    assert len(meta) < META_CHARS + 40 and meta.endswith("…")
+    assert "\nsize: 2.5 MB\n" in state and "We study things in great detail" in state
+    meta = next(line for line in state.splitlines() if line.startswith("keywords: "))
+    assert len(meta) < META_CHARS + 20 and meta.endswith("…")
+
+
+def test_state_metadata_on_one_line(tmp_path):
+    """A book's keywords held Amazon's product details, one per line with '#' bullets; a creator
+    or producer can carry tool noise after a newline."""
+    from papyrus.triage import build_state
+
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
+    conn.execute("UPDATE files SET pdf_keywords=?, pdf_creator=? WHERE id=1",
+                 ("# Hardcover: 635 pages\r\n# ISBN-10: 1558608567\r\n", "Word\r\n  build 17.2 x64"))
+    state = build_state(conn, 1)
+    assert "\nkeywords: Hardcover: 635 pages; ISBN-10: 1558608567\n" in state
+    assert "\ncreator: Word\n" in state
 
 
 class _SchemaBackend(FakeBackend):

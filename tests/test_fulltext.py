@@ -107,8 +107,10 @@ def test_extract_reads_every_page_of_live_works_only(tmp_path):
     assert f[0] == "done"
     # personal paperwork stays at the pages scanning read
     assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
-    # triage still sees only the first pages
-    assert "--- page 3 ---" not in build_state(conn, paper)
+    # triage's state reads past them from the stored copy when the pages fit, without storing them
+    assert "--- page 3 ---" in build_state(conn, paper)
+    assert "--- page 3 ---" in build_state(conn, slip)
+    assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
     assert fulltext.run(conn, ocr=False)["files"] == 0  # idempotent
 
 

@@ -8,8 +8,11 @@ screen.py) on triaged files.
         --db /tmp/lib.sqlite --originals ~/Downloads --originals ~/Desktop \\
         [--personal FILE_ID ...] [--library FILE_ID ...] [--write] [--json /tmp/screen-eval.json]
 
-Then commit data/screen.bin. (2026-11-01: 160 files, 72 personal and 88 library, from this
-Mac and tali-macbook-air; --personal 37, a personal document triage had promoted to a work.)
+Then commit data/screen.bin. (2026-11-01, input version 3: 157 files, 69 personal and 88 library,
+from this Mac and tali-macbook-air, whose schema-2 library was exported from an upgraded .backup
+copy (AGENTS.md); --personal 37, a personal document triage had promoted to a work. LOO AUC
+0.9998; at P >= 0.9, 68 personal caught and one borderline library file flagged, held for
+review rather than purged.)
 
 Labelled files come from:
 
@@ -21,9 +24,10 @@ Labelled files come from:
 * `--personal` / `--library`: file ids of `--db` whose label you set yourself (by sha256, so
   they override the exports too).
 
-Each file is embedded at the screen's level (screen.screen_input, prefix and model as in
-screen.py) straight from LM Studio, *not* through the inference cache: the cache would write
-the first pages of purged documents back to disk.
+Each file is embedded at the screen's level (input version 3: triage's state, the export's
+`triage_prompt`, or for purged originals triage.render_state on the PDF itself; versions 1 and 2:
+screen.screen_input; prefix and model as in screen.py) straight from LM Studio, *not* through the
+inference cache: the cache would write the pages of purged documents back to disk.
 
 It reports leave-one-out metrics (C chosen inside each fold), per source and across sources
 (trained on one, tested on the others), then fits all files and, with --write, writes the
@@ -49,9 +53,10 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import Normalizer, StandardScaler
 
-from papyrus import screen
+from papyrus import db, screen, triage
+from papyrus.filenames import parse_filename
 from papyrus.llm.embed import LMStudioEmbedder
-from papyrus.pdf import read_pdf
+from papyrus.pdf import PageReader, read_pdf
 
 if sys.platform == "darwin":
     from papyrus.macos import where_froms
@@ -72,6 +77,13 @@ def from_exports(name: str, d: Path, version: int = 1) -> list[dict]:
         if not (inp.get("text") or "").strip():
             continue
         path = inp.get("path")
+        if version >= 3:
+            if int(r["export"]["prompt_version"].rpartition("-")[2]) < 5:
+                sys.exit(f"{d}: exported with {r['export']['prompt_version']}; input version 3 needs triage-5's "
+                         "state: export again with the current code")
+            out.append({"key": f"{name}:{r['file_id']}", "source": name, "sha256": r["sha256"],
+                        "label": 1 if gt["is_personal"] else 0, "input": inp["triage_prompt"]})
+            continue
         out.append({"key": f"{name}:{r['file_id']}", "source": name, "sha256": r["sha256"],
                     "label": 1 if gt["is_personal"] else 0,
                     "input": screen.screen_input(inp.get("filename") or (Path(path).name if path else "unknown.pdf"),
@@ -103,11 +115,31 @@ def from_originals(name: str, db: Path, dirs: list[Path], version: int = 1) -> l
                 continue
             if not text.strip():
                 continue
+            if version >= 3:
+                out.append({"key": f"{name}:{purged[sha]}", "source": name, "sha256": sha, "label": 1,
+                            "input": original_state(p, info)})
+                continue
             out.append({"key": f"{name}:{purged[sha]}", "source": name, "sha256": sha, "label": 1,
                         "input": screen.screen_input(p.name, screen.home_relative(str(p.parent)), p.stat().st_size,
                                                      screen.host_of((where_froms(p) or [None])[0]), text,
                                                      version=version, pages=info.page_count, meta=info.meta)})
     return out
+
+
+def original_state(p: Path, info) -> str:
+    """Triage's state for a PDF that is not in the library (a purged original), as build_state
+    would have given it: name, folder, size, download URL, PDF metadata, filename hint, pages."""
+    froms = where_froms(p) or []
+    hint = parse_filename(p.stem)
+    meta = dict(info.meta)
+    d = triage.Document(
+        names=[p.name], folders=[screen.home_relative(str(p.parent))],
+        origins=[froms[0] + (f" (via {froms[1]})" if len(froms) > 1 else "")] if froms else [],
+        size=p.stat().st_size, page_count=info.page_count,
+        meta={k: meta.get(k) for k in triage.META_FIELDS},
+        hint=db.dumps({"title": hint.title, "surnames": hint.surnames, "year": hint.year}) if hint else None)
+    with PageReader(p) as reader:
+        return triage.render_state(d, info.page_count, reader.text)
 
 
 def fit(X, y):
@@ -154,8 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true", help=f"write {screen.weights_path()}")
     ap.add_argument("--out", type=Path, help="write the weights here instead")
     ap.add_argument("--json", type=Path, help="leave-one-out probabilities and metrics (keys, no text)")
-    ap.add_argument("--input-version", type=int, default=2, choices=(1, 2),
-                    help="1: name, folder, size, host, first words; 2: also pages and PDF metadata [2]")
+    ap.add_argument("--input-version", type=int, default=3, choices=(1, 2, 3),
+                    help="1: name, folder, size, host, first words; 2: also pages and PDF metadata; "
+                         "3: triage's state [3]")
     a = ap.parse_args(argv)
 
     recs: list[dict] = []

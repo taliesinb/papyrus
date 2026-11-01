@@ -13,6 +13,10 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     enabled = true        # also PAPYRUS_SCREEN=0
     threshold = 0.9       # P(personal) at which a file is set aside without asking the 4B model
 
+    [triage]              # the state every triage model reads (triage.build_state, pagetext.py)
+    state_tokens = 1000   # about this many tokens: the header, then pages from the front and the back
+    tail_fraction = 0.2   # share of the page budget kept for the last pages
+
     [watch]               # `papyrus watch` (watch/)
     dirs = ["~/Downloads", "~/Desktop"]
     settle = 3            # seconds a new file must stay unchanged before it is added
@@ -64,6 +68,12 @@ autostart = true
 # [screen]
 # enabled = true
 # threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
+
+# What every triage model reads of a document: its names, folder, origin and PDF metadata, then
+# pages from the front and, for a longer document, the back, within about this many tokens.
+# [triage]
+# state_tokens = 1000
+# tail_fraction = 0.2       # share of the page budget kept for the last pages
 
 # `papyrus watch`: add new PDFs from these directories (not their subdirectories) as they
 # appear, then triage, promote, extract and enrich them in the background.
@@ -174,6 +184,26 @@ def screen() -> ScreenSettings:
     if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 < t <= 1):
         raise ConfigError(f"{path()}: screen.threshold must be a probability in (0, 1], got {t!r}")
     return ScreenSettings(enabled, None if t is None else float(t))
+
+
+@dataclass(frozen=True)
+class TriageSettings:
+    state_tokens: int = 1000
+    tail_fraction: float = 0.2
+
+
+def triage() -> TriageSettings:
+    """The [triage] table: the size of the state and the share of it kept for the last pages."""
+    section = load().get("triage") or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path()}: [triage] must be a table")
+    n = section.get("state_tokens", TriageSettings.state_tokens)
+    if isinstance(n, bool) or not isinstance(n, int) or n < 300:
+        raise ConfigError(f"{path()}: triage.state_tokens must be a whole number of tokens >= 300, got {n!r}")
+    f = section.get("tail_fraction", TriageSettings.tail_fraction)
+    if isinstance(f, bool) or not isinstance(f, (int, float)) or not 0 <= f < 1:
+        raise ConfigError(f"{path()}: triage.tail_fraction must be in [0, 1), got {f!r}")
+    return TriageSettings(n, float(f))
 
 
 WATCH_DIRS = ("~/Downloads", "~/Desktop")

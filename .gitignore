@@ -9,3 +9,6 @@ __pycache__/
 tools/*/.build/
 apps/macos/dist/
 apps/macos/.build/
+# generated at build time by tools/words/fetch.py
+src/papyrus/data/words.txt
+src/papyrus/data/words.README.md

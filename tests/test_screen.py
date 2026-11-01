@@ -51,7 +51,7 @@ def test_weights_round_trip_and_the_shipped_weights(tmp_path):
     z = (0.5 * 3 + -0.25 * 4) / 5 - 1.5  # the embedding is L2-normalised first
     assert math.isclose(w.p([3.0, 4.0, 0.0]), 1 / (1 + math.exp(-z)), rel_tol=1e-6)
     shipped = screen.read_weights()
-    assert len(shipped.w) == 768 and shipped.threshold == 0.9
+    assert len(shipped.w) == 768 and shipped.threshold == 0.9 and shipped.input_version == 3
     assert shipped.meta["model"] == "text-embedding-nomic-embed-text-v1.5" and shipped.meta["prefix"] == screen.PREFIX
     assert isinstance(FakeEmbedder(), Embedder)
 
@@ -87,6 +87,19 @@ def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_pa
     # purging it erases what the embedder was asked
     purge.purge_file(conn, 1, {"by": "user"})
     assert inference.store().show(call)["input"] is None
+
+
+def test_input_version_3_is_the_triage_state(tmp_path):
+    """Weights trained on input version 3 embed exactly what the classifier and the extraction
+    model read."""
+    from papyrus.triage import build_state
+
+    conn = _payslip(tmp_path)
+    w3 = screen.Weights(WEIGHTS.w, WEIGHTS.b, {**WEIGHTS.meta, "input_version": 3})
+    scr = screen.Screen(inference.cached_embedder(FakeEmbedder()), w3, 0.9)
+    assert screen.screen_file(conn, 1, scr)["rejected"]
+    (text,) = scr.embedder.inner.texts
+    assert text == screen.PREFIX + build_state(conn, 1) and text.startswith(screen.PREFIX + "--- document ---\n")
 
 
 def test_library_material_goes_on_to_full_triage(tmp_path):

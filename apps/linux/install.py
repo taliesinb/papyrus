@@ -44,7 +44,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from variants import (  # noqa: E402  (apps/variants.py, shared with apps/macos/build.py)
-    FIRST_PORT, PORT_STEP, RELEASE, all_variants, copy_web, die, display_name, ensure_library, find, find_node, link_home,
+    FIRST_PORT, PORT_STEP, RELEASE, all_variants, copy_web, die, display_name, ensure_library, ensure_words, find, find_node,
+    link_home,
     papyrus_root, record_install, resolve_variant, set_watch, variant_name, version, watch_command, watches, web_build_for,
     write_flat_yaml,
 )
@@ -425,6 +426,7 @@ def main() -> None:
     if not tools["pdftoppm"] and not args.no_thumbnails:
         die(POPPLER_HINT)
 
+    tools["words"] = ensure_words()
     short, build = version()
     variants = {}
     for vid in ids:

@@ -100,6 +100,34 @@ def read_outline(doc: pdfium.PdfDocument, max_entries: int = 5000) -> list[Outli
     return out
 
 
+class PageReader:
+    """A PDF's pages read one at a time, on demand (clean_text, as in read_pdf), for callers that
+    need a few pages of a long document."""
+
+    def __init__(self, path: Path):
+        self.doc = pdfium.PdfDocument(str(path))
+        self.page_count = len(self.doc)
+
+    def text(self, page: int) -> str:
+        """The text of page `page` (1-based)."""
+        pg = self.doc[page - 1]
+        tp = pg.get_textpage()
+        try:
+            return clean_text(tp.get_text_bounded())
+        finally:
+            tp.close()
+            pg.close()
+
+    def close(self) -> None:
+        self.doc.close()
+
+    def __enter__(self) -> PageReader:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
 def read_pdf(path: Path, max_pages: int | None = 2, outline: bool = False) -> PdfInfo:
     """Document info and the text of the first `max_pages` pages (None = all), optionally the outline."""
     doc = pdfium.PdfDocument(str(path))

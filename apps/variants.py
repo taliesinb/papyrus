@@ -169,6 +169,29 @@ def ensure_library(vid: str, server_env: dict[str, str]) -> bool:
     return True
 
 
+WORDS = REPO / "src" / "papyrus" / "data" / "words.txt"
+
+
+def ensure_words() -> bool:
+    """Fetch the common-words list (tools/words/fetch.py) unless it is there. Without it papyrus
+    still works (small caps stay split in triage's text), so a failed download only warns.
+    Returns whether the list is there."""
+    if WORDS.exists():
+        return True
+    uv = find_uv()
+    if not uv:
+        print(f"{Path(sys.argv[0]).name}: uv not found; skipping the word list (tools/words/fetch.py)", file=sys.stderr)
+        return False
+    print("fetching the word list (tools/words/fetch.py)…", file=sys.stderr)
+    r = subprocess.run([uv, "run", "--project", str(REPO), "--frozen", "--quiet", "python",
+                        str(REPO / "tools" / "words" / "fetch.py")], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"{Path(sys.argv[0]).name}: the word list could not be fetched; small caps stay split in triage's "
+              f"text until `uv run python tools/words/fetch.py` succeeds:\n{(r.stderr or r.stdout).strip()[-1000:]}",
+              file=sys.stderr)
+    return WORDS.exists()
+
+
 def find_uv() -> str | None:
     return find("uv", str(Path.home() / ".local/bin/uv"), "/opt/homebrew/bin/uv", "/usr/local/bin/uv")
 

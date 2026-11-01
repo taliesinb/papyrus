@@ -200,9 +200,9 @@ def test_download_end_to_end(tmp_path):
     fid = conn.execute("SELECT file_id FROM context_refs r JOIN contexts c ON c.id=r.context_id"
                        " WHERE c.locator='https://arxiv.org/abs/2312.00429'").fetchone()[0]
     state = build_state(conn, fid)
-    assert "Link title: [2312.00429] Polygraphs" in state
-    assert "Downloaded from: https://arxiv.org/pdf/2312.00429 (via page https://arxiv.org/abs/2312.00429)" in state
-    assert "Filename: 2312.00429v2.pdf" in state
+    assert "\nlink title: [2312.00429] Polygraphs" in state
+    assert "\norigin: https://arxiv.org/pdf/2312.00429 (via https://arxiv.org/abs/2312.00429)\n" in state
+    assert "\nname: 2312.00429v2.pdf\n" in state
     assert detect_ids(conn, fid) == {"arxiv": "2312.00429", "arxiv_version": "v2"}
 
     # a second run fetches only what failed

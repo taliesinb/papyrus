@@ -61,7 +61,7 @@ def test_triage_and_promote_paper(tmp_path):
                 "A Study of Things. Jane Doe. arXiv:2412.06464v3 [cs.LG] Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
     r = triage_file(conn, 1, be, FakeClassifier("paper", True))
-    assert "Found at:" in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
+    assert "\nfolder: " in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
     assert r["ids"]["arxiv"] == "2412.06464" and r["ids"]["arxiv_version"] == "v3"
     claims = db.current_assertions(conn, "file", 1)
     assert {c["source"] for c in claims["kind"]} == {"classify:fakedec:d"}  # triage-4: kind is the classifier's

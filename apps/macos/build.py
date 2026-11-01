@@ -56,7 +56,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from variants import (  # noqa: E402  (apps/variants.py, shared with apps/linux/install.py)
     FIRST_PORT, PORT_STEP, RELEASE, RELEASE_COLOR, WEB, all_variants, alive, copy_web, die, display_name, find, find_node,
-    ensure_library, link_home, papyrus_root, record_install, resolve_variant, run, scheme, set_watch, variant_name, version,
+    ensure_library, ensure_words, link_home, papyrus_root, record_install, resolve_variant, run, scheme, set_watch, variant_name, version,
     watch_command, watches, web_build_for,
 )
 
@@ -291,6 +291,7 @@ def main() -> None:
     for vid in ids:
         variants[vid] = set_watch(vid, resolve_variant(vid, args.color, args.port, WRITER), args.watch, WRITER)
         link_home(papyrus_root() / vid, library_links(vid))
+    tools["words"] = ensure_words()
     compiled = compile_all(HERE / ".build")
     if args.touch_icon:
         run([str(compiled / "make-icon"), str(HERE / "Resources" / "glyph.svg"), "--png", "180", str(WEB / "static" / "apple-touch-icon.png"),

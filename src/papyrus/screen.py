@@ -4,10 +4,12 @@ Triage asks a 4B language model about every new file (~1 s for the classifier al
 extraction). The screen embeds what it sees of a file first, with a small embedding model
 (`llm/embed.py`, nomic-embed-text v1.5, ~30 ms), and scores it with a logistic regression:
 
-    input   "File name: …\\nFolder: ~/…\\nSize: N KB\\nDownloaded from: host\\nFirst words: <128 words>"
-            (input version 1); version 2 adds "Pages: N" and "PDF metadata: title=…; creator=…" (each
-            field capped at 200 characters, as in triage) before the first words. The weights say
-            which version they were trained on (`input_version`, 1 if absent).
+    input   version 3: triage's own state (`triage.build_state`), the text the classifier and the
+            extraction model read. Earlier weights used inputs of their own: version 1
+            "File name: …\\nFolder: ~/…\\nSize: N KB\\nDownloaded from: host\\nFirst words: <128 words>",
+            version 2 the same with "Pages: N" and "PDF metadata: title=…; creator=…" before the
+            first words. The weights say which version they were trained on (`input_version`, 1
+            if absent).
     p       sigmoid(w · e/|e| + b), e the embedding of "classification: " + input
 
 When p >= the threshold (default: the weights' own, 0.9), triage stops there: the file gets a
@@ -91,7 +93,8 @@ def screen_input(name: str, folder: str, size_bytes: int, host: str | None, text
 
 
 def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str | None:
-    """The screen's input for a file in the library, or None if it has no text to go on."""
+    """The screen's input for a file in the library, or None if it has no text to go on (none in
+    the pages scanning read)."""
     from .pdf import TRIAGE_PAGES
 
     f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
@@ -99,6 +102,10 @@ def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str 
         "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
     if f is None or not text.strip():
         return None
+    if version >= 3:
+        from .triage import build_state
+
+        return build_state(conn, file_id)
     c = conn.execute(
         "SELECT c.kind, c.locator, c.extra FROM context_refs r JOIN contexts c ON c.id=r.context_id"
         " WHERE r.file_id=? AND c.kind IN ('filesystem', 'download')"
