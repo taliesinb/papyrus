@@ -213,6 +213,26 @@ def test_debounce_waits_for_firefoxs_part_file(tmp_path):
     assert d.due()[0] == [final]
 
 
+def test_debounce_ignores_events_that_change_nothing(tmp_path):
+    """Hashing a file fires events on it. A purged file has no context to say 'unchanged', so
+    each event used to re-hash it: a run a second (2026-11-01, runs 86-120)."""
+    clock = Clock()
+    d = Debouncer([tmp_path], settle_s=3, clock=clock)
+    f = tmp_path / "a.pdf"
+    f.write_bytes(b"%PDF-1.4 done")
+    d.touch(f)
+    clock.advance(3)
+    assert d.due()[0] == [f]
+    for _ in range(3):
+        d.touch(f)  # events while it is read
+        clock.advance(3)
+        assert d.due() == ([], [])
+    f.write_bytes(b"%PDF-1.4 done, and changed")
+    d.touch(f)
+    clock.advance(3)
+    assert d.due()[0] == [f]
+
+
 def test_debounce_reports_gone_paths_and_ignores_other_directories(tmp_path):
     clock = Clock()
     (tmp_path / "sub").mkdir()
@@ -377,7 +397,7 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     assert mem.calls == 1 and len(_runs(conn)) == 1
     clock.advance(31)
     w.pump()  # still under pressure: backs off for longer
-    assert mem.calls == 2 and w.backoff_until - clock() == 60
+    assert mem.calls == 2 and w.backoffs["triage"][0] - clock() == 60
     mem.level = "normal"
     clock.advance(61)
     w.pump()
@@ -401,6 +421,20 @@ def test_pausing_model_work_keeps_adding_files(tmp_path):
     assert len(be.prompts) == 1 and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
     assert json.loads(w.status_path.read_text())["state"] == IDLE
     assert any(m == "model work resumed" for m in logs)
+
+
+def test_an_ocr_back_off_does_not_hold_triage(tmp_path):
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    _pdf(dl / "a.pdf", "Lecture notes on things")
+    w.backoffs["ocr"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
+    w.catch_up()
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    w.backoffs["triage"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
+    conn.execute("UPDATE files SET triage_status='pending'")
+    w.dirty = True
+    w.pump()
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert json.loads(w.status_path.read_text())["state"] == WAITING_MEMORY
 
 
 def test_apple_refusal_under_memory_pressure_is_a_back_off(tmp_path):

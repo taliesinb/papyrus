@@ -131,9 +131,8 @@ class Watch:
         self.host = socket.gethostname()
         self.started = db.now_iso()
         self.state, self.detail = STARTING, ""
-        self.backoff_state: str | None = None
-        self.backoff_reason = ""
-        self.backoff_until = 0.0
+        # model work waiting, per stage: an OCR that can't run under "warn" mustn't hold triage
+        self.backoffs: dict[str, tuple[float, str, str]] = {}  # stage -> (until, state, reason)
         self.memory_delay = MEMORY_DELAY
         self.queue = queue or Queue(db.library_home() / "queue.sqlite", wall)
         self.models: tuple[Any, Any] | None = None
@@ -205,8 +204,8 @@ class Watch:
             self.log("model work paused" if self.was_paused else "model work resumed")
             self.dirty = True
             self._settle()
-        if self.backoff_state and now >= self.backoff_until:
-            self.backoff_state = None
+        for stage in [s for s, (until, _, _) in self.backoffs.items() if now >= until]:
+            del self.backoffs[stage]
             self.dirty = True
         if now - self.last_check >= RECHECK_S:
             self.dirty = True
@@ -246,8 +245,7 @@ class Watch:
         waits = [60.0, self.last_check + RECHECK_S - now]
         if (d := self.debouncer.next_check()) is not None:
             waits.append(d)
-        if self.backoff_state:
-            waits.append(self.backoff_until - now)
+        waits += [until - now for until, _, _ in self.backoffs.values()]
         if (d := self.ledger.idle_due()) is not None:
             waits.append(d + 1)
         if self.paused:
@@ -331,6 +329,7 @@ class Watch:
                     self.debouncer.add(path)
                 else:
                     self._ingest(path, run_id, c, now)
+                    self.debouncer.seen(path)
             scan.mark_missing(self.conn, root, now, c)
 
     def _take(self, ready: list[Path], gone: list[Path], run_id: int, c: Counter) -> None:
@@ -472,8 +471,11 @@ class Watch:
         if paused and not self.was_paused:  # noticed mid-batch: pump() then sees the resume
             self.was_paused = True
             self.log("model work paused")
-        models_ok = (self.backoff_state is None or self.clock() >= self.backoff_until) and not paused
-        return self.queue.next([s for s in STAGES if models_ok or s not in ("ocr", "triage")])
+        now = self.clock()
+        waiting = {s for s, (until, _, _) in self.backoffs.items() if now < until}
+        if paused:
+            waiting |= {"ocr", "triage"}
+        return self.queue.next([s for s in STAGES if s not in waiting])
 
     def _still_pending(self, stage: str, i: int) -> bool:
         return i in self._library_pending()[stage]
@@ -489,11 +491,11 @@ class Watch:
             else:
                 self.queue.done(stage, i, round((time.monotonic() - t0) * 1000))
         except Backoff as b:
-            self._back_off(b, c)
+            self._back_off(stage, b, c)
         except ModelBusy:
-            self._back_off(Backoff(WAITING_MEMORY, "the model refused the request under memory pressure"), c)
+            self._back_off(stage, Backoff(WAITING_MEMORY, "the model refused the request under memory pressure"), c)
         except BackendUnavailable:
-            self._back_off(Backoff(LMSTUDIO_UNAVAILABLE, "the model is unavailable", delay=LMSTUDIO_DELAY), c)
+            self._back_off(stage, Backoff(LMSTUDIO_UNAVAILABLE, "the model is unavailable", delay=LMSTUDIO_DELAY), c)
         except Exception as e:  # noqa: BLE001  the type only: messages may hold paths
             c[f"{stage}_error"] += 1
             if stage == "triage":
@@ -583,17 +585,25 @@ class Watch:
         elif level != NORMAL:
             raise Backoff(WAITING_MEMORY, f"memory pressure ({level})")
 
-    def _back_off(self, b: Backoff, c: Counter) -> None:
+    def _back_off(self, stage: str, b: Backoff, c: Counter) -> None:
         if b.state == WAITING_MEMORY:
             delay = b.delay or self.memory_delay
             self.memory_delay = min(self.memory_delay * 2, MEMORY_DELAY_MAX)
         else:
             delay = b.delay or LMSTUDIO_DELAY
             self.models = None
-        self.backoff_state, self.backoff_reason = b.state, b.reason
-        self.backoff_until = self.clock() + delay
+        self.backoffs[stage] = (self.clock() + delay, b.state, b.reason)
         c[f"backoff_{b.state}"] += 1
-        self.log(f"model work waits {delay:.0f} s: {b.reason}")
+        self.log(f"{stage} waits {delay:.0f} s: {b.reason}")
+
+    def _waiting(self) -> tuple[float, str, str] | None:
+        """The back-off to show: triage's if it has one and work, else OCR's."""
+        counts, now = self.pending(), self.clock()
+        for stage in ("triage", "ocr"):
+            b = self.backoffs.get(stage)
+            if b and now < b[0] and counts[stage]:
+                return b
+        return None
 
     # --- status -------------------------------------------------------------------------------
 
@@ -615,8 +625,8 @@ class Watch:
         counts = self.pending()
         if self.paused and (counts["triage"] or counts["ocr"]):
             self._status(PAUSED, "model work paused (papyrus watch --resume)")
-        elif self.backoff_state and self.clock() < self.backoff_until and self.pending()["triage"]:
-            self._status(self.backoff_state, self.backoff_reason)
+        elif waiting := self._waiting():
+            self._status(waiting[1], waiting[2])
         elif self.unreadable:
             n = len(self.unreadable)
             self._status(IDLE, f"cannot read {n} watched folder{'s' if n > 1 else ''} (macOS privacy settings)")
@@ -633,7 +643,8 @@ class Watch:
                                                    "promote_purged", "extracted", "enrich_enriched") if self.totals[k]},
         }
         if state in (WAITING_MEMORY, LMSTUDIO_UNAVAILABLE):
-            data["retry_at"] = db.to_iso(time.time() + max(0.0, self.backoff_until - self.clock()))
+            if waiting := self._waiting():
+                data["retry_at"] = db.to_iso(time.time() + max(0.0, waiting[0] - self.clock()))
         if state != STOPPED:
             try:
                 counts = self.pending()

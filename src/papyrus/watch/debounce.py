@@ -84,7 +84,16 @@ class Debouncer:
             if not path.exists():
                 self._gone.append(path)
             return
+        if self._handed.get(path) == sig:
+            return  # unchanged since handed out: reading or hashing it fires events of its own
         self._add(path, sig)
+
+    def seen(self, path: Path) -> None:
+        """`path` was just ingested by other means (the catch-up scan): ignore its events until it
+        changes."""
+        sig = _sig(path)
+        if sig is not None:
+            self._handed[Path(path)] = sig
 
     def add(self, path: Path) -> None:
         """Wait for `path` to settle (e.g. found by a scan while it is still being written)."""
