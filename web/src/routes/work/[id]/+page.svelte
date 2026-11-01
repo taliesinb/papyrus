@@ -104,8 +104,8 @@
 
 		<div class="actions">
 			<a class="btn" href={href(`/?like=${w.id}`)}>≈ Similar in library</a>
-			{#if currentFile?.available}
-				<button class="btn" type="button" onclick={() => reveal(currentFile.id)}>{revealing ? 'Revealed' : 'Reveal in Finder'}</button>
+			{#if currentFile?.available && data.revealLabel}
+				<button class="btn" type="button" onclick={() => reveal(currentFile.id)} title="On the server's machine">{revealing ? 'Revealed' : data.revealLabel}</button>
 			{/if}
 			<button class="btn ghost" type="button" onclick={() => (wide = !wide)} title="Give the PDF more room">{wide ? '⇥ Details' : '⇤ Wider PDF'}</button>
 		</div>

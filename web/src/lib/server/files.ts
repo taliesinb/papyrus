@@ -5,10 +5,11 @@
 // context. We check the size matches so a different file that has since
 // taken the same path is not served by mistake.
 
-import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { execFile, spawnSync } from 'node:child_process';
+import { accessSync, constants, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, delimiter, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { all, get, libraryHome } from './db.ts';
 
@@ -50,6 +51,30 @@ export function resolveFile(id: number): ResolvedFile | null {
 	return null;
 }
 
+/** Show a file in the server machine's file manager: Finder, or on Linux whichever implements
+ * org.freedesktop.FileManager1 (Nautilus, Dolphin, Nemo, Thunar, …) on the session bus. */
+export function reveal(path: string): void {
+	if (process.platform === 'darwin') {
+		execFile('/usr/bin/open', ['-R', path], ignore);
+		return;
+	}
+	const uri = pathToFileURL(path).href;
+	execFile('gdbus', ['call', '--session', '--dest', 'org.freedesktop.FileManager1', '--object-path',
+		'/org/freedesktop/FileManager1', '--method', 'org.freedesktop.FileManager1.ShowItems', `['${uri.replace(/'/g, '%27')}']`, ''], ignore);
+}
+
+// With a callback, a missing program is an error passed to it rather than an uncaught 'error' event.
+const ignore = () => {};
+
+/** The Reveal button's label, or null where there is no file manager to show it in. */
+export function revealLabel(): string | null {
+	if (process.platform === 'darwin') return 'Reveal in Finder';
+	// A desktop session: a headless server (no session bus) has no file manager to show the file in.
+	if (process.platform === 'linux' && process.env.DBUS_SESSION_BUS_ADDRESS && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY))
+		return 'Show in Files';
+	return null;
+}
+
 const availability = new Map<number, { ok: boolean; at: number }>();
 
 /** Cheap, cached (30 s) check that a file can be served. */
@@ -62,17 +87,77 @@ export function fileAvailable(id: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Thumbnails (poppler's pdftoppm), cached outside the library directory.
+// Page thumbnails, cached outside the library directory.
+//
+// Two renderers, the same page at the same width either way:
+//  - papyrus-thumb (macOS, CoreGraphics; apps/macos/Sources/Thumb). Papyrus Server.app passes the
+//    copy in its bundle as PAPYRUS_THUMB; a server started from web/ (`pnpm dev`, `pnpm start`)
+//    finds apps/macos/.build/papyrus-thumb, which `python3 apps/macos/build.py` links.
+//  - poppler's pdftoppm (Linux; macOS without the above). PDFTOPPM, else PATH and the usual
+//    places (a systemd unit's PATH is short). Linux packages: poppler-utils (Debian, Ubuntu,
+//    Fedora, nixpkgs), poppler (Arch, Homebrew).
 
 export function cacheDir(): string {
 	return process.env.PAPYRUS_WEB_CACHE ?? join(homedir(), '.cache', 'papyrus-web');
 }
 
-function pdftoppm(): string {
-	if (process.env.PDFTOPPM) return process.env.PDFTOPPM;
-	for (const p of ['/opt/homebrew/bin/pdftoppm', '/usr/local/bin/pdftoppm', '/usr/bin/pdftoppm'])
-		if (existsSync(p)) return p;
-	return 'pdftoppm';
+export interface Renderer {
+	kind: 'papyrus-thumb' | 'pdftoppm';
+	path: string;
+	/** pdftoppm: has -scale-dimension-before-rotation (poppler 0.86+). */
+	scaleBeforeRotation?: boolean;
+}
+
+function executable(p: string): boolean {
+	try {
+		accessSync(p, constants.X_OK);
+		return statSync(p).isFile();
+	} catch {
+		return false;
+	}
+}
+
+let found: Renderer | undefined;
+
+/** The page renderer, or null when there is none (looked for again on the next call). */
+export function renderer(): Renderer | null {
+	if (found) return found;
+	const thumb = [process.env.PAPYRUS_THUMB, process.platform === 'darwin' ? resolve('../apps/macos/.build/papyrus-thumb') : undefined];
+	for (const p of thumb) if (p && executable(p)) return (found = { kind: 'papyrus-thumb', path: p });
+	const dirs = [...(process.env.PATH ?? '').split(delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin',
+		'/run/current-system/sw/bin', join(homedir(), '.nix-profile', 'bin')];
+	const poppler = [process.env.PDFTOPPM, ...dirs.filter(Boolean).map((d) => join(d, 'pdftoppm'))];
+	for (const p of poppler) {
+		if (!p || !executable(p)) continue;
+		const help = spawnSync(p, ['-h'], { encoding: 'utf8', timeout: 5_000 });
+		const scaleBeforeRotation = `${help.stdout}${help.stderr}`.includes('-scale-dimension-before-rotation');
+		return (found = { kind: 'pdftoppm', path: p, scaleBeforeRotation });
+	}
+	return null;
+}
+
+const NO_RENDERER =
+	process.platform === 'darwin'
+		? 'no page renderer: Papyrus Server.app carries papyrus-thumb; from web/, run python3 apps/macos/build.py once (or install poppler)'
+		: 'no page renderer: install poppler (pdftoppm; Debian/Ubuntu/Fedora: poppler-utils, Arch: poppler) or set PDFTOPPM';
+
+/** Render one page to `png`. */
+async function render(file: ResolvedFile, page: number, width: number, png: string): Promise<void> {
+	const r = renderer();
+	if (!r) throw new Error(NO_RENDERER);
+	if (r.kind === 'papyrus-thumb') {
+		await run(r.path, [file.path, String(page), String(width), png], { timeout: 60_000 });
+		return;
+	}
+	// pdftoppm adds the .png itself. Scaling before rotation keeps a /Rotate'd page `width` wide
+	// (without it, -scale-to-x applies to the unrotated page: 320 asked, 415 given).
+	await run(
+		r.path,
+		['-f', String(page), '-l', String(page), '-scale-to-x', String(width), '-scale-to-y', '-1',
+			...(r.scaleBeforeRotation ? ['-scale-dimension-before-rotation'] : []),
+			'-png', '-singlefile', file.path, png.replace(/\.png$/, '')],
+		{ timeout: 60_000 }
+	);
 }
 
 const MAX_JOBS = 3;
@@ -100,14 +185,13 @@ export function thumbnail(file: ResolvedFile, page: number, width: number): Prom
 	if (!p) {
 		p = withSlot(async () => {
 			mkdirSync(dir, { recursive: true });
-			const tmpBase = join(dir, `.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
-			await run(
-				pdftoppm(),
-				['-f', String(page), '-l', String(page), '-scale-to-x', String(width), '-scale-to-y', '-1',
-					'-png', '-singlefile', file.path, tmpBase],
-				{ timeout: 60_000 }
-			);
-			renameSync(tmpBase + '.png', out);
+			const tmp = join(dir, `.tmp-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
+			try {
+				await render(file, page, width, tmp);
+				renameSync(tmp, out);
+			} finally {
+				rmSync(tmp, { force: true });
+			}
 			return out;
 		}).finally(() => inflight.delete(out));
 		inflight.set(out, p);

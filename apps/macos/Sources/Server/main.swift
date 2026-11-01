@@ -4,7 +4,9 @@
 //
 //   - runs `node <bundle>/Contents/Resources/web/build/index.js` on
 //     127.0.0.1:<port> with PAPYRUS_VARIANT=<variant> (papyrus-app.json; the
-//     app is served under its base, /papyrus or /papyrus-<variant>), its
+//     app is served under its base, /papyrus or /papyrus-<variant>) and
+//     PAPYRUS_THUMB=<bundle>/Contents/MacOS/papyrus-thumb (page thumbnails
+//     with CoreGraphics; poppler's pdftoppm is the Linux renderer), its
 //     output in ~/Library/Logs/<variant name>/server.log, restarting it when it
 //     exits unexpectedly (with backoff; five quick failures in a row stop it);
 //   - keeps its pid in ~/Library/Application Support/<variant name>/server.pid,
@@ -181,7 +183,8 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["NODE_ENV"] = "production"
         env["PAPYRUS_VARIANT"] = config.variant
-        if let pdftoppm = config.pdftoppm { env["PDFTOPPM"] = pdftoppm }
+        let thumb = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/papyrus-thumb").path
+        if FileManager.default.isExecutableFile(atPath: thumb) { env["PAPYRUS_THUMB"] = thumb }
         for (key, value) in config.env ?? [:] { env[key] = value }
         p.environment = env
         p.standardOutput = log.fileHandle

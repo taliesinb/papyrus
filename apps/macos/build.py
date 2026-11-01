@@ -16,12 +16,14 @@ everyday one and leaves its id out of what people read and type: `Papyrus.app`, 
 Everything else carries the variant name `io.github.taliesinb.papyrus.<id>` (bundle ids,
 ~/Library/Logs, ~/Library/Application Support), as DeepSea's variants do.
 
-Steps: compile the two Swift executables and the icon renderer (cached by source hash in
-apps/macos/.build/); render each variant's icon (its colour); `pnpm build` in web/ once per
-variant (SvelteKit's base path is fixed at build time); assemble both bundles with
-`papyrus-app.json` (variant, names, port, base path, and the absolute paths of node, tailscale
-and pdftoppm, since a GUI app has no shell PATH); sign them ad hoc. Papyrus Server.app carries
-the built web server in Contents/Resources/web.
+Steps: compile the two Swift executablesSteps: compile the two Swift executables, the page renderer and the icon renderer (cached by
+source hash in apps/macos/.build/); render each variant's icon (its colour); `pnpm build` in web/
+once per variant (SvelteKit's base path is fixed at build time); assemble both bundles with
+`papyrus-app.json` (variant, names, port, base path, and the absolute paths of node and
+tailscale, since a GUI app has no shell PATH); sign them ad hoc. Papyrus Server.app carries the
+built web server in Contents/Resources/web and the page renderer `papyrus-thumb` (CoreGraphics;
+no poppler on macOS) in Contents/MacOS. The variant logic is shared with the Linux installer
+(apps/variants.py).
 
 `--install` quits the variant's running copies, replaces its installed bundles and starts them
 again if they were running; other variants' apps are left alone. `--touch-icon` also rewrites
@@ -36,29 +38,26 @@ import json
 import os
 import platform
 import plistlib
-import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[1]
-WEB = REPO / "web"
+sys.path.insert(0, str(HERE.parent))
 
-ROOT_NAME = "io.github.taliesinb.papyrus"
-RELEASE = "release"
-VARIANT_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-FIRST_PORT, PORT_STEP = 5182, 10
+from variants import (  # noqa: E402  (apps/variants.py, shared with apps/linux/install.py)
+    FIRST_PORT, PORT_STEP, RELEASE, RELEASE_COLOR, WEB, all_variants, alive, copy_web, die, display_name, find, find_node,
+    ensure_library, link_home, papyrus_root, record_install, resolve_variant, run, scheme, variant_name, version,
+    web_build_for,
+)
+
+WRITER = "apps/macos/build.py"
 MIN_MACOS = "13.0"
 # The dock tile: the glyph in the variant's colour (release: the web UI's accent) on the UI's background.
-RELEASE_COLOR, TILE_TOP, TILE_BOTTOM = "#7fb0ff", "#232833", "#0d0f12"
-# New variants take the first colour no other variant uses (the first few are DeepSea's).
-PALETTE = ["#8E4EC6", "#F76B15", "#30A46C", "#E5484D", "#12A594", "#FFC53D", "#D6409F"]
+TILE_TOP, TILE_BOTTOM = "#232833", "#0d0f12"
 
 
 def server_usage(server_name: str) -> dict[str, str]:
@@ -71,146 +70,16 @@ def server_usage(server_name: str) -> dict[str, str]:
     }
 
 
-# --- variants -------------------------------------------------------------------------------
-
-def papyrus_root() -> Path:
-    return Path(os.environ.get("PAPYRUS_ROOT") or Path.home() / ".papyrus").expanduser()
-
-
-def display_name(vid: str) -> str:
-    """`release` → Papyrus; `personal` → Papyrus Personal; `big-lab` → Papyrus Big Lab."""
-    return "Papyrus" if vid == RELEASE else "Papyrus " + " ".join(w[:1].upper() + w[1:] for w in vid.split("-"))
-
-
-def read_flat_yaml(path: Path) -> dict[str, str | int | bool]:
-    """`key: value` lines (the flat YAML DeepSea's variant.yml uses): comments, quoted strings, ints, booleans."""
-    out: dict[str, str | int | bool] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, value = (s.strip() for s in line.split(":", 1))
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            out[key] = value[1:-1]
-        elif re.fullmatch(r"-?\d+", value):
-            out[key] = int(value)
-        elif value in ("true", "false"):
-            out[key] = value == "true"
-        else:
-            out[key] = value
-    return out
-
-
-def write_flat_yaml(path: Path, data: dict, header: str) -> None:
-    def fmt(v):
-        if isinstance(v, bool):
-            return "true" if v else "false"
-        if isinstance(v, int):
-            return str(v)
-        return json.dumps(v) if re.search(r"[#:'\"]|^\s|\s$", v) else v
-    path.write_text(f"# {header}\n" + "".join(f"{k}: {fmt(v)}\n" for k, v in data.items()))
-
-
-def all_variants() -> dict[str, dict]:
-    root = papyrus_root()
-    if not root.is_dir():
-        return {}
-    return {p.name: read_flat_yaml(p / "variant.yml") for p in sorted(root.iterdir())
-            if VARIANT_ID.match(p.name) and (p / "variant.yml").is_file()}
-
-
-def port_free(port: int) -> bool:
-    with socket.socket() as s:
-        s.settimeout(0.3)
-        return s.connect_ex(("127.0.0.1", port)) != 0
-
-
-def resolve_variant(vid: str, color: str | None, port: int | None) -> dict:
-    """The variant's configuration, written to `<home>/variant.yml` the first time (and when --color/--port change it)."""
-    if not VARIANT_ID.match(vid):
-        sys.exit(f"build.py: {vid!r} is not a variant id (lowercase letters, digits and single dashes)")
-    if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-        sys.exit("build.py: --color takes #rrggbb")
-    root = papyrus_root()
-    home = root / vid
-    if vid == RELEASE and not home.exists() and (root / "papyrus.sqlite").exists():
-        sys.exit(f"build.py: {root} holds a library in the old layout; move its contents into {home}/ first")
-    others = {k: v for k, v in all_variants().items() if k != vid}
-    path = home / "variant.yml"
-    config = read_flat_yaml(path) if path.is_file() else {}
-    changed = not config
-    if not config:
-        used_colors = {str(v.get("color", "")).lower() for v in others.values()}
-        used_ports = {v.get("port") for v in others.values()}
-        if vid == RELEASE:
-            first_port, default_color = FIRST_PORT, RELEASE_COLOR
-        else:
-            first_port = next(p for p in range(FIRST_PORT + PORT_STEP, 65000, PORT_STEP) if p not in used_ports and port_free(p))
-            default_color = next((c for c in PALETTE if c.lower() not in used_colors), PALETTE[0])
-        config = {"id": vid, "display": display_name(vid), "color": default_color, "port": first_port,
-                  "servePath": "/papyrus" if vid == RELEASE else f"/papyrus-{vid}",
-                  "created": datetime.now().astimezone().isoformat(timespec="seconds")}
-    for key, value in (("color", color), ("port", port)):
-        if value is not None and config.get(key) != value:
-            config[key] = value
-            changed = True
-    clash = [k for k, v in others.items() if v.get("port") == config["port"]]
-    if clash:
-        sys.exit(f"build.py: port {config['port']} is already variant {clash[0]}'s (--port to choose another)")
-    if changed:
-        existed = path.exists()
-        home.mkdir(parents=True, exist_ok=True)
-        write_flat_yaml(path, config, f"{display_name(vid)}: written by apps/macos/build.py")
-        print(f"{path}: {'updated' if existed else 'written'}", file=sys.stderr)
-    link_home(vid, home)
-    return config
-
-
-def link_home(vid: str, home: Path) -> None:
-    """`<home>/logs` and `<home>/support` lead to the variant's directories in ~/Library (as DeepSea's homes do)."""
+def library_links(vid: str) -> dict[str, Path]:
+    """`<home>/logs` and `<home>/support`: the variant's directories in ~/Library."""
     library = Path.home() / "Library"
-    for link, target in (("logs", library / "Logs" / f"{ROOT_NAME}.{vid}"),
-                         ("support", library / "Application Support" / f"{ROOT_NAME}.{vid}")):
-        target.mkdir(parents=True, exist_ok=True)
-        p = home / link
-        if p.is_symlink() and Path(os.readlink(p)) == target:
-            continue
-        if p.is_symlink():
-            p.unlink()
-        elif p.exists():
-            print(f"build.py: {p} exists and is not a link; leaving it", file=sys.stderr)
-            continue
-        p.symlink_to(target)
-
-
-def run(cmd: list[str], **kw) -> str:
-    try:
-        return subprocess.run(cmd, check=True, text=True, capture_output=True, **kw).stdout
-    except subprocess.CalledProcessError as e:
-        sys.exit(f"build.py: {' '.join(cmd[:3])}… failed:\n{(e.stderr or e.stdout).strip()[-3000:]}")
-
-
-def find(name: str, *extra: str) -> str | None:
-    for candidate in (shutil.which(name), *extra):
-        if candidate and os.access(candidate, os.X_OK):
-            return candidate
-    return None
-
-
-def version() -> tuple[str, str]:
-    text = (REPO / "pyproject.toml").read_text()
-    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-    short = m.group(1) if m else "0.0.0"
-    try:
-        rev = run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"]).strip()
-        dirty = run(["git", "-C", str(REPO), "status", "--porcelain"]).strip()
-        return short, rev + ("+" if dirty else "")
-    except SystemExit:
-        return short, "0"
+    return {"logs": library / "Logs" / variant_name(vid), "support": library / "Application Support" / variant_name(vid)}
 
 
 def compile_all(cache: Path) -> Path:
-    """The executables and the icon renderer, compiled once per source hash."""
+    """The executables, the page renderer and the icon renderer, compiled once per source hash.
+    `.build/papyrus-thumb` links to the latest page renderer, for a web server run from web/
+    (`pnpm dev` / `pnpm start`) rather than from Papyrus Server.app."""
     arch = "arm64" if platform.machine() == "arm64" else "x86_64"
     target = f"{arch}-apple-macos{MIN_MACOS}"
     compiler = run(["/usr/bin/xcrun", "swiftc", "--version"]).splitlines()[0]
@@ -220,19 +89,32 @@ def compile_all(cache: Path) -> Path:
         h.update(str(f.relative_to(HERE)).encode() + b"\n" + f.read_bytes() + b"\n")
     out = cache / h.hexdigest()[:12]
     if (out / "done").exists():
+        link_thumb(cache, out)
         return out
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     shared = sorted((HERE / "Sources" / "Shared").glob("*.swift"))
     swiftc = ["/usr/bin/xcrun", "swiftc", "-O", "-target", target]
-    print("compiling Papyrus, Papyrus Server and make-icon…", file=sys.stderr)
+    print("compiling Papyrus, Papyrus Server, papyrus-thumb and make-icon…", file=sys.stderr)
     run(swiftc + ["-o", str(out / "Papyrus"), *map(str, shared), *map(str, sorted((HERE / "Sources" / "Papyrus").glob("*.swift"))),
                   "-framework", "Cocoa", "-framework", "WebKit"])
     run(swiftc + ["-o", str(out / "papyrus-server"), *map(str, shared), *map(str, sorted((HERE / "Sources" / "Server").glob("*.swift"))),
                   "-framework", "Cocoa", "-framework", "ServiceManagement"])
+    run(swiftc + ["-o", str(out / "papyrus-thumb"), *map(str, sorted((HERE / "Sources" / "Thumb").glob("*.swift"))),
+                  "-framework", "CoreGraphics", "-framework", "ImageIO"])
     run(swiftc + ["-o", str(out / "make-icon"), str(HERE / "Tools" / "make-icon.swift"), "-framework", "Cocoa"])
     (out / "done").touch()
+    link_thumb(cache, out)
     return out
+
+
+def link_thumb(cache: Path, out: Path) -> None:
+    link = cache / "papyrus-thumb"
+    target = Path(out.name) / "papyrus-thumb"
+    if link.is_symlink() and Path(os.readlink(link)) == target:
+        return
+    link.unlink(missing_ok=True)
+    link.symlink_to(target)
 
 
 def render_icon(compiled: Path, glyph_color: str) -> Path:
@@ -273,7 +155,7 @@ def info_plist(name: str, bundle_id: str, executable: str, short: str, build: st
 
 
 def assemble(out: Path, name: str, bundle_id: str, executable: Path, plist: bytes, icns: Path, config: dict,
-             web_build: Path | None = None) -> Path:
+             web_build: Path | None = None, helpers: tuple[Path, ...] = ()) -> Path:
     app = out / f"{name}.app"
     shutil.rmtree(app, ignore_errors=True)
     contents = app / "Contents"
@@ -283,13 +165,13 @@ def assemble(out: Path, name: str, bundle_id: str, executable: Path, plist: byte
     (contents / "Info.plist").write_bytes(plist)
     (contents / "PkgInfo").write_text("APPL????")
     shutil.copy2(executable, contents / "MacOS" / executable.name)
+    for helper in helpers:
+        shutil.copy2(helper, contents / "MacOS" / helper.name)
     shutil.copy2(icns, resources / "AppIcon.icns")
     shutil.copy2(HERE / "Resources" / "glyph.svg", resources / "glyph.svg")
     (resources / "papyrus-app.json").write_text(json.dumps(config, indent=2) + "\n")
     if web_build:
-        shutil.copytree(web_build, resources / "web" / "build")
-        # adapter-node's output is ESM: node needs the package's "type": "module" beside it.
-        shutil.copy2(WEB / "package.json", resources / "web" / "package.json")
+        copy_web(web_build, resources / "web")
     run(["/usr/bin/codesign", "--force", "--sign", "-", "--identifier", bundle_id, str(app)])
     return app
 
@@ -319,64 +201,31 @@ def quit_app(bundle_name: str, executable: str) -> bool:
     return bool(pids)
 
 
-def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-
-
-def build_web(base: str) -> Path:
-    """`pnpm build` in web/ served under `base`, unless web/build already is."""
-    web_build = WEB / "build"
-    print(f"building web/ under {base} (pnpm build)…", file=sys.stderr)
-    run(["pnpm", "build"], cwd=WEB, env={**os.environ, "PAPYRUS_WEB_BASE": base})
-    if built_base(web_build) != base:
-        sys.exit(f"build.py: web/build is not served under {base} after pnpm build")
-    return web_build
-
-
-def built_base(web_build: Path) -> str | None:
-    try:
-        m = re.search(r'^export const base = "([^"]*)";', (web_build / "adapter-node.js").read_text(), re.M)
-    except OSError:
-        return None
-    return m.group(1) if m else None
-
-
 def build_variant(vid: str, variant: dict, args, compiled: Path, tools: dict, short: str, build: str, out: Path) -> dict:
     name = display_name(vid)
     server_name = f"{name} Server"
-    app_id = f"{ROOT_NAME}.{vid}"
+    app_id = variant_name(vid)
     server_id = f"{app_id}.server"
     base = str(variant["servePath"])
-    scheme = "papyrus" if vid == RELEASE else f"papyrus-{vid}"
+    url_scheme = scheme(vid)
     color = str(variant["color"])
     icns = render_icon(compiled, color)
+    web_build = web_build_for(base, args.skip_web)
 
-    if args.skip_web:
-        web_build = WEB / "build"
-        if built_base(web_build) != base:
-            sys.exit(f"build.py: web/build is served under {built_base(web_build)}, not {base} (run without --skip-web)")
-    else:
-        web_build = build_web(base)
-    if not (web_build / "index.js").exists():
-        sys.exit("build.py: web/build has no index.js (run without --skip-web)")
-
-    config = {"variant": vid, "name": name, "serverName": server_name, "scheme": scheme,
+    config = {"variant": vid, "name": name, "serverName": server_name, "scheme": url_scheme,
               "port": int(variant["port"]), "base": base, "appBundleId": app_id, "serverBundleId": server_id,
               "color": color, **tools, "env": dict(e.split("=", 1) for e in args.env)}
     server = assemble(out, server_name, server_id, compiled / "papyrus-server",
                       info_plist(server_name, server_id, "papyrus-server", short, build, LSUIElement=True, **server_usage(server_name)),
-                      icns, config, web_build)
-    url_types = [{"CFBundleURLName": app_id, "CFBundleURLSchemes": [scheme]}]
+                      icns, config, web_build, helpers=(compiled / "papyrus-thumb",))
+    url_types = [{"CFBundleURLName": app_id, "CFBundleURLSchemes": [url_scheme]}]
     app = assemble(out, name, app_id, compiled / "Papyrus",
                    info_plist(name, app_id, "Papyrus", short, build, CFBundleURLTypes=url_types), icns, config)
     result = {"variant": vid, "app": str(app), "server": str(server), "home": str(papyrus_root() / vid),
-              "port": config["port"], "base": base, "scheme": scheme, "color": color}
+              "port": config["port"], "base": base, "scheme": url_scheme, "color": color}
 
     if args.install:
+        ensure_library(vid, config["env"])
         dest = args.install.expanduser().resolve()
         dest.mkdir(parents=True, exist_ok=True)
         app_was_running = quit_app(name, "Papyrus")
@@ -390,16 +239,13 @@ def build_variant(vid: str, variant: dict, args, compiled: Path, tools: dict, sh
             run(["/usr/bin/open", "-g", str(dest / server.name)])
         if app_was_running:
             run(["/usr/bin/open", str(dest / app.name)])
-        path = papyrus_root() / vid / "variant.yml"
-        write_flat_yaml(path, {**read_flat_yaml(path), "build": build,
-                               "installed": datetime.now().astimezone().isoformat(timespec="seconds")},
-                        f"{name}: written by apps/macos/build.py")
+        record_install(vid, build, WRITER)
     return result
 
 
 def main() -> None:
     if sys.platform != "darwin":
-        sys.exit("build.py: macOS only")
+        die("macOS only (on Linux: python3 apps/linux/install.py)")
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--variant", action="append", metavar="ID",
                    help=f"the variant to build (repeatable; default {RELEASE}); a new id makes ~/.papyrus/<ID>/variant.yml")
@@ -417,25 +263,21 @@ def main() -> None:
     args = p.parse_args()
 
     if args.all and args.variant:
-        sys.exit("build.py: --all or --variant, not both")
+        die("--all or --variant, not both")
     ids = list(all_variants()) if args.all else list(dict.fromkeys(args.variant or [RELEASE]))
     ids.sort(key=lambda v: v == RELEASE)  # release last, so web/build is left as `pnpm start` expects (/papyrus)
     if not ids:
-        sys.exit(f"build.py: no variant has a variant.yml under {papyrus_root()}")
+        die(f"no variant has a variant.yml under {papyrus_root()}")
     if len(ids) > 1 and (args.color or args.port):
-        sys.exit("build.py: --color and --port apply to one variant")
+        die("--color and --port apply to one variant")
 
-    node = find("node", "/opt/homebrew/bin/node", "/usr/local/bin/node")
-    if not node:
-        sys.exit("build.py: node not found")
-    major = int(run([node, "--version"]).strip().lstrip("v").split(".")[0])
-    if major < 22:
-        sys.exit(f"build.py: {node} is Node {major}; the web server needs Node 22.5+ (node:sqlite)")
-    tools = {"node": node,
-             "tailscale": find("tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
-             "pdftoppm": find("pdftoppm", "/opt/homebrew/bin/pdftoppm", "/usr/local/bin/pdftoppm")}
+    tools = {"node": find_node("/opt/homebrew/bin/node", "/usr/local/bin/node"),
+             "tailscale": find("tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale")}
 
-    variants = {vid: resolve_variant(vid, args.color, args.port) for vid in ids}
+    variants = {}
+    for vid in ids:
+        variants[vid] = resolve_variant(vid, args.color, args.port, WRITER)
+        link_home(papyrus_root() / vid, library_links(vid))
     compiled = compile_all(HERE / ".build")
     if args.touch_icon:
         run([str(compiled / "make-icon"), str(HERE / "Resources" / "glyph.svg"), "--png", "180", str(WEB / "static" / "apple-touch-icon.png"),

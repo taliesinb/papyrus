@@ -25,15 +25,26 @@ python3 apps/macos/build.py --all --install                # every variant (afte
 `build.py` uses only the standard library. It needs the Command Line Tools'
 `swiftc` (no Xcode), Node 22.5+ (for `node:sqlite`) and pnpm. It:
 
-1. compiles the two executables and the icon renderer, cached by source hash
-   in `apps/macos/.build/` (shared by every variant);
+1. compiles the two executables, the page renderer `papyrus-thumb` and the
+   icon renderer, cached by source hash in `apps/macos/.build/` (shared by
+   every variant; `.build/papyrus-thumb` links to the latest renderer);
 2. renders the icon in the variant's colour;
 3. runs `pnpm build` in `web/` under the variant's base path (SvelteKit fixes
    it at build time, so each variant has a web build of its own);
 4. assembles and ad-hoc signs both bundles.
 
 Papyrus Server.app carries the built web server in `Contents/Resources/web`,
-so a change to `web/` needs a rebuild of the app.
+so a change to `web/` needs a rebuild of the app. It also carries
+`Contents/MacOS/papyrus-thumb`, which renders page thumbnails with
+CoreGraphics (`Sources/Thumb`), so macOS needs no poppler. The web server
+falls back to poppler's `pdftoppm` without it, and on Linux
+([`apps/linux`](../linux/README.md)).
+
+The variant rules (`variant.yml`, ports, colours, the web build) are in
+[`apps/variants.py`](../variants.py), shared with the Linux installer.
+`--install` also creates a new variant's empty library with the CLI
+(`papyrus --variant <v> stats`, through uv), because the web server opens the
+database read-only and can't create it.
 
 Each bundle has a `Contents/Resources/papyrus-app.json`:
 
@@ -42,8 +53,7 @@ Each bundle has a `Contents/Resources/papyrus-app.json`:
   "scheme": "papyrus-personal", "port": 5192, "base": "/papyrus-personal",
   "appBundleId": "io.github.taliesinb.papyrus.personal",
   "serverBundleId": "io.github.taliesinb.papyrus.personal.server", "color": "#8E4EC6",
-  "node": "/opt/homebrew/bin/node", "tailscale": "/usr/local/bin/tailscale",
-  "pdftoppm": "/opt/homebrew/bin/pdftoppm", "env": {} }
+  "node": "/opt/homebrew/bin/node", "tailscale": "/usr/local/bin/tailscale", "env": {} }
 ```
 
 A GUI app has no shell `PATH`, so the tools' absolute paths are recorded at
@@ -75,6 +85,7 @@ bundle id; components append to it (`.server`).
 | Server app | `Papyrus Server.app` | `Papyrus Personal Server.app` |
 | App / server bundle id | `io.github.taliesinb.papyrus.release[.server]` | `io.github.taliesinb.papyrus.<v>[.server]` |
 | Logs | `~/Library/Logs/io.github.taliesinb.papyrus.release/` | `~/Library/Logs/io.github.taliesinb.papyrus.<v>/` |
+| Linux: systemd user unit ([`apps/linux`](../linux/README.md)) | `io.github.taliesinb.papyrus.release.server.service` | `io.github.taliesinb.papyrus.<v>.server.service` |
 | Application Support (`server.pid`) | `~/Library/Application Support/io.github.taliesinb.papyrus.release/` | `…/io.github.taliesinb.papyrus.<v>/` |
 | Tailscale Serve path = web base | **`/papyrus`** | `/papyrus-<v>` |
 | URL scheme | **`papyrus://`** | `papyrus-<v>://` |
@@ -95,12 +106,12 @@ backups) and:
 
 ```
 ~/.papyrus/<v>/
-  variant.yml     id, display, color, port, servePath, created; build, installed (written by build.py)
-  logs -> ~/Library/Logs/<variant name>/
-  support -> ~/Library/Application Support/<variant name>/
+  variant.yml     id, display, color, port, servePath, created; build, installed (written by the installers); serve (Linux)
+  logs -> ~/Library/Logs/<variant name>/                (Linux: ${XDG_STATE_HOME:-~/.local/state}/<variant name>/)
+  support -> ~/Library/Application Support/<variant name>/  (Linux: ${XDG_DATA_HOME:-~/.local/share}/<variant name>/)
 ```
 
-build.py writes `variant.yml` the first time it builds a variant: a new
+The installers write `variant.yml` the first time they build a variant: a new
 variant takes the first palette colour and port no other variant uses.
 `PAPYRUS_ROOT` moves `~/.papyrus` (for a scratch set of variants).
 
@@ -120,7 +131,8 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
 ## Papyrus Server.app
 
 * **Runs** `node Contents/Resources/web/build/index.js` with
-  `HOST=127.0.0.1`, `PORT`, `PDFTOPPM` and the configured env. The server's
+  `HOST=127.0.0.1`, `PORT`, `PAPYRUS_THUMB` (its `papyrus-thumb`) and the
+  configured env. The server's
   output goes to `~/Library/Logs/<variant name>/server.log`, and it sets
   `PAPYRUS_VARIANT`.
 * **Restarts** the server when it exits unexpectedly, waiting 1, 2, 4… s.

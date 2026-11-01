@@ -27,7 +27,6 @@ struct PapyrusConfig: Decodable {
     /// Absolute paths found when the bundle was built: a GUI app has no shell PATH.
     var node: String?
     var tailscale: String?
-    var pdftoppm: String?
     /// Extra environment for the web server (PAPYRUS_HOME, PAPYRUS_DB, …).
     var env: [String: String]?
 
@@ -72,10 +71,9 @@ extension PapyrusConfig {
         serverBundleId = try c.decodeIfPresent(String.self, forKey: .serverBundleId) ?? d.serverBundleId
         node = try c.decodeIfPresent(String.self, forKey: .node)
         tailscale = try c.decodeIfPresent(String.self, forKey: .tailscale)
-        pdftoppm = try c.decodeIfPresent(String.self, forKey: .pdftoppm)
         env = try c.decodeIfPresent([String: String].self, forKey: .env)
     }
-    enum CodingKeys: String, CodingKey { case variant, name, serverName, scheme, port, base, appBundleId, serverBundleId, node, tailscale, pdftoppm, env }
+    enum CodingKeys: String, CodingKey { case variant, name, serverName, scheme, port, base, appBundleId, serverBundleId, node, tailscale, env }
 }
 
 /// What `/api/version` reports: the library's counts and any pipeline run in progress.
