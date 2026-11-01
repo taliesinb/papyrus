@@ -57,6 +57,7 @@ from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMO
 from .models import ModelLedger
 from .queue import MODEL_STAGES, STAGES, Queue
 from .sources import PollingWatcher, Watcher, make_watcher
+from . import system
 from .system import CRITICAL, NORMAL, memory_pressure
 
 BATCH_STEPS = 25
@@ -132,7 +133,8 @@ class Watch:
         self.memory = memory or (lambda: memory_pressure())
         self.clock, self.log = clock, log
         self.ledger = ledger or ModelLedger(lmstudio.loaded_models, lmstudio.unload_model, idle_s=unload_after_s,
-                                            clock=clock, log=log)
+                                            clock=clock, log=log,
+                                            room=lambda m: system.has_room(lmstudio.model_size(m)))
         self.resolve_models = models or (lambda: resolve_models())
         self.resolve_screen = screen or (lambda: resolve_screen())
         self.screen: Any = None  # triage's first stage (screen.py), resolved with the models

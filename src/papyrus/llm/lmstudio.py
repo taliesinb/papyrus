@@ -76,6 +76,20 @@ def loaded_models(base_url: str | None = None, timeout: float = 3.0) -> list[str
             and m.get("type") in ("llm", "vlm") and m.get("id")]
 
 
+def model_size(model: str, base_url: str | None = None, timeout: float = 3.0) -> int | None:
+    """Bytes of a downloaded model's weights (LM Studio's /api/v1/models `size_bytes`), or None."""
+    try:
+        r = httpx.get(f"{native_root(base_url)}/api/v1/models", timeout=timeout)
+        if r.status_code != 200:
+            return None
+        for m in r.json().get("models") or []:
+            if isinstance(m, dict) and model in (m.get("key"), m.get("id")):
+                return int(m["size_bytes"]) if m.get("size_bytes") else None
+    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+        return None
+    return None
+
+
 def model_build(base_url: str | None, model: str, timeout: float = 3.0) -> dict[str, Any] | None:
     """What pins a model's weights, as LM Studio reports them (/api/v0/models/<model>):
     quantization, arch and format (mlx | gguf). None if the server doesn't answer."""

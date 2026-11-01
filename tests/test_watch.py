@@ -782,3 +782,34 @@ def test_inotify_watcher(tmp_path):
         assert _wait_for(w, tmp_path / "a.pdf")
     finally:
         w.close()
+
+
+def test_the_next_model_loads_beside_the_users_when_it_fits(tmp_path):
+    """2026-11-01: memory pressure reads "warn" whenever a model is loaded, so the metadata phase
+    (2B) waited for ever beside the user's 4B classifier. What counts is whether it fits."""
+    w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])  # theirs
+    w.ledger.room = lambda model: True
+    w.catch_up()
+    assert order == ["classify"] * 6 + ["extract"] * 3
+    assert lm.unloaded == [] and sorted(lm.loaded) == ["big-classifier", "small-extractor"]
+    assert w.ledger.ours == {"small-extractor"}  # the user's 4B is never ours
+    assert any("loading small-extractor beside big-classifier" in m for m in logs)
+
+
+def test_no_room_beside_the_users_model_is_said_plainly(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])
+    w.ledger.room = lambda model: False
+    w.catch_up()
+    status = json.loads(w.status_path.read_text())
+    assert status["detail"] == "no room to load small-extractor beside big-classifier, which the watcher did not load"
+
+
+def test_has_room(monkeypatch):
+    from papyrus.watch import system
+    from papyrus.watch.system import has_room
+
+    monkeypatch.setattr(system, "memory_available", lambda: None)
+    gb = 1024**3
+    assert has_room(int(2.3 * gb), (8 * gb, 16 * gb))  # the 2B beside the 4B on this Mac
+    assert not has_room(int(2.3 * gb), (4 * gb, 16 * gb))  # would leave too little
+    assert not has_room(None, (8 * gb, 16 * gb)) and not has_room(gb, None)  # unknown: no

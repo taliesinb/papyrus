@@ -3,6 +3,8 @@
 * `lower_priority`: macOS `setpriority(PRIO_DARWIN_PROCESS, 0, PRIO_DARWIN_BG)` (the background
   band: low CPU priority, throttled disk and network I/O, as `taskpolicy -b`); Linux `nice`,
   `SCHED_IDLE` and the idle I/O class (`ionice -c3`).
+* `memory_available` / `has_room`: whether a model of a given size can load beside what is
+  loaded (the pressure level can't say: on a Mac it reads "warn" whenever a model is loaded).
 * `memory_pressure`: normal | warn | critical. macOS `kern.memorystatus_vm_pressure_level`
   (1, 2, 4); Linux `/proc/pressure/memory` (PSI) or, without it, `MemAvailable`.
 * `InstanceLock`: an flock on `<library home>/watch.lock`, so one watcher runs per library
@@ -91,6 +93,43 @@ def _darwin_pressure() -> str:
     except OSError:
         return NORMAL
     return {2: WARN, 4: CRITICAL}.get(level.value, NORMAL)
+
+
+def memory_available() -> tuple[int, int] | None:
+    """(available bytes, total bytes): macOS's own "memory free percentage"
+    (`kern.memorystatus_level`, what `memory_pressure` prints) of `hw.memsize`; Linux MemAvailable.
+    None if unknown."""
+    if sys.platform == "darwin":
+        try:
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            pct, total = ctypes.c_int(0), ctypes.c_uint64(0)
+            size = ctypes.c_size_t(ctypes.sizeof(pct))
+            if libc.sysctlbyname(b"kern.memorystatus_level", ctypes.byref(pct), ctypes.byref(size), None,
+                                 ctypes.c_size_t(0)) != 0:
+                return None
+            size = ctypes.c_size_t(ctypes.sizeof(total))
+            if libc.sysctlbyname(b"hw.memsize", ctypes.byref(total), ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+                return None
+        except OSError:
+            return None
+        return int(total.value * pct.value / 100), int(total.value)
+    meminfo = _read("/proc/meminfo")
+    if meminfo:
+        kb = {k: int(v.split()[0]) for k, _, v in (line.partition(":") for line in meminfo.splitlines()) if v.split()}
+        if kb.get("MemTotal") and "MemAvailable" in kb:
+            return kb["MemAvailable"] * 1024, kb["MemTotal"] * 1024
+    return None
+
+
+def has_room(model_bytes: int | None, available: tuple[int, int] | None = None) -> bool:
+    """Whether a model of `model_bytes` (its weights on disk) can load now without pushing the
+    machine into swapping: what is available must cover the weights plus a quarter (context, KV
+    cache) and still leave 15% of memory (at least 2 GB) free. False when either is unknown."""
+    available = available if available is not None else memory_available()
+    if not model_bytes or available is None:
+        return False
+    avail, total = available
+    return avail >= model_bytes * 1.25 + max(2 * 1024**3, 0.15 * total)
 
 
 def _read(path: str) -> str | None:
