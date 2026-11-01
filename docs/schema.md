@@ -7,9 +7,18 @@ for others; override with `PAPYRUS_DB`). The authoritative DDL is
 the model. Everything is plain SQLite (FTS5 for text search); no extensions
 are required to read it.
 
-The schema version is `meta.schema_version` (now 4). papyrus refuses to open
-a database of another version, and there are no automatic migrations: a
-version change is migrated once, by hand.
+The schema version is `meta.schema_version` (now `0.5`; versions stay 0.x
+until the schema is stable, then 1.0; an old bare `4` reads as 0.4). papyrus
+refuses to open a database of another version, and there are no automatic
+migrations: a version change is migrated once, by hand.
+
+The pipeline's stages, each with its state on `files` where it has one:
+**scan** (adding files) → **read** (the text of the first pages, with OCR for
+pages without a text layer; `read_status`) → **classify** (`classify_status`)
+→ **extract** (the extraction model's metadata; `extract_status`) → **promote**
+(works) → **index** (every page, for full-text search; `index_status`) →
+**match** (external APIs). All of them together is **ingest** (`papyrus
+ingest`, `papyrus watch`).
 
 ## The four ideas
 
@@ -53,13 +62,13 @@ version change is migrated once, by hand.
     For abstracts a suffix says how the span was cut: `#anchors` or `#anchors+heuristic`.
   * `classify:<backend>:<model>` (Jev-style decision probabilities)
   * `screen:<backend>:<model>`, e.g. `screen:lmstudio:text-embedding-nomic-embed-text-v1.5`:
-    triage's first stage (`screen.py`)
+    the classify stage's fast first step (`screen.py`)
   * `api:arxiv`, `api:openalex`, `api:s2`, `api:crossref`: claims from one source
-  * `api:enrich`: the enrichment pipeline's own records (candidates, exclusions, duplicates)
+  * `api:match`: the match stage's own records (candidates, exclusions, duplicates)
   * `papyrus:reject`: written when a work is rejected
   * `papyrus:purge`: written when a file is purged as personal paperwork
   * `user`
-  * Link tables also use plain stage names: `scan`, `download`, `triage`, `promote`.
+  * Link tables also use plain stage names: `scan`, `download`, `extract`, `promote`.
 * Precedence when resolving claims (`works.SOURCE_RANK`):
   `user > api:* > classify:* > llm:* > heuristic:* > pdf:*`.
 
@@ -71,13 +80,14 @@ version change is migrated once, by hand.
 |---|---|
 | `sha256`, `size`, `media_type` | identity of the bytes |
 | `page_count`, `pdf_*` | the PDF's own document-info dictionary, verbatim |
-| `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
-| `triage_status` | `pending`, `classified` (the classifier kept it as library material: metadata extraction next), `done` or `error` (LLM triage, in two stages; see docs/architecture.md) |
-| `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
+| `read_status`, `read_error` | reading the first pages' text: `pending`, `ok`, `no_text` (scanned/image-only: OCR reads them) or `error`; `read_error` says why reading (or indexing) failed |
+| `classify_status` | `pending`, `done` or `error`: the screen and the classifier (`papyrus classify`) |
+| `extract_status` | `pending`, `done`, or `skipped` (not library material: personal paperwork gets no metadata from a model): the extraction model (`papyrus extract`). A file is through the model stages when `classify_status = 'done' AND extract_status IN ('done', 'skipped')` (`db.MODELS_DONE`) |
+| `index_status` | `pending` (only the first pages are in `file_pages`), `done` (every page, searchable) or `error` (`read_error` says why); see `papyrus index`. Only files of live works are indexed |
 | `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 16 hex digits of sha256>.pdf`, one flat directory (a different file whose 16 digits are already taken would be stored under its full sha256). Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed), and NULL again once purged. |
 | `purged_at` | set when the file was purged as personal paperwork; the row is then a tombstone (see below) |
 
-**Personal paperwork: held or purged** (`purge.py`). A triaged file that is
+**Personal paperwork: held or purged** (`purge.py`). A classified file that is
 not library material never becomes a work. What happens to it next depends on
 the classifier's P(kind=personal):
 
@@ -98,26 +108,28 @@ the classifier's P(kind=personal):
   Scan and download skip purged bytes without recording anything.
   `papyrus keep PATH` brings a purged file back from its original.
 * **Held** between 0.5 and 0.9, or without a classifier, or when the screen set
-  it aside before triage asked any language model (a `screen` claim with
+  it aside before any language model was asked (a `screen` claim with
   `rejected: true`). No work is made and the first pages are kept, for
   `papyrus purge --dry-run` (which lists held files) and a decision:
   `papyrus purge ID` or `papyrus keep ID` (a screened file then goes through
-  full triage).
+  the classifier and extraction; one the classifier held, through
+  extraction).
 
 Neither kind is ever served: the web app and MCP show only files of live
 works.
 
-`file_pages(file_id, page, text, source, kind)` holds extracted text per page.
+`file_pages(file_id, page, text, source, kind)` holds the text of each page.
 
-* **Which pages:** scanning extracts the first 2 pages of every file (all that
-  triage reads). `papyrus extract` adds the rest for files of live works
+* **Which pages:** scanning reads the first 2 pages of every file
+  (`pdf.FIRST_PAGES`; the document description the models read takes more from
+  the stored copy without storing it). `papyrus index` adds the rest for files of live works
   (`candidate` or `confirmed`). Held personal paperwork stays at 2 pages;
   purged files have none.
 * **`source`:** `pdfium` (the PDF's text layer) or `ocr:vision` (Apple
   Vision, for pages without one). OCR'd pages are never overwritten by the
   text layer.
 * **`kind`:** `body`, `references`, `index` or `contents`, from the page's
-  text (`fulltext.page_kind`). Search ranks non-body pages lower.
+  text (`index.page_kind`). Search ranks non-body pages lower.
 * **Cleaning:** PDFium's soft-hyphen marker `\x02` and other control and
   zero-width characters are stripped, and end-of-line hyphenation is joined
   back together.
@@ -152,7 +164,7 @@ ORDER BY page DESC, position DESC LIMIT 1;
 
 * `works.kind` is one of `paper`, `book`, `chapter`, `thesis`, `slides`,
   `tutorial`, `lecture_notes`, `article`, `report`, `manual`, `personal` or
-  `other` (`triage.KINDS`).
+  `other` (`classify.KINDS`).
 * `works.status` is one of:
   * `candidate`: created automatically, not reviewed
   * `confirmed`
@@ -183,7 +195,7 @@ ORDER BY page DESC, position DESC LIMIT 1;
 
 * `topics` is a hierarchical vocabulary (`level`: domain, field, subfield or
   topic; `parent_id`), namespaced by `scheme`:
-  * `llm`: free topics from triage
+  * `llm`: free topics from the extraction model
   * `arxiv`: categories such as `cs.LG`
   * `openalex`: the OpenAlex topic tree
   * `user`
@@ -220,7 +232,7 @@ the downloaded file, or `unresolved` (with the URL) while fetching fails;
 the next `papyrus download` of that URL retries it. A Slack context has one
 ref per paper link; `resolve.py` resolves those naming an arXiv id or DOI to
 a work (`source` `resolve:arxiv` / `resolve:doi`, confidence 1.0), creating
-a `candidate` work (ids from `heuristic:link`, the rest from enrichment)
+a `candidate` work (ids from `heuristic:link`, the rest from matching)
 when the library has none. Works created this way have no files.
 
 ### assertions
@@ -228,24 +240,24 @@ when the library has none. Works created this way have no files.
 `(subject_type, subject_id, field, value JSON, confidence, source, run_id,
 created_at, superseded_at, call_id)`.
 
-`call_id` (schema v4) names the model call a claim came from: a row of
+`call_id` (since schema 0.4) names the model call a claim came from: a row of
 `calls` in the separate inference cache, `<home>/inference.sqlite` (see
 below). Claims from the extraction model point at its extraction call (the
 `abstract` too, since it is cut out using the model's anchors), classifier claims
-at the call for their question. When triage is answered from the cache, the
+at the call for their question. When a question is answered from the cache, the
 new claims point at the original call. NULL for claims that no model made.
 
-The fields triage writes for a file:
+The fields classify and extract write for a file:
 
 * `filename_hint`: `{title, surnames[], year}`
 * `screen` (source `screen:<backend>:<model>`, confidence = p): `{p_personal,
   threshold, rejected}` from the screen, the embedding classifier that runs
-  first (`screen.py`). With `rejected: true` triage stopped there, so the file
-  has no other triage claims; `works.is_library` counts it as personal unless
+  first (`screen.py`). With `rejected: true` classifying stopped there, so the
+  file has no classifier or extraction claims; `works.is_library` counts it as personal unless
   the user or a classifier says otherwise.
 * `kind`, plus `kind_probs` (`{option: p}`) when a classifier is used
 * `is_library_material` (from `user`, or from the extraction model when there is no classifier);
-  `classify:` claims and `is_library_material_probs` only from prompts before `triage-6`
+  `classify:` claims and `is_library_material_probs` only from prompts before 0.6 (`triage-6`)
 
   With a classifier, `kind` comes from it alone (`classify:`), and library-ness is its
   P(kind=personal) (`works.is_library`); the extraction model is asked for kind and
@@ -268,16 +280,16 @@ The fields triage writes for a file:
 
 The fields written for a work:
 
-* **by enrichment, one claim per contributing source** (`api:<source>`):
+* **by matching, one claim per contributing source** (`api:<source>`):
   `title`, `abstract`, `authors`, `author_ids` (`[{name, orcid, openalex_id,
   s2_id, affiliations}]`), `year`, `venue`, `ids`, `topics`,
   `citation_count`. Confidence is the match score.
-* **by the pipeline** (`api:enrich`):
-  * `enrich_candidates`: written when nothing reached the 0.85 threshold
+* **by the match stage** (`api:match`):
+  * `match_candidates`: written when nothing reached the 0.85 threshold
   * `excluded_candidate`: `{source, title, ids, reason}`, a candidate that
     is provably a different work
   * `possible_duplicate`: `{other_work_id, scheme, value}`
-* **by promote:** `summary` (source `triage`).
+* **by promote:** `summary` (source `extract`).
 * **on rejection:** `released_ids` (source `papyrus:reject`).
 
 Live claims are the rows where `superseded_at IS NULL`. Claims are never
@@ -285,7 +297,9 @@ deleted; a re-run supersedes the same source's earlier claim.
 
 ### runs
 
-`runs` has one row per pipeline invocation (`scan`, `triage`, `enrich`…),
+`runs` has one row per pipeline invocation (`scan`, `classify`, `extract`,
+`promote`, `index`, `match`…; runs from before schema 0.5 say `triage`,
+`enrich`, and `extract` for full-text indexing),
 with its arguments, the backend/model, the prompt version and counters, so
 any assertion can be traced back to the exact model and prompt that produced
 it. `stats.status` says how the run ended: `completed`, `interrupted` or
@@ -296,15 +310,17 @@ every run gets a `finished_at`.
 `trigger` (`startup` for the catch-up scan, `events` for new files, `pending`
 for work left over, `once`) and counts; its `stats` combine `scan`'s counters
 (`new_files`, `known_files`, `purged_skipped`, `went_missing`…) with the
-steps it took (`triaged`, `promote_<action>`, `extracted`, `enrich_<status>`)
-and its back-offs (`backoff_waiting-memory`, `backoff_lmstudio-unavailable`).
-`backend` is filled in once the batch has triaged with a model.
+steps it took (`classified`, `screened`, `extracted`, `promote_<action>`,
+`indexed`, `match_<status>`, `<stage>_error`) and its back-offs
+(`backoff_waiting-memory`, `backoff_lmstudio-unavailable`,
+`backoff_rate-limited`). `backend` is filled in once the batch has asked a
+model.
 
 ## The inference cache: `<home>/inference.sqlite`
 
 A second database, beside the library and independent of it (its own DDL,
 [`src/papyrus/inference.sql`](../src/papyrus/inference.sql), and its own
-`meta.schema_version`, now 2). It records every question asked of a model,
+`meta.schema_version`, now `0.2`; an old `2` reads as the same). It records every question asked of a model,
 and answers repeated ones (`src/papyrus/inference.py`). It is not reachable
 through MCP's `sql` tool.
 
@@ -328,7 +344,7 @@ means asking again. `papyrus inference prune` deletes old texts, and purging a
 document deletes the texts of every call whose `subject` is its sha256.
 
 ```sql
--- how long triage's extraction takes per model, cache hits aside
+-- how long extraction takes per model, cache hits aside
 SELECT m.model, count(*), avg(c.duration_ms) / 1000.0 AS seconds
 FROM calls c JOIN models m ON m.id = c.model_id JOIN queries q ON q.id = c.query_id
 WHERE q.kind = 'extract' AND c.status = 'ok' AND c.model_loaded IS NOT 0

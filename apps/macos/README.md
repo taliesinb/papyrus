@@ -11,7 +11,7 @@ That is the `release` variant; every other variant has a pair of its own
 (`Papyrus Personal.app`, `Papyrus Personal Server.app`), see
 [Variants](#variants).
 
-Both are read-only: the Python CLI (`papyrus scan`, `download`, `process`,
+Both are read-only: the Python CLI (`papyrus scan`, `download`, `ingest`,
 `watch`, …) is still the only writer. The pipeline's writes show up in the open window as
 "library updated · refresh", as in a browser.
 
@@ -115,7 +115,7 @@ backups) and:
 ```
 ~/.papyrus/<v>/
   variant.yml     id, display, color, port, servePath, created; build, installed (written by the installers); serve (Linux); watch
-  watch.json      what `papyrus watch` is doing (state, pending counts); watch.lock: one watcher per library
+  watch.json      what `papyrus watch` is doing (state, ingesting N/M, stage lines); watch.lock: one watcher per library
   logs -> ~/Library/Logs/<variant name>/                (Linux: ${XDG_STATE_HOME:-~/.local/state}/<variant name>/)
   support -> ~/Library/Application Support/<variant name>/  (Linux: ${XDG_DATA_HOME:-~/.local/share}/<variant name>/)
 ```
@@ -133,7 +133,7 @@ not exist, so a typo never starts an empty library).
 Shared by every variant, since they are keyed by content and hold nothing
 of one library's own: the compiled executables (`apps/macos/.build/`), the
 page-thumbnail cache (`~/.cache/papyrus-web/thumbs`, named by the PDF's
-sha256), the enrichment APIs' response cache (`~/.cache/papyrus/http`), the
+sha256), the matching APIs' response cache (`~/.cache/papyrus/http`), the
 Apple Foundation Models bridge and LM Studio. The permanent API log is per
 variant (`<home>/api-log/`), since it can hold one library's Slack messages.
 
@@ -187,12 +187,18 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
     the watcher, whoever runs it, then asks no model but keeps adding files,
     until the item is unticked (`--resume`). For LM Studio experiments
     without stopping the run.
-* **The menu's watcher line** comes from `/api/version`'s `watch` (the
-  library's `watch.json`): Watching: idle, adding new PDFs, waiting for
-  memory, or LM Studio unavailable (with the reason, such as "another model
-  is loaded"). While the queue has items it adds how many are left and an
-  estimate of the time ("12 left, ~6 min"), and how many it gave up on. Show
-  Watcher Log opens its log.
+* **The menu's watcher lines**, in a section of their own, come from
+  `/api/version`'s `watch` (the library's `watch.json`): "Watching for new
+  files" when there is nothing to do; otherwise "Ingesting N/M files" (files
+  through the pipeline, or set aside, of those it has had since it was last
+  idle) and one line per stage with files left, in pipeline order: Reading
+  (OCR), Classifying, Extracting, Indexing, Matching. The stage being worked
+  shows its pace and the time left ("Classifying: 52 files · ~3.2s/file ·
+  ~2m46s left", a moving average started from past timings); the others say
+  "pending" (the stages take turns: one loop, local models), "waiting: <reason>"
+  (memory pressure, LM Studio busy with another model, rate limited by
+  OpenAlex…) or "paused". Then how many items it gave up on. Show Watcher Log
+  opens its log.
 * **The menu-bar scroll's paper is solid** while the watcher's queue has
   items (due, or waiting for a retry), drawn from `Resources/glyph-filled.svg`;
   a variant's initial is then cut out of the paper.

@@ -117,7 +117,7 @@ def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo
 
 def ocr_targets(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), live_only: bool = False) -> dict[int, list[int]]:
     """file_id -> pages that have no usable text layer and haven't been OCR'd yet."""
-    # Explicit file_ids were extracted on request, so they needn't belong to a live work.
+    # Explicit file_ids were indexed on request, so they needn't belong to a live work.
     extracted = "f.index_status = 'done'" + ("" if file_ids and not live_only else f" AND {LIVE_FILE.format(f='f.id')}")
     q = (f"""SELECT p.file_id, p.page FROM file_pages p JOIN files f ON f.id = p.file_id
              WHERE p.source = 'pdfium' AND length(trim(p.text)) < {MIN_TEXT}

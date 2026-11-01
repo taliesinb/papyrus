@@ -22,27 +22,32 @@ formatting.
  sources                 papyrus stages                                 outputs
  ───────                 ──────────────                                 ───────
  ~/Desktop, ~/Downloads ─▶ scan ──▶ files, file_pages(+FTS), contexts(filesystem), context_refs
-   (or, as files appear: watch ─▶ scan.ingest_path, then the stages below, one file at a time)
+   (or, as files appear: watch ─▶ scan.scan_path, then the stages below, one step at a time)
  URLs, copied tabs ─────▶ download ─▶ … the same, with contexts(download); filename_hint assertion
                                │       both keep a copy in <home>/store (files.stored_path)
                                ▼
-                           triage ─▶ assertions on files: kind(+probs), is_library_material,
-                               │       title, authors, year, venue, abstract, summary, topics,
-                               │       language, ids
+                           read ───▶ OCR (Apple Vision) of first pages without a text layer
+                               ▼
+                           classify ─▶ the screen, then the classifier: assertions on files:
+                               │        screen, kind(+probs), ids
+                               ▼
+                           extract ─▶ (library material only) title, authors, year, venue,
+                               │        abstract, summary, topics, language
                                ▼
                            promote ─▶ works, work_ids, work_authors(raw), topics(llm), file_works,
                                │        works_fts; rejects works whose files are personal;
                                │        purges files that are surely personal down to a tombstone
                                ▼
-                           extract ─▶ every page of live works' files (+FTS), page kinds, file_outline;
+                           index ──▶ every page of live works' files (+FTS), page kinds, file_outline;
                                │        OCR (Apple Vision) of pages without a text layer
                                ▼
-                           enrich ──▶ assertions api:*, people (ORCID/OpenAlex/S2 ids),
+                           match ──▶ assertions api:*, people (ORCID/OpenAlex/S2 ids),
                                         work_ids, venue/date/abstract, topics(openalex, arxiv)
  (planned) Slack, Safari RL, Twitter ─▶ contexts + unresolved context_refs ─▶ resolver ─▶ works
 ```
 
-Each stage:
+Scan through match, run as one, is **ingesting** (`papyrus ingest` after a `scan`;
+`papyrus watch` as files arrive). Each stage:
 
 * reads only what it needs from the previous stage;
 * writes inside one short transaction per item;
@@ -63,64 +68,87 @@ background:
    `.crdownload`, `.part`) and hidden files are ignored; the rename to the
    final name is an event of its own. An empty `x.pdf` next to `x.pdf.part`
    (Firefox) waits for the `.part` to go.
-3. **Ingesting** through `scan.ingest_path`, the per-file body of `scan`: the
+3. **Scanning** through `scan.scan_path`, the per-file body of `scan`: the
    same snapshot, sha256 dedupe, purged tombstones and provenance. At start, a
    catch-up scan of the directories covers what happened while it was down.
-4. **Processing**, one item per step, new files first: extract (a live work's
-   text layer), OCR, enrich, then triage + promote. Each batch of steps is one
-   recorded run (`command='watch'`), at most 25 steps long.
+4. **Ingesting**, one item per step, new files first: index (a live work's
+   text layer), read (OCR), match, then classify and extract, each followed by
+   promote. Classify and extract run in phases: every pending file classified,
+   then every classified one extracted, so the two can be different models,
+   each loaded once per phase. Each batch of steps is one recorded run
+   (`command='watch'`), at most 25 steps long.
 5. **Staying out of the way:** background priority (`PRIO_DARWIN_BG`; Linux
    nice 19, `SCHED_IDLE`, idle I/O). Before every model call it reads the
    memory pressure and, for LM Studio, what is loaded (`models.ModelLedger`).
    Model work then waits (`Backoff`) under critical pressure, when a model
    would have to be loaded under any pressure, while LM Studio is off or has
    another model loaded, when Apple's model refuses (error 1013, `ModelBusy`),
-   or without a classifier. Extract and enrich go on meanwhile. It unloads only
-   the models it loaded, after `unload_after` seconds idle (600) and at exit.
+   or without a classifier. Index and match go on meanwhile. A second model
+   loads beside a loaded one only if it fits in memory (`system.has_room`);
+   otherwise the watcher swaps out its own, and waits for one the user loaded.
+   It unloads only the models it loaded, after `unload_after` seconds idle
+   (600) and at exit. A matching source that refuses (429, rate limits) makes
+   the match stage alone wait (`rate-limited`), with no verdict recorded.
 6. **The work queue** (`watch/queue.py`, `<home>/queue.sqlite`): what is
-   pending is still the library's (files not triaged, live works' files not
-   extracted, works without API data). Before every step the queue mirrors it,
+   pending is still the library's (files not read, classified or extracted,
+   live works' files not indexed, works not matched). Before every step the queue mirrors it,
    one row per (stage, id), and adds the watcher's own working state:
    * **retries:** a step that fails, or finishes without changing anything
      (`no_progress`), is tried again after 1 h, 4 h and 16 h, then marked
      `failed` (`papyrus watch --retry-failed`). They survive restarts;
    * **history:** each finished step's duration.
-7. **Status:** `<home>/watch.json` (idle | ingesting | waiting-memory |
-   lmstudio-unavailable, the queue's counts, `eta_s`), served in
-   `/api/version` for the menu bar; one watcher per library
-   (`<home>/watch.lock`, an flock). **The estimate of time left:** triage per
-   document from the inference cache (`Store.document_estimate_s`: the
-   questions asked about the latest document, each estimated from its own
-   history), the other stages from the queue's median step durations. The
-   menu-bar scroll's paper is solid while the queue has items.
+7. **Status:** `<home>/watch.json` (state: idle | ingesting | waiting-memory |
+   lmstudio-unavailable | paused; `ingesting` {done, total}: files through
+   the pipeline, or set aside, of those it has had since it was last idle;
+   `stages`: per stage with files left, its state, a moving average of seconds
+   per file and the time left; the queue's counts, `eta_s`), served in
+   `/api/version` for the menu bar ("Ingesting N/M files", then a line per
+   stage: Reading, Classifying, Extracting, Indexing, Matching); one watcher
+   per library (`<home>/watch.lock`, an flock). The menu-bar scroll's paper is
+   solid while the queue has items. **Performance log:**
+   `<home>/watch-events.jsonl` (`watch/events.py`: one line per file scanned,
+   step, model change and back-off), summarised by `papyrus watch --perf`.
 
 Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
 
 | stage | module | pending means | notes |
 |---|---|---|---|
-| scan | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` (Linux: `user.xdg.origin.url`, `user.xdg.referrer.url`) gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
-| download | `download.py`, `store.py`, `enrich/http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. |
-| triage | `screen.py`, `triage.py`, `llm/*`, `textspan.py` | classify: `files.triage_status` `pending`/`error`; metadata: `classified` | Two stages, run in phases (all pending files classified, then all classified files extracted), so that the classifier and the extraction model can be different models, each loaded once per phase. **Classify** (`classify_file`): first the screen, an embedding (nomic-embed-text, ~100 ms) of the same state the models read, scored by a logistic regression (`data/screen.bin`, trained by `tools/screen/train.py`); at P(personal) ≥ 0.9 triage stops and promote holds the file. Then the classifier (one call per question). Library material (P(kind=personal) < 0.5, or the user's `keep`) becomes `classified`; anything else `done`, and promote purges or holds it under its file name: personal paperwork gets no metadata from a model. **Metadata** (`extract_metadata`): one extraction call, not asked for kind or library-ness when a classifier ran. Without a classifier (`none`), every file goes to extraction, whose own yes/no then gates topics and the abstract. The state (`build_state`, `pagetext.py`) is about 1000 tokens (`[triage]`): a `--- document ---` section (names, size, pages, folders, download URLs, link titles, filename hint) and a `--- metadata ---` section (the PDF's own fields, each on one line, ≤200 characters), then pages: all of them if they fit, else the first ones and, with 20% of the budget, the last ones, `...` where text is left out and `--- page 2-5 (no text) ---` for runs without a text layer. Pages past those in `file_pages` are read from the stored PDF and not stored. |
-| promote | `works.py`, `purge.py` | the file has no `file_works` row (and isn't purged) | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. Files with P(kind=personal) ≥ 0.9 are purged (`purge.verdict`, `purge_file`); between 0.5 and 0.9 they are held for review. |
-| extract | `fulltext.py`, `ocr.py`, `tools/afm-bridge` | text layer: a file of a live work with `fulltext_status='pending'`; OCR: a page with < 40 characters and `source='pdfium'` (all such pages of extracted files, the first 2 of image-only files) | Reads every page (pypdfium2), labels its kind, stores the outline. OCR is written every 32 pages, so an interrupted run keeps its work; an image-only file that is no work yet goes back to triage once OCR finds text. Whole library (81 PDFs, 6,500 pages): 26 s, most of it Vision's warm-up. |
-| enrich | `enrich/*` | the work has no `api:*` claims and no `enrich_candidates` | `match.resolve` (ids first, then title search) → exclude conflicting candidates → `cluster` → `merge` → write. The score threshold is 0.85. |
+| scan | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. The text of the first 2 pages is read (`read_status`). `kMDItemWhereFroms` (Linux: `user.xdg.origin.url`, `user.xdg.referrer.url`) gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
+| download | `download.py`, `store.py`, `http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. `--ingest` ingests the new files. |
+| read | `index.py`, `ocr.py`, `tools/afm-bridge` | a page with < 40 characters and `source='pdfium'`: the first 2 of an image-only file (`read_status='no_text'`), or any page of an indexed file | OCR (Apple Vision), written every 32 pages, so an interrupted run keeps its work. An image-only file that is no work yet goes back to `classify_status='pending'` once OCR finds text. In the CLI this is part of `papyrus index` (`--no-ocr` skips it). |
+| classify | `screen.py`, `classify.py`, `describe.py`, `llm/*` | `classify_status` `pending`/`error` (and the file has been read) | First the screen, an embedding (nomic-embed-text, ~100 ms) of the document description, scored by a logistic regression (`data/screen.bin`, trained by `tools/screen/train.py`); at P(personal) ≥ 0.9 classifying stops and promote holds the file. Then the classifier (one question, `kind`). Library material (P(kind=personal) < 0.5, or the user's `keep`) gets `extract_status='pending'`; anything else `skipped`, and promote purges or holds it under its file name: personal paperwork gets no metadata from a model. `detect_ids` records identifiers by regex. |
+| extract | `extract.py`, `textspan.py`, `llm/*` | `classify_status='done'` and `extract_status='pending'` | One extraction call: title, authors, year, venue, summary, topics, language and the abstract's anchors, not asked for kind or library-ness when a classifier ran. Without a classifier (`none`), every file goes to extraction, whose own yes/no then gates topics and the abstract. |
+| promote | `works.py`, `purge.py` | the file is through classify and extract (`db.MODELS_DONE`), has no `file_works` row and isn't purged | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. Files with P(kind=personal) ≥ 0.9 are purged (`purge.verdict`, `purge_file`); between 0.5 and 0.9 they are held for review. |
+| index | `index.py` | a file of a live work with `index_status='pending'` | Reads every page's text layer (pypdfium2), labels its kind, stores the outline; then the read stage OCRs the pages without one. Whole library (81 PDFs, 6,500 pages, OCR included): 26 s, most of it Vision's warm-up. |
+| match | `match/*` | the work has no `api:*` claims and no `match_candidates` | `candidates.resolve` (ids first, then title search) → exclude conflicting candidates → `cluster` → `merge` → write. The score threshold is 0.85. A source that refused (429/503) means no verdict: the work stays pending. |
+
+**The document description** (`describe.py`: `build_state`, `pagetext.py`), what the screen, the
+classifier and the extraction model read, is about 1000 tokens (`[describe]`): a `--- document ---`
+section (names, size, pages, folders, download URLs, link titles, filename hint) and a
+`--- metadata ---` section (the PDF's own fields, each on one line, ≤200 characters), then pages:
+all of them if they fit, else the first ones and, with 20% of the budget, the last ones, `...`
+where text is left out and `--- page 2-5 (no text) ---` for runs without a text layer. Pages past
+those in `file_pages` are read from the stored PDF and not stored. Its `PROMPT_VERSION` (now 0.6)
+covers it, the classifier's question and the extraction prompt.
 
 ## Module map
 
 | module | role |
 |---|---|
 | `schema.sql`, `db.py` | DDL; connect/init; `tx`, `assert_`, `current_assertions`, `recorded_run` |
-| `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames; `ingest_path` (one path, shared with `watch`), `scan_roots`, `mark_missing` |
-| `watch/` | `papyrus watch`: `sources.py` (FSEvents / inotify / polling), `debounce.py` (finished files, partial files), `system.py` (background priority, memory pressure, the instance lock), `models.py` (`ModelLedger`: never a second LM Studio model, unload only our own), `queue.py` (`Queue`: `<home>/queue.sqlite`, synced from the library; retries, step durations, `eta_s`), `daemon.py` (`Watch`: catch-up, batches, steps, back-off, `watch.json`) |
+| `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | file discovery, hashing, PDF info and text, provenance (macOS: xattrs and `clonefile` via ctypes; Linux: XDG xattrs and `FICLONE` reflinks), hints from hand-made filenames; `scan_path` (one path, shared with `watch`), `scan_roots`, `mark_missing` |
+| `watch/` | `papyrus watch`: `sources.py` (FSEvents / inotify / polling), `debounce.py` (finished files, partial files), `system.py` (background priority, memory pressure, the instance lock), `models.py` (`ModelLedger`: a second LM Studio model only if it fits in memory, unload only our own), `queue.py` (`Queue`: `<home>/queue.sqlite`, stages read/classify/extract/index/match, synced from the library; retries, step durations, `eta_s`), `daemon.py` (`Watch`: catch-up, batches, steps, phases, back-off, `watch.json`), `events.py` (the performance log, `--perf`) |
 | `store.py` | the managed store: `snapshot` (clone or copy into `store/tmp`), `commit` (rename to `store/<16 hex digits of the sha256>.pdf`, flat, read-only; a name taken by other bytes falls back to the full hash), `backfill`, `check` |
 | `download.py` | link parsing (RTF / HTML / text, Safari's copied tabs), URL → PDF resolution, `fetch`, recording `download` contexts |
-| `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `CLASSIFICATIONS`), the state (`document`, `render_state`, `build_state`), `detect_ids`, `triage_file` |
-| `pagetext.py`, `tools/words/fetch.py` | the state's pages: `normalize` (filler runs, duplicate lines, invisible characters, small caps rejoined with `data/words.txt`, fetched at build time), `estimate_tokens`, `select_pages` (front and tail within a budget) |
-| `screen.py`, `data/screen.bin`, `llm/embed.py` | triage's first stage: `file_input` (what it embeds: the triage state since input version 3; `screen_input` for older weights), `Weights` (`read_weights`/`write_weights`: header JSON + float32, the standardisation folded in), `get_screen`, `screen_file`; `LMStudioEmbedder` (`/v1/embeddings`). Retrain with `tools/screen/export.py` (one JSON per file, from any machine's library) and `tools/screen/train.py` (needs numpy and scikit-learn via `uv run --with`); the committed `data/screen.bin` is the production classifier |
+| `describe.py` | the document description (`document`, `render_state`, `build_state`), `detect_ids`, `PROMPT_VERSION` |
+| `classify.py` | the classify stage: `KINDS`, `CLASSIFICATIONS`, `classify_file` (screen, then classifier), `classified_p_personal` |
+| `extract.py` | the extract stage: `INSTRUCTIONS`, `EXTRACT_SCHEMA`, `extract_metadata`; `classify_and_extract` (both stages for one file) |
+| `pagetext.py`, `tools/words/fetch.py` | the description's pages: `normalize` (filler runs, duplicate lines, invisible characters, small caps rejoined with `data/words.txt`, fetched at build time), `estimate_tokens`, `select_pages` (front and tail within a budget) |
+| `screen.py`, `data/screen.bin`, `llm/embed.py` | the classify stage's first step: `file_input` (what it embeds: the document description since input version 3; `screen_input` for older weights), `Weights` (`read_weights`/`write_weights`: header JSON + float32, the standardisation folded in), `get_screen`, `screen_file`; `LMStudioEmbedder` (`/v1/embeddings`). Retrain with `tools/screen/export.py` (one JSON per file, from any machine's library) and `tools/screen/train.py` (needs numpy and scikit-learn via `uv run --with`); the committed `data/screen.bin` is the production classifier |
 | `textspan.py` | find spans from anchors (`locate`), the `heuristic_abstract` regex, and `best_abstract`, which reconciles the two |
 | `works.py` | `SOURCE_RANK`/`best` resolution, `is_library`, `promote_file`, `reject_work`, `reindex_work`, `work_json` |
 | `purge.py` | personal paperwork: `verdict` (purge, hold or keep), `purge_file` (tombstone, secure delete, store copy and thumbnails), `keep`/`restore` (the user's override), `is_purged` (used by scan and download) |
-| `fulltext.py` | the `extract` stage: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `run` (a recorded run around `process`; `process(live_only=True)` never reads a non-work file past its first pages) |
+| `index.py` | the index and read stages: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `pending_files`, `ocr_targets`, `run` (a recorded run around `process`; `process(live_only=True)` never reads a non-work file past its first pages) |
 | `ocr.py` | `VisionOCR`: page OCR through the bridge's `ocr` op (Vision `RecognizeDocumentsRequest`) |
 | `search.py` | ranking shared by the CLI and MCP: `rank_files` (pages → files), `search_works` (RRF with metadata), `fill_snippets`; mirrored in `web/src/lib/server/query.ts` |
 | `llm/base.py` | contracts: `Backend.extract` (JSON-schema output) and `Classifier.classify` (Jev-style typed questions → probabilities) |
@@ -129,13 +157,13 @@ Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
 | `llm/classify.py` | `JevHTTPClassifier` (`/v1/systemone`: TypeSafe, Ollama `tev1`, …) and `OpenAICompatClassifier` (logprobs over lettered options) |
 | `llm/schema_lite.py` | JSON extraction and coercion for a JSON Schema subset; all model output passes through it |
 | `inference.py`, `inference.sql` | the inference cache: `Store` (`<home>/inference.sqlite` + text files by sha256; `lookup`, `start`/`finish`/`fail`, `forget_subject`, `prune`, `stats`, `estimate_s`), `cached_backend` / `cached_classifier`, `subject()` |
-| `enrich/http.py` | polite shared HTTP client: per-host rate limits, retries, disk cache |
-| `enrich/ids.py` | arXiv / DOI / ISBN detection and normalisation (with checks against false positives) |
-| `enrich/{arxiv,openalex,semanticscholar,crossref}.py` | source clients → `models.WorkRecord` |
-| `enrich/match.py` | `resolve`, `score`, `cluster`, `merge` |
-| `enrich/pipeline.py` | `enrich_work` writes to the database (`_conflict`, authors → people, topics, ids); `reset_enrichment` |
+| `http.py` | polite shared HTTP client (matching, `download`, Slack): per-host rate limits, retries, `patience` (give up on long rate limits: `RateLimited`), disk cache |
+| `ids.py` | arXiv / DOI / ISBN detection and normalisation (with checks against false positives) |
+| `match/{arxiv,openalex,semanticscholar,crossref}.py` | source clients → `models.WorkRecord` |
+| `match/candidates.py` | finding, scoring and merging candidate records: `resolve`, `score`, `cluster`, `merge` |
+| `match/pipeline.py` | `match_work` writes to the database (`_conflict`, authors → people, topics, ids); `unmatched_works`; `reset_match` |
 | `mcp_server.py` | MCP tools: `search_library`, `fulltext_search`, `get_work`, `get_file`, `recent_discoveries`, `sql` (read-only connection), `library_stats`; resource `papyrus://schema` |
-| `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, classifier, LM Studio autostart (CLI > env > file > `auto`), `[watch]` |
+| `config.py` | `<home>/config.toml` (home: `~/.papyrus/<variant>`, `db.library_home`): default backend, classifier, LM Studio autostart (CLI > env > file > `auto`), `[screen]`, `[describe]`, `[watch]` |
 | `cli.py` | click commands; SIGTERM becomes KeyboardInterrupt so runs close as `interrupted` |
 | `web/` | read-only SvelteKit browser (Node, `node:sqlite` read-only), served under `/papyrus` (`/papyrus-<variant>` for other variants) |
 | `apps/macos/` | `Papyrus.app` (WKWebView window) and `Papyrus Server.app` (menu bar: runs `web/`, `tailscale serve --set-path=/papyrus`, and `papyrus watch`; carries `papyrus-thumb`, the CoreGraphics page renderer), one pair per variant; `build.py` |
@@ -163,14 +191,14 @@ Backend specs: `--backend auto|lmstudio[:model]|apple` and
 `--classifier auto|none|lmstudio[:model]|jev:<url>`. Defaults come from
 `config.py` (`~/.papyrus/<variant>/config.toml`, then `auto`). Selecting LM Studio
 starts its server if it is off (`lmstudio.ensure_server`, local URLs only,
-once per process). Triage refuses to run without a classifier unless it is
+once per process). Classifying refuses to run without a classifier unless it is
 explicitly `none`: when LM Studio was off, `auto` used to fall back silently
 to Apple FM with no classifier, the combination that once promoted exam papers
 and a CV to works.
 
 **The inference cache** (`inference.py`, `<home>/inference.sqlite`; tables in
-[schema.md](schema.md#the-inference-cache-homeinferencesqlite)). Triage
-(CLI and `watch`) wraps its backend and classifier in `cached_backend` /
+[schema.md](schema.md#the-inference-cache-homeinferencesqlite)). Classify and
+extract (CLI and `watch`) wrap the classifier and the backend in `cached_backend` /
 `cached_classifier`, which implement the same contracts:
 
 * **Key:** model (backend, model, build: not the endpoint) × query
@@ -198,7 +226,7 @@ and a CV to works.
 * **File → work:** `works.best()` ranks claims by
   `user > api:* > classify:* > llm:* > heuristic:* > pdf:*`, then by
   confidence.
-* **Enrichment:**
+* **Matching:**
   1. Candidates come from the id route (score ≈ 1 unless the titles
      disagree) and the title route. The title score is 0.6 × title + 0.25 ×
      authors + 0.15 × year.
@@ -219,7 +247,7 @@ and a CV to works.
 | Model calls in an inference cache of their own (`inference.sqlite`), texts as files named by hash | The API log leaves model calls out because their prompts hold personal documents' first pages. Keeping hashes in the database and texts in files means the record (what was asked, how long it took) can outlive the texts, and a purge or `prune` deletes text without touching the statistics. A separate database: different lifecycle (deletable wholesale), and out of MCP's `sql` reach. The endpoint is not part of the model key (the same weights answer the same on another port); the seed is part of the query (another seed, another answer). |
 | Every API exchange appended to `api-log/<date>.jsonl`, separately from the 30-day cache | Responses hold more than we extract at the time. Re-reading the log costs nothing; re-calling an API costs rate limit (a 180-day Slack scan is ~1,000 calls and 15 min) and may return something different. JSONL files, not a table: append-only, written by several processes, and kept out of the documented schema. |
 | SQLite + FTS5 as the source of truth, with a JSON-in-TEXT `extra` | Single user, one file, zero ops, readable by any tool. Vectors will go in a sidecar table (`sqlite-vec`) or file, so the core stays extension-free. |
-| `assertions` table instead of overwriting fields | Several noisy sources (LLMs, APIs, heuristics) disagree. Keeping every claim lets us re-resolve, audit and undo (`reset_enrichment`). |
+| `assertions` table instead of overwriting fields | Several noisy sources (LLMs, APIs, heuristics) disagree. Keeping every claim lets us re-resolve, audit and undo (`reset_match`). |
 | contexts as their own entity, many per document, `(kind, locator)` unique | Discovery history (who shared it where, when it was downloaded, from which page) is a first-class feature, and Slack/Safari/Twitter importers slot in without schema changes. |
 | pypdfium2, not PyMuPDF | Apache/BSD licence (PyMuPDF is AGPL). Fast enough: 66 PDFs scanned in about 1 s. |
 | 4B model by default, 4000-character state | Base M4, 24 GB: the 9B ran at about 11 tok/s, and loading two models swapped. The 4B matched the 9B on kind, title, authors and year for 10/10 papers at about 4× the speed. |
@@ -233,19 +261,19 @@ and a CV to works.
 | a content-addressed store, filled by APFS clones | Files in `~/Downloads` get moved or deleted; the library should outlive them. Naming by sha256 needs no naming scheme and makes writes idempotent. Measured on this machine: `cp` and `shutil.copy*` duplicate a 2 GB file, `clonefile(2)` (`cp -c`) costs 0 MB; backfilling 64 files cost 0 MB. Scan hashes the clone, so the stored bytes are exactly the hashed bytes. |
 | downloads: sniff bytes, not Content-Type | A journal API serves its PDFs as `application/json`. |
 | full text in FTS5, page rows in the main database | Every page of 81 PDFs (13M characters) adds 25 MB and indexes in 0.2 s; queries take 1–15 ms. Pages keep hits citable by page number. A separate index (Tantivy, Meilisearch) would be invisible to SQL and MCP. At ~50k documents the text may reach a few GB: then consider moving `file_pages` to an `ATTACH`ed file. |
-| extract only live works' files | Personal paperwork sits next to papers in `~/Downloads`; its first 2 pages are needed for triage, the rest aren't needed at all. Search also filters to live works, since those 2 pages are indexed. |
-| purge sure personal paperwork to a tombstone; hold unsure cases; serve only live works' files | Before this, scanning and triage kept the first pages, paths, URLs, PDF metadata, a stored copy and model claims of every payslip and CV. The web app served any file id to the tailnet, and MCP's `get_file` and `sql` read them. Containment can't cover `sql`, so the data goes. The tombstone (sha256, size, URL) keeps "never triage these bytes again" without the content. 0.9 rather than 0.5 because a purge can't be undone from the library: five synthetic personal documents scored P(personal) 0.998–1.0 with the 4B model, and `papyrus keep PATH` restores from the original. A plain `DELETE` left 8 of 24 text fragments in the file; `secure_delete` plus FTS5 `secure-delete` left none. |
+| index only live works' files | Personal paperwork sits next to papers in `~/Downloads`; its first 2 pages are needed to classify it, the rest aren't needed at all. Search also filters to live works, since those 2 pages are indexed. |
+| purge sure personal paperwork to a tombstone; hold unsure cases; serve only live works' files | Before this, scanning and triage (now classify and extract) kept the first pages, paths, URLs, PDF metadata, a stored copy and model claims of every payslip and CV. The web app served any file id to the tailnet, and MCP's `get_file` and `sql` read them. Containment can't cover `sql`, so the data goes. The tombstone (sha256, size, URL) keeps "never classify these bytes again" without the content. 0.9 rather than 0.5 because a purge can't be undone from the library: five synthetic personal documents scored P(personal) 0.998–1.0 with the 4B model, and `papyrus keep PATH` restores from the original. A plain `DELETE` left 8 of 24 text fragments in the file; `secure_delete` plus FTS5 `secure-delete` left none. |
 | rank works by Reciprocal Rank Fusion of metadata and pages | bm25 from `works_fts` and `file_pages_fts` aren't on one scale (adding them, as before, let either swamp the other). RRF needs only ranks, and an embedding ranking can join later. |
 | page kinds from the text, not the outline | Outlines were wrong as often as right (a book's "Index" entry spanning its references, "2.1.2 Bibliography" a manual's section about bibliographies). Bibliography-entry density ≥ 0.5 marks 86% of reference pages and 1% of body pages; the body pages were mostly unlabelled reference pages. |
 | OCR with Vision `RecognizeDocumentsRequest` in the existing bridge | On-device, no new dependency, reading order across columns; ~57 ms a page warm, ~25 s warm-up per process. |
-| `watch` reuses `scan.ingest_path` and the stages' own functions, in recorded runs of its own | One ingestion path means dedupe, purged tombstones and provenance can't drift between `scan` and the watcher. Each batch is one `watch` run (at most 25 steps), so `runs` shows what happened, and the web's "running" indicator is on only while it works. |
+| `watch` reuses `scan.scan_path` and the stages' own functions, in recorded runs of its own | One ingestion path means dedupe, purged tombstones and provenance can't drift between `scan` and the watcher. Each batch is one `watch` run (at most 25 steps), so `runs` shows what happened, and the web's "running" indicator is on only while it works. |
 | `watch`: settle on size + mtime + ctime, not on close events | FSEvents has no close event and inotify's `CLOSE_WRITE` fires for every chunk some tools write. Stability over a few seconds works the same everywhere; ctime catches a browser writing the download URL xattr after the bytes. |
 | `watch`: FSEvents and inotify through ctypes, not `watchdog` | No compiled dependency (wheels for Python 3.14 lag); about 100 lines each. Polling covers everything else. |
 | `watch`: memory pressure gates *loading*, not using | On this 24 GB M4, `kern.memorystatus_vm_pressure_level` reads 2 (warn) while LM Studio holds the 4B model. Refusing at warn would mean never triaging with the model already loaded; loading a model at warn is what swaps. So: critical stops every model call, warn stops only calls that may load something (an LM Studio model that isn't loaded, Apple FM, Vision OCR). |
 | `watch`: unload only models it loaded itself, idle for 10 min | LM Studio is shared with the user and other agents. A model loaded before the watcher asked, or reloaded by someone after it went away, is not the watcher's (`ModelLedger.refresh`). |
 | `watch` runs inside Papyrus Server.app on macOS, not as a launchd agent | macOS asks for access to `~/Downloads` and `~/Desktop` on behalf of the responsible app. As a child of Papyrus Server.app, the prompt names that app, which already carries the usage strings; a launchd agent running `python3` would get a prompt naming Python, or nothing. The app also gives the menu-bar status and an on/off item for free. |
 | `watch` checks that its database files are still the ones it opened | A GUI editor's safe-save (SQLPro for SQLite, 2026-11-01) replaced `papyrus.sqlite` and `inference.sqlite-wal` under the running watcher: its writes went to nameless files, lost on exit, and new readers saw a corrupt pairing. An inode check before every step catches it. The watcher then saves what its own connections see (SQLite's backup API), exits without closing, and refuses to start until the copy is restored. |
-| `watch`'s queue mirrors the library rather than replacing it | `papyrus triage`, `process`, `keep` and other agents change what is pending behind the watcher's back. A queue that was the source of truth would go stale; one synced from the library before every step can't, and it keeps only what the library has no place for: retries, failures, step durations. Its own database, since that is working state, not knowledge, and losing it only forgets retries. |
+| `watch`'s queue mirrors the library rather than replacing it | `papyrus classify`, `extract`, `ingest`, `keep` and other agents change what is pending behind the watcher's back. A queue that was the source of truth would go stale; one synced from the library before every step can't, and it keeps only what the library has no place for: retries, failures, step durations. Its own database, since that is working state, not knowledge, and losing it only forgets retries. |
 | `watch` defaults to the `release` variant only | Every variant's watcher would add the same `~/Downloads` to its own library. Other variants opt in (`--watch`, recorded in `variant.yml`). |
 
 ## Adding a context source (Slack, Safari Reading List, Twitter…)
@@ -266,11 +294,11 @@ recognition are in [slack.md](slack.md)):
    `mention=<free text>`, `status='unresolved'`.
 3. **The resolver** (`resolve.py`, `papyrus resolve`) turns unresolved
    refs into works:
-   * arXiv/DOI links: `find_work` by the id; else `match.resolve`, then
+   * arXiv/DOI links: `find_work` by the id; else `candidates.resolve`, then
      `find_work` by the record's other ids, title and year; else a new
-     candidate work holding the id, enriched by `enrich_work` (done);
+     candidate work holding the id, matched by `match_work` (done);
    * PDF links (to do) can be fetched with `download.fetch`/`download.record`,
-     then go through triage; Slack uploads need `files:read` and the token;
+     then be ingested; Slack uploads need `files:read` and the token;
    * on success, set `status='resolved'` and `work_id`/`file_id`, with
      `confidence` and `source`.
 4. **Record a run** (`db.recorded_run(conn, "import-slack", …)`), and add an
@@ -284,7 +312,7 @@ Safari Reading List lives in `~/Library/Safari/Bookmarks.plist`
 
 Roughly by value:
 
-* **Books:** add an Open Library client (`enrich/openlibrary.py`).
+* **Books:** add an Open Library client (`match/openlibrary.py`).
   * AIMA 4th edition was matched to the 2010 3rd edition.
   * The Sutton & Barto PDF came out titled by its series name ("Adaptive
     Computation and Machine Learning").
@@ -312,7 +340,7 @@ Roughly by value:
 * **Downloads:** publisher pages that need cookies or JavaScript (no
   `citation_pdf_url` in the HTML) fail and stay unresolved; DOIs given
   directly could go through Unpaywall/OpenAlex `best_oa_location`.
-* **Classifier calibration:** fit a temperature on labelled triage data. 64
+* **Classifier calibration:** fit a temperature on labelled classifier data. 64
   labelled files exist now.
 * Thesis venue: S2 gives "arXiv: Combinatorics" where an institution is
   better.

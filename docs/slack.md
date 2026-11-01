@@ -119,20 +119,20 @@ its links) and adds nothing to the library. It is a recorded run
 `links` prints: one `kind='slack'` context per message, keyed by permalink
 and refreshed on re-import, and one unresolved ref per link, all in one
 transaction after the searches. Then `resolve.py` links arXiv/DOI refs to
-works, creating and enriching candidate works where the library has none
+works, creating and matching candidate works where the library has none
 (`papyrus resolve --kind slack` retries what is still unresolved).
 
 First import into the release library, 2026-10-30, 180 days (backup:
 `papyrus.backup-2026-10-30-slack-import.sqlite`): 129 messages, 135 refs;
 59 distinct arXiv ids and DOIs, of which 9 were already works and 50 became
-new candidate works (all titled and enriched); 69 refs (37 PDF links,
+new candidate works (all titled and matched); 69 refs (37 PDF links,
 26 uploads, 6 landing pages) left unresolved. A second run changed nothing.
 
 ## Which links count
 
 In order of precision:
 
-1. **Identifiers in the URL**: arXiv ids and DOIs, using `enrich/ids.py`
+1. **Identifiers in the URL**: arXiv ids and DOIs, using `ids.py`
    (`find_arxiv_ids`, `find_dois`). This covers arxiv.org, alphaxiv,
    doi.org and every publisher URL that embeds a DOI (Wiley, ACM, Springer,
    T&F, PNAS, …).

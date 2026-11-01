@@ -16,8 +16,8 @@ Read these first:
 
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
-PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | watch | inference | works | work | files | show | search | stats | config | mcp | slack | resolve
+PAPYRUS_LIVE=1 uv run pytest -q tests/test_match_live.py   # hits arXiv/OpenAlex/S2/Crossref
+uv run papyrus --help                  # scan | download | store | classify | extract | promote | index | match | ingest | purge | keep | watch | inference | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/classifier in effect
 uv run papyrus inference stats         # every model call so far: hits, failures, timings (also: show CALL_ID, prune)
 uv run python tools/words/fetch.py     # src/papyrus/data/words.txt (gitignored; the installers run it)
@@ -47,12 +47,20 @@ other.
 `PAPYRUS_HOME` overrides both). The naming rules (bundle ids, `~/Library`
 directories, ports, tailnet paths) are in `apps/macos/README.md`, "Variants".
 
-The usual pipeline is `scan` (or `download`) `→ triage → promote → extract → enrich`;
-`papyrus process` runs the last four. Every stage is idempotent and processes
-only what is pending (see `--all` / `--reset`). `papyrus watch` (`watch/`)
-runs the same stages in the background as PDFs land in `~/Downloads` and
-`~/Desktop`, one file at a time; Papyrus Server.app (macOS) or a systemd user
-unit (Linux) keeps it running.
+The pipeline's stages: **scan** (or `download`: add files) → **read** (the
+first pages' text, OCR where there is no text layer) → **classify** (the
+screen, then the classifier: kind, so library or personal) → **extract**
+(the extraction model's metadata, library material only) → **promote**
+(works; purge or hold personal paperwork) → **index** (every page, for
+full-text search) → **match** (arXiv, OpenAlex, S2, Crossref). All of them
+together is **ingest**: `papyrus ingest` runs everything after `scan`. Every
+stage is idempotent and does only what is pending (see `--all` / `--reset`).
+`papyrus watch` (`watch/`) ingests in the background as PDFs land in
+`~/Downloads` and `~/Desktop`, one step at a time; Papyrus Server.app (macOS)
+or a systemd user unit (Linux) keeps it running. "Triage" (classify +
+extract), "enrich" (match), `papyrus process` (ingest) and `papyrus extract`
+for full text (now `index`) are the old names, still in old runs and
+history.
 
 ## Data safety (read before running anything)
 
@@ -78,15 +86,15 @@ unit (Linux) keeps it running.
   * works are rejected (`status='rejected'`, ids released by
     `works.reject_work`) or merged, never deleted;
   * assertions are superseded (`superseded_at`), never deleted;
-  * undo an enrichment with `pipeline.reset_enrichment`, which keeps the
+  * undo a match with `match.pipeline.reset_match`, which keeps the
     history.
 
   The exception is a file purged as personal paperwork (`purge.py`): what
   papyrus knew about it is erased on purpose.
 * **Downloaded personal documents live alongside papers in `~/Downloads`:**
   payslips, tax certificates, CVs, exam papers. Don't paste their text into
-  commits, tests, fixtures or logs. Triage deliberately stores no abstract or
-  topics for non-library documents.
+  commits, tests, fixtures or logs. Non-library documents deliberately get no
+  metadata, abstract or topics from a model (`extract_status='skipped'`).
 * **The inference cache holds that text too** (`<home>/inference/inputs/`:
   every model prompt, i.e. documents' first pages and paths;
   `inference/outputs/`: the answers). `inference.sqlite` itself holds only
@@ -101,9 +109,9 @@ unit (Linux) keeps it running.
   * between 0.5 and 0.9 (or without a classifier) the file is *held*: no work,
     first pages kept for review (`papyrus purge --dry-run`, `purge ID`,
     `keep ID`);
-  * so is a file the screen (`screen.py`, triage's embedding-model first
-    stage) scores P(personal) ≥ 0.9: triage stops before any language model.
-    The screen alone never purges;
+  * so is a file the screen (`screen.py`, the classify stage's embedding-model
+    first step) scores P(personal) ≥ 0.9: classifying stops before any
+    language model. The screen alone never purges;
   * nothing about a file outside a live work may reach the browser or MCP.
     The web's `LIVE_FILE` (`web/src/lib/server/files.ts`) and Python's
     `search.LIVE_FILE` gate file bytes, thumbnails, paths, URLs and claims.
@@ -114,7 +122,7 @@ unit (Linux) keeps it running.
 1. **Provenance on every claim.** Model and API output goes into `assertions`
    with a `source` tag:
    * `llm:<backend>:<model>`, `classify:<backend>:<model>`, `screen:<backend>:<model>`
-   * `api:<service>`, `api:enrich`
+   * `api:<service>`, `api:match`
    * `heuristic:<name>`, `papyrus:<action>`
    * `user`
 
@@ -134,9 +142,9 @@ unit (Linux) keeps it running.
    * DOIs lowercased;
    * ORCIDs as bare digits.
 
-   Enrichment never merges a candidate whose ids belong to another live work
-   (`pipeline._conflict`).
-5. **This document's ids, not cited ones.** `triage.detect_ids` trusts:
+   Matching never merges a candidate whose ids belong to another live work
+   (`match.pipeline._conflict`).
+5. **This document's ids, not cited ones.** `describe.detect_ids` trusts:
    * the filename and the download URLs (`kMDItemWhereFroms`, or the
      `where_froms` of a `download` context) and the title of the link it was
      downloaded from;
@@ -148,16 +156,20 @@ unit (Linux) keeps it running.
    arXiv URLs elsewhere on page 1 are citations.
 6. **Schema changes:**
    * edit `schema.sql`;
-   * bump `db.SCHEMA_VERSION` (`db.init` then refuses older databases);
+   * bump `db.SCHEMA_VERSION` (`db.init` then refuses other versions).
+     Versions are 0.x until the schema is stable (1.0 later): bump the minor,
+     `"0.5"` → `"0.6"`;
    * migrate the user's database once, by hand, after a dated `.backup`
      (one user, so no migration code is kept);
    * update `docs/schema.md` in the same commit.
 
    The schema is a public contract: users and agents query it with SQL over
    MCP.
-7. **Changing a prompt** in `triage.py` (instructions, schema, `KINDS`,
-   `CLASSIFICATIONS`) means bumping `PROMPT_VERSION` and noting what changed in the
-   comment above it. It is recorded on every run.
+7. **Changing a prompt** means bumping `describe.PROMPT_VERSION` (0.x: `"0.6"`
+   → `"0.7"`) and noting what changed in the comment above it. Prompts are the
+   document description (`describe.py`), the classifier's `KINDS` and
+   `CLASSIFICATIONS` (`classify.py`) and the extraction model's `INSTRUCTIONS`
+   and `EXTRACT_SCHEMA` (`extract.py`). It is recorded on every run.
 8. **The `Backend` / `Classifier` / `Embedder` contracts** in `llm/base.py` and the
    `WorkRecord` / `AuthorRecord` types in `models.py` are shared by several
    modules. Change them deliberately, and update every implementation.
@@ -167,7 +179,7 @@ unit (Linux) keeps it running.
    prefill, how the schema is sent) means bumping its `cache_params()["impl"]`,
    or old cached answers are served for the new layout.
 9. **Never throw away an API response.** Every request through
-   `enrich/http.HttpClient` (enrichment, `papyrus download`, Slack) is
+   `http.HttpClient` (matching, `papyrus download`, Slack) is
    appended, with its raw response, to `<library home>/api-log/<UTC date>.jsonl`
    (`apilog.py`; format in its docstring). Later code can trawl old responses
    for fields nobody extracted at the time. So:
@@ -198,7 +210,7 @@ unit (Linux) keeps it running.
 * **Live tests load models:** once the server is up, `test_live_lmstudio_decides`
   runs and loads the 4B model (1 h idle timeout). Unload it afterwards
   (`lms unload qwen3.5-4b-mlx`) unless the user is using it.
-* **No silent downgrade:** `triage` exits if no classifier is available unless
+* **No silent downgrade:** `papyrus classify` exits if no classifier is available unless
   the classifier is explicitly `none` (option, `PAPYRUS_CLASSIFIER` or the
   config). Without one, library-ness rests on the extraction model's biased
   yes/no.
@@ -235,7 +247,7 @@ unit (Linux) keeps it running.
   a prefill call ended. Questions that share a prefix but diverge after it get
   no reuse unless something primes it: the classifier sends one short prime per
   state when more than one question will follow (`OpenAICompatClassifier._prime`;
-  triage asks one since `triage-6`, so none). Even primed, each question gets
+  classify asks one since prompt 0.6, so none). Even primed, each question gets
   the state back only up to its last 256-token boundary and recomputes the rest
   (measured 2026-11-01: 22% of the prompt work with two questions). Restore
   counts are in `~/.cache/lm-studio/server-logs` ("Prompt cache restore:
@@ -259,18 +271,18 @@ The seed is part of the inference cache's key either way.
 
 * Its `kind` distribution is good. Its yes/no "is this library material?"
   answer was biased towards yes (0.73 for an exam paper it labels `personal`
-  with p=1.0), and is no longer asked (`triage-6`).
+  with p=1.0), and is no longer asked (prompt 0.6).
 * So library-ness comes from `P(kind=personal)` (`works.is_library`).
   Probabilities are uncalibrated.
 
 **The screen** (`screen.py`, `data/screen.bin`, `tools/screen/`):
 
 * `data/screen.bin` is the production classifier: a logistic regression on
-  nomic-embed-text embeddings of triage's own state (`triage.build_state`,
+  nomic-embed-text embeddings of the document description (`describe.build_state`,
   input version 3; the weights record the version they were trained on, and
   versions 1 and 2, the name, folder, size, host and first 128 words, are
-  still read). Changing the state (`build_state`, `pagetext.py`, the
-  `[triage]` budget) changes what the screen sees: retrain it with
+  still read). Changing the description (`build_state`, `pagetext.py`, the
+  `[describe]` budget) changes what the screen sees: retrain it with
   `tools/screen/export.py` (each library, any machine) and
   `tools/screen/train.py` (its docstring has the commands), then commit the
   new file. The weights hold no text (standardisation folded in).
@@ -282,9 +294,9 @@ The seed is part of the inference cache's key either way.
   documents. Keep them out of git (`/training/` is ignored), tests and logs.
   `train.py` embeds without the inference cache on purpose: the cache would
   write purged documents' text back to disk.
-* Its labels come from earlier triage, which made mistakes: the first
-  training run found two personal documents that triage had promoted to
-  works. Where the screen disagrees with a label, look at the file.
+* Its labels come from earlier classifying (then called triage), which made
+  mistakes: the first training run found two personal documents it had
+  promoted to works. Where the screen disagrees with a label, look at the file.
 * It is skipped for files without a text layer: from the name alone it
   misjudged library files.
 
@@ -293,17 +305,17 @@ The seed is part of the inference cache's key either way.
 * PDFium marks soft hyphens with `\x02`, which splits words in full-text
   search. `pdf.clean_text` strips control characters and zero-width
   characters.
-* About 5 of 81 PDFs have no text layer (`text_status='no_text'`, judged on
-  the first 2 pages). `papyrus extract` OCRs pages without one through the
+* About 5 of 81 PDFs have no text layer (`read_status='no_text'`, judged on
+  the first 2 pages). The read stage (`papyrus index`, or the watcher) OCRs pages without one through the
   bridge's `ocr` op (Apple Vision). Rebuild the bridge after pulling
   (`swift build -c release`); an old binary answers "unknown op" and OCR is
   skipped with a message.
-* `text_status='no_text'` can be wrong both ways: AIMA's first pages are
+* `read_status='no_text'` can be wrong both ways: AIMA's first pages are
   scanned images but the other 2,100 have a text layer.
 
-**Full text and search** (`fulltext.py`, `search.py`, `web/src/lib/server/query.ts`):
+**Full text and search** (`index.py`, `search.py`, `web/src/lib/server/query.ts`):
 
-* **Privacy:** only files of live works are extracted past page 2, and every
+* **Privacy:** only files of live works are indexed past page 2, and every
   search path filters to live works. Keep it that way in new search tools:
   the first pages of *held* personal files (see Data safety) are in
   `file_pages`. Purged files have none.
@@ -317,15 +329,16 @@ The seed is part of the inference cache's key either way.
   subquery (SQLite flattens it): use a `MATERIALIZED` CTE. `MATCH ? AND
   rowid IN (…)` reruns the MATCH per rowid (1.7 s for 180 snippets of `t*`);
   write `+rowid IN (…)` (24 ms).
-* **Triage's state** (`triage.build_state`, `pagetext.py`) is about
-  `[triage] state_tokens` (1000) tokens, estimated (`pagetext.estimate_tokens`,
+* **The document description** (`describe.build_state`, `pagetext.py`), what
+  the screen, the classifier and the extraction model read, is about
+  `[describe] state_tokens` (1000) tokens, estimated (`pagetext.estimate_tokens`,
   within -5%/+12% of Qwen3.5's count on most pages): a `--- document ---` /
   `--- metadata ---` header, then the first pages and, for a longer
   document, the last ones (`tail_fraction`, 0.2), normalised (filler runs,
   duplicate lines, invisible characters, split small caps). Pages come from
   `file_pages`, else from the stored PDF, read on demand and *not stored*:
   personal files stay at the pages scanning read. The abstract cut and
-  `detect_ids` still read pages ≤ `TRIAGE_PAGES` and page 1.
+  `detect_ids` still read pages ≤ `FIRST_PAGES` and page 1.
 * **Small caps** (poppler: `G ATED D ELTA`) are rejoined with a common-words
   list, `src/papyrus/data/words.txt`, generated by `tools/words/fetch.py`
   (the installers run it; it is gitignored). Without it nothing breaks; the
@@ -334,13 +347,13 @@ The seed is part of the inference cache's key either way.
 **Abstracts:**
 
 * Don't ask a small model to copy text verbatim; it's slow and it pads.
-  Triage asks for start/end anchors and `textspan.best_abstract` cuts the
+  Extraction asks for start/end anchors and `textspan.best_abstract` cuts the
   span out of the page. A regex fallback finds "Abstract … Introduction".
 * Small models fill optional fields with junk (a whole payslip as the
   "abstract"). Make fields required, give them explicit empty-value rules,
   and gate them (`has_abstract`).
 
-**Enrichment APIs:**
+**Matching APIs** (`match/`):
 
 * **Semantic Scholar** returns 429 almost always without `S2_API_KEY`; after
   repeated 429s it is skipped for 120 s.
@@ -379,27 +392,29 @@ The seed is part of the inference cache's key either way.
 * **Memory pressure reads "warn" on this machine whenever LM Studio holds a
   model.** So warn blocks only calls that may *load* a model; critical
   blocks all of them (`Watch._gate`).
-* **Triage runs in phases** (`Watch._next_task`, `papyrus triage`): classify
-  every pending file, then extract metadata for every `classified` file, then
-  classify what arrived meanwhile. The classifier and the extraction model may
-  be different models (`classifier = "lmstudio:qwen3.5-4b-mlx"`, `backend =
+* **Classify and extract run in phases** (`Watch._next_task`, `papyrus
+  ingest`): classify every pending file, then extract the metadata of every
+  file classified as library material, then classify what arrived
+  meanwhile. The classifier and the extraction model may be different models (`classifier = "lmstudio:qwen3.5-4b-mlx"`, `backend =
   "lmstudio:qwen3.5-2b-optiq"`); a phase change is where one replaces the
   other.
-* **Never a model beside the user's, unload only its own**
-  (`watch/models.ModelLedger`). Under normal memory pressure the watcher
-  loads the next phase's model beside its own other one; under pressure it
-  unloads its own first (a swap). If the user's model is loaded and differs
-  from the one a phase needs, that phase waits (state `lmstudio-unavailable`,
-  "another model is loaded") and the other goes on.
+* **A second model only if it fits, unload only its own**
+  (`watch/models.ModelLedger`). The next phase's model loads beside what is
+  loaded (the user's model too) when it fits in the memory available now
+  (`system.has_room`: the weights × 1.25, leaving 15% free); otherwise the
+  watcher unloads its own first (a swap), or, if the model in the way is the
+  user's, that phase waits (state `lmstudio-unavailable`, "no room to load …")
+  and the other goes on.
 * **`uv run` forwards SIGTERM** to the watcher and passes its exit status
   through, so Papyrus Server.app can supervise `uv run … papyrus watch`
   directly. SIGTERM closes the open run as `interrupted`.
 * **Its queue (`<home>/queue.sqlite`) mirrors the library**, synced before
   every step: to queue work, make it pending in the library (e.g.
-  `triage_status='pending'`), not in the queue. A step that leaves its item
+  `classify_status='pending'`), not in the queue. A step that leaves its item
   pending counts as `no_progress` and is retried later (1 h, 4 h, 16 h, then
-  `failed`), which is what stops an enrichment that finds nothing from
-  looping.
+  `failed`), which is what stops a match that finds nothing from looping. A
+  matching source that refuses (429/503) records nothing: the match stage
+  alone backs off (`rate-limited`) and the work stays pending.
 * **Never open the live databases in a GUI SQLite editor that saves**
   (SQLPro for SQLite, DB Browser, …). On 2026-11-01 SQLPro, a sandboxed app,
   safe-saved copies over `papyrus.sqlite` and `inference.sqlite-wal` (leaving
@@ -422,18 +437,18 @@ The seed is part of the inference cache's key either way.
     database fd that `lsof -p PID` lists, then `kill -9` it (not SIGTERM).
 * **Pause it for LM Studio experiments:** `papyrus watch --pause` (or the
   menu bar's Pause Model Work) creates `<home>/watch.pause`. While it exists,
-  the watcher, whoever runs it, asks no model (triage and OCR wait; state
-  `paused`) but still adds, extracts and enriches files. The file in progress
-  finishes first (up to ~20 s). It lasts across restarts until `--resume`.
+  the watcher, whoever runs it, asks no model (read, classify and extract
+  wait; state `paused`) but still scans, indexes and matches files. The file
+  in progress finishes first (up to ~20 s). It lasts across restarts until `--resume`.
 * **Its performance log is `<home>/watch-events.jsonl`** (`watch/events.py`):
-  one JSON line per file added, step (stage, id, ms, outcome), model load or
+  one JSON line per file scanned (`scan`), step (stage, id, ms, outcome), model load or
   swap, back-off, and a `drained` line with the busy time when the queue
   empties. `papyrus watch --perf` summarises the latest session. Ids, timings
   and model names only, like the text log.
 * **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
-  not involved; `scan.ingest_path` is the shared per-file body.
+  not involved; `scan.scan_path` is the shared per-file body.
 * **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and
-  enrichment are slower in the watcher than on the command line. Don't call
+  matching are slower in the watcher than on the command line. Don't call
   `system.lower_priority()` in tests: it would slow the rest of the suite.
 
 **uv:** `~/pyproject.toml` defines a uv workspace. This project declares its
@@ -445,11 +460,11 @@ with the same decorators.
 
 ## Testing patterns
 
-* **No model needed:** `tests/test_triage_promote.py` has `FakeBackend`,
+* **No model needed:** `tests/test_ingest.py` has `FakeBackend`,
   `FakeClassifier` and `_lib()`, which builds a temporary library from
   generated PDFs (`test_core._make_pdf`).
 * **No network:** record API responses as fixtures under `tests/fixtures/`,
-  and monkeypatch `match.resolve` for pipeline tests.
+  and monkeypatch `match.candidates.resolve` for pipeline tests.
 * **Downloads:** `tests/test_download.py::_web` serves PDFs, redirects and
   landing pages through `httpx.MockTransport`; pass the client to
   `download.download` (or `http.set_default_client` for CLI tests).
@@ -461,9 +476,9 @@ with the same decorators.
   (`LMStudio`: what is loaded, what was unloaded) and `FakeBackend` /
   `FakeClassifier`. Call `pump()` once after injecting (the settle timer starts
   there), advance the clock, then `pump()` again. Use `_pdf(..., old=True)`
-  for files the catch-up scan should take at once. The watcher enriches what
+  for files the catch-up scan should take at once. The watcher matches what
   it promotes: a test module that runs it (even through `test_watch`'s
-  helpers) must use conftest's `no_enrich_network` fixture, or it calls the
+  helpers) must use conftest's `no_match_network` fixture, or it calls the
   real APIs (it did, twice: 12 s and 2 min test runs).
 * **Live tests** must skip themselves when the service isn't reachable
   (LM Studio, the AFM bridge, `PAPYRUS_LIVE` for the network).
@@ -474,12 +489,13 @@ with the same decorators.
 
 * Pick an area from "Open issues" in `docs/architecture.md`. Areas with
   little overlap between files:
-  * `enrich/<new source>.py`
+  * `match/<new source>.py`
   * `contexts/<importer>.py`
   * `llm/*`
   * MCP tools
   * embeddings
-* `cli.py`, `schema.sql` and `triage.py` are the shared hot spots. Keep
+* `cli.py`, `schema.sql` and the prompt modules (`describe.py`,
+  `classify.py`, `extract.py`) are the shared hot spots. Keep
   edits to them small, and say so in your commit message.
 * Commit small, self-describing commits, and run `uv run pytest -q` before
   each one. Push to `origin` (GitHub) only when asked.

@@ -6,7 +6,7 @@ read-only web browser in [`web/`](../../web) runs as a systemd user service, one
 per [variant](../macos/README.md#variants). You reach it in a browser at
 `http://127.0.0.1:5182/papyrus/` or, on the tailnet, at
 `https://<machine>.<tailnet>.ts.net/papyrus/`. The Python CLI (`papyrus scan`,
-`download`, `process`, …) is still the only writer, as on macOS. A second
+`download`, `ingest`, …) is still the only writer, as on macOS. A second
 unit runs `papyrus watch`, which adds new PDFs from `~/Downloads` and
 `~/Desktop` as they appear.
 
@@ -96,7 +96,7 @@ release by default, others with `--watch`, recorded as `watch:` in
   Failed steps are retried after 1 h, 4 h and 16 h from
   `~/.papyrus/<variant>/queue.sqlite`; `papyrus watch --retry-failed` revives
   the ones it gave up on. `papyrus watch --pause` / `--resume` holds model
-  work (triage, OCR) while new files are still added.
+  work (reading with OCR, classifying, extracting) while new files are still added.
 
 `--uninstall` stops, disables and deletes the units, deletes the installed web
 build and withdraws the tailnet path. The library and the logs stay.
