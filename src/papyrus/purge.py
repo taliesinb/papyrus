@@ -160,17 +160,19 @@ def checkpoint(conn: sqlite3.Connection) -> None:
 
 def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> tuple[str, int | None]:
     """The user says this (unpurged) file is library material: record it, then promote it. A file
-    the screen set aside was never asked about (no title, no authors): it goes back to triage,
-    which skips the screen for it from now on (action `retriage`)."""
+    with no title yet was never given metadata: one the screen set aside goes back to triage
+    (which skips the screen for it from now on), one the classifier judged personal goes on to
+    metadata extraction (triage_status `classified`). Action `retriage` either way."""
     from .screen import rejected
     from .works import promote_file
 
     claims = db.current_assertions(conn, "file", file_id)
-    retriage = rejected(claims) is not None and not claims.get("title")
+    retriage = not claims.get("title")
+    status = "pending" if rejected(claims) is not None else "classified"
     with db.tx(conn):
         db.assert_(conn, "file", file_id, "is_library_material", True, source="user", run_id=run_id)
         if retriage:
-            conn.execute("UPDATE files SET triage_status='pending' WHERE id=?", (file_id,))
+            conn.execute("UPDATE files SET triage_status=? WHERE id=?", (status, file_id))
     if retriage:
         return "retriage", None
     return promote_file(conn, file_id, run_id=run_id)

@@ -55,7 +55,7 @@ from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMO
                      STARTING,
                      STOPPED, WAITING_MEMORY, Backoff)
 from .models import ModelLedger
-from .queue import STAGES, Queue
+from .queue import MODEL_STAGES, STAGES, Queue
 from .sources import PollingWatcher, Watcher, make_watcher
 from .system import CRITICAL, NORMAL, memory_pressure
 
@@ -66,7 +66,8 @@ EXIT_LOCKED = 75  # another watcher holds the library's lock (EX_TEMPFAIL): don'
 EXIT_REPLACED = 70  # a database file was replaced under the watcher; a copy is in <home>/rescued-*
 EXIT_RESCUED = 78  # a rescued-* copy waits to be restored: refuse to start (EX_CONFIG)
 
-TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status <> 'done'")
+TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status IN ('pending', 'error')")
+METADATA_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
 
 
 def default_log(msg: str) -> None:
@@ -148,6 +149,7 @@ class Watch:
         self.memory_delay = MEMORY_DELAY
         self.queue = queue or Queue(db.library_home() / "queue.sqlite", wall)
         self.models: tuple[Any, Any] | None = None
+        self.phase = "classify"  # the triage phase in progress: classify | metadata
         self.last_level: str | None = None  # memory pressure at the last gate, recorded with the call
         self.ocr_ok: bool | None = None
         self.dirty = True  # there may be pending work: look
@@ -468,7 +470,8 @@ class Watch:
             "extract": fulltext.pending_files(self.conn),
             "ocr": list(fulltext.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
             "enrich": unenriched_works(self.conn),
-            "triage": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {TRIAGE_PENDING} ORDER BY id")],
+            "classify": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {TRIAGE_PENDING} ORDER BY id")],
+            "metadata": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {METADATA_PENDING} ORDER BY id")],
         }
 
     @property
@@ -486,8 +489,21 @@ class Watch:
         now = self.clock()
         waiting = {s for s, (until, _, _) in self.backoffs.items() if now < until}
         if paused:
-            waiting |= {"ocr", "triage"}
-        return self.queue.next([s for s in STAGES if s not in waiting])
+            waiting |= set(MODEL_STAGES)
+        free = [s for s in STAGES if s not in waiting]
+        # Triage in phases: classify everything pending, then extract metadata for everything
+        # classified, then classify what arrived meanwhile, and so on. The two may be different
+        # models; each phase runs as far as it can, so a model is loaded (or swapped in) once
+        # per phase, not once per file.
+        other = {"classify": "metadata", "metadata": "classify"}[self.phase]
+        free = [s for s in free if s != other]
+        task = self.queue.next(free)
+        if task is None and other not in waiting:
+            task = self.queue.next([other])
+            if task is not None:
+                self.log(f"triage phase: {other}")
+                self.phase = other
+        return task
 
     def _still_pending(self, stage: str, i: int) -> bool:
         return i in self._library_pending()[stage]
@@ -510,7 +526,7 @@ class Watch:
             self._back_off(stage, Backoff(LMSTUDIO_UNAVAILABLE, "the model is unavailable", delay=LMSTUDIO_DELAY), c)
         except Exception as e:  # noqa: BLE001  the type only: messages may hold paths
             c[f"{stage}_error"] += 1
-            if stage == "triage":
+            if stage == "classify":  # (a failed metadata step stays `classified` and is retried)
                 self.conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (i,))
             self.log(f"{what} {i} {stage} failed ({type(e).__name__})")
             self._retry(task, type(e).__name__)
@@ -550,18 +566,31 @@ class Watch:
         c[f"enrich_{r['status']}"] += 1
         self.log(f"work {wid} enrich: {r['status']}")
 
-    def _triage(self, fid: int, run_id: int, c: Counter) -> None:
-        from ..triage import triage_file
+    def _classify(self, fid: int, run_id: int, c: Counter) -> None:
+        from ..triage import classify_file
 
-        be, dec = self._models(run_id)
-        r = triage_file(self.conn, fid, be, dec, run_id=run_id, screen=self.screen)
+        _, clf = self._models(run_id)
+        r = classify_file(self.conn, fid, clf, run_id=run_id, screen=self.screen)
         self.memory_delay = MEMORY_DELAY
-        c["triaged"] += 1
+        c["classified"] += 1
         if r.get("screened"):
             c["screened"] += 1
             self.log(f"file {fid} set aside by the screen (P(personal)={r['screen']['p_personal']:.2f})")
+        elif r["status"] == "done":  # not library material: no metadata extraction
+            self.log(f"file {fid} classified: not library (P(personal)={r['p_personal']:.2f})")
         else:
-            self.log(f"file {fid} triaged")
+            self.log(f"file {fid} classified")
+        if r["status"] == "done":
+            self._promote(fid, run_id, c)
+
+    def _metadata(self, fid: int, run_id: int, c: Counter) -> None:
+        from ..triage import extract_metadata
+
+        be, _ = self._models(run_id)
+        extract_metadata(self.conn, fid, be, run_id=run_id)
+        self.memory_delay = MEMORY_DELAY
+        c["triaged"] += 1
+        self.log(f"file {fid} metadata extracted")
         self._promote(fid, run_id, c)
 
     # --- models, memory, back-off -------------------------------------------------------------
@@ -611,7 +640,8 @@ class Watch:
             # idle timeout unloads it
             return
         if kind == "lmstudio" and model:
-            # a model that is already loaded costs little more; loading one under pressure would swap
+            # a model that is already loaded costs little more; loading one beside another under
+            # pressure would swap, so then the watcher swaps its own instead (models.ModelLedger)
             self.ledger.claim(model, may_load=level == NORMAL)
         elif level != NORMAL:
             raise Backoff(WAITING_MEMORY, f"memory pressure ({level})")
@@ -628,9 +658,9 @@ class Watch:
         self.log(f"{stage} waits {delay:.0f} s: {b.reason}")
 
     def _waiting(self) -> tuple[float, str, str] | None:
-        """The back-off to show: triage's if it has one and work, else OCR's."""
+        """The back-off to show: the triage phases' if one has work, else OCR's."""
         counts, now = self.pending(), self.clock()
-        for stage in ("triage", "ocr"):
+        for stage in ("classify", "metadata", "ocr"):
             b = self.backoffs.get(stage)
             if b and now < b[0] and counts[stage]:
                 return b
@@ -639,22 +669,26 @@ class Watch:
     # --- status -------------------------------------------------------------------------------
 
     def pending(self) -> dict[str, int]:
-        """Items in the queue per stage (due, or waiting for a retry), and `failed`."""
-        return self.queue.counts()
+        """Items in the queue per stage (due, or waiting for a retry), and `failed`; `triage` is
+        classify + metadata (what the menu bar showed before the two were split)."""
+        counts = self.queue.counts()
+        counts["triage"] = counts.get("classify", 0) + counts.get("metadata", 0)
+        return counts
 
     def eta_s(self) -> float | None:
         """Seconds of work left: triage from the inference cache's timings (what the models took
         for the questions of the latest document), the other stages from the queue's history."""
         try:
-            per_doc = inference.store().document_estimate_s()
+            store = inference.store()
+            per = {"classify": store.document_estimate_s("classify"), "metadata": store.document_estimate_s("extract")}
         except Exception:  # noqa: BLE001  an estimate must never stop the watcher
-            per_doc = None
-        return self.queue.eta_s({"triage": per_doc})
+            per = {}
+        return self.queue.eta_s(per)
 
     def _settle(self) -> None:
         """The state between batches: paused or waiting (if model work is pending), or idle."""
         counts = self.pending()
-        if self.paused and (counts["triage"] or counts["ocr"]):
+        if self.paused and (counts["triage"] or counts["ocr"]):  # triage: classify + metadata
             self._status(PAUSED, "model work paused (papyrus watch --resume)")
         elif waiting := self._waiting():
             self._status(waiting[1], waiting[2])
@@ -670,7 +704,7 @@ class Watch:
             "state": state, "detail": detail, "pid": os.getpid(), "since": self.started, "updated": db.now_iso(),
             "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs), "paused": self.paused,
             "loaded_by_watch": sorted(self.ledger.ours),
-            "totals": {k: self.totals[k] for k in ("new_files", "triaged", "promote_created", "promote_linked",
+            "totals": {k: self.totals[k] for k in ("new_files", "classified", "triaged", "promote_created", "promote_linked",
                                                    "promote_purged", "extracted", "enrich_enriched") if self.totals[k]},
         }
         if state in (WAITING_MEMORY, LMSTUDIO_UNAVAILABLE):
@@ -681,7 +715,8 @@ class Watch:
                 counts = self.pending()
                 data["failed"] = counts.pop("failed")
                 data["pending"] = counts
-                data["eta_s"] = self.eta_s() if any(counts.values()) else 0.0
+                data["phase"] = self.phase
+                data["eta_s"] = self.eta_s() if any(v for k, v in counts.items() if k != "triage") else 0.0
             except Exception:  # noqa: BLE001  a status write must never stop the watcher
                 pass
         tmp = self.status_path.with_name(self.status_path.name + ".tmp")

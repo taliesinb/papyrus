@@ -286,7 +286,7 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     shutil.copy2(slip, dl / f"Payslip_{MARK} (1).pdf")  # the same bytes twice: one file
     w.catch_up()
     stats = _runs(conn)[-1][1]
-    assert (stats["new_files"], stats["known_files"], stats["triaged"], stats["promote_purged"]) == (1, 1, 1, 1)
+    assert (stats["new_files"], stats["known_files"], stats["classified"], stats["promote_purged"]) == (1, 1, 1, 1)
     assert conn.execute("SELECT count(*) FROM files WHERE purged_at IS NOT NULL").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 0  # both paths erased
     # the same bytes again, under another name: nothing recorded, not even the path
@@ -397,7 +397,7 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     assert mem.calls == 1 and len(_runs(conn)) == 1
     clock.advance(31)
     w.pump()  # still under pressure: backs off for longer
-    assert mem.calls == 2 and w.backoffs["triage"][0] - clock() == 60
+    assert mem.calls == 2 and w.backoffs["classify"][0] - clock() == 60
     mem.level = "normal"
     clock.advance(61)
     w.pump()
@@ -429,7 +429,7 @@ def test_an_ocr_back_off_does_not_hold_triage(tmp_path):
     w.backoffs["ocr"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
     w.catch_up()
     assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
-    w.backoffs["triage"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
+    w.backoffs["classify"] = (clock() + 600, WAITING_MEMORY, "memory pressure (warn)")
     conn.execute("UPDATE files SET triage_status='pending'")
     w.dirty = True
     w.pump()
@@ -445,7 +445,7 @@ def test_apple_refusal_under_memory_pressure_is_a_back_off(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, backend=Busy(PAPER))
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "classified"  # extraction waits
     assert w.state == WAITING_MEMORY
 
 
@@ -501,8 +501,94 @@ def test_sigterm_closes_the_run_as_interrupted(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         w.run()
     assert _runs(conn)[-1][1]["status"] == "interrupted"
-    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "classified"  # extraction interrupted
     assert json.loads(w.status_path.read_text())["state"] == STOPPED and w.watcher.closed
+
+
+# --- triage in phases: classify everything, then extract everything ---------------------------
+
+
+class Recording:
+    """A model that loads just in time in a fake LM Studio and records the order of its calls."""
+
+    def __init__(self, inner, model, lm, log):
+        self.inner, self.model, self.lm, self.calls = inner, model, lm, log
+
+    def info(self):
+        return ModelInfo("lmstudio", self.model)
+
+    def available(self):
+        return True
+
+    def _use(self, what):
+        if self.model not in self.lm.loaded:
+            self.lm.loaded.append(self.model)
+        self.calls.append(what)
+
+    def extract(self, **kw):
+        self._use("extract")
+        return self.inner.extract(**kw)
+
+    def classify(self, state, questions):
+        self._use("classify")
+        return self.inner.classify(state, questions)
+
+
+def _two_models(tmp_path, memory="normal", loaded=()):
+    lm, order = LMStudio(loaded), []
+    be = Recording(FakeBackend(PAPER), "small-extractor", lm, order)
+    clf = Recording(FakeClassifier("paper", True), "big-classifier", lm, order)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, classifier=clf, lm=lm, memory=Memory(memory))
+    for i in range(3):
+        _pdf(dl / f"{i}.pdf", f"Lecture notes number {i}, on things")
+    return w, conn, lm, order, logs
+
+
+def test_triage_classifies_everything_before_extracting(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    w.catch_up()
+    assert order == ["classify"] * 6 + ["extract"] * 3  # two questions a file, then extraction
+    assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["done"]
+    assert conn.execute("SELECT count(*) FROM file_works").fetchone()[0] == 3  # (one work: the same fake title)
+    # normal memory pressure: the second model loads beside the first, nothing is unloaded
+    assert lm.unloaded == [] and sorted(lm.loaded) == ["big-classifier", "small-extractor"]
+    assert "triage phase: metadata" in logs
+
+
+def test_under_pressure_the_watcher_swaps_its_own_models(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path, memory="warn")
+    w.ledger.ours.add("big-classifier")  # the watcher loaded the classifier earlier
+    lm.loaded.append("big-classifier")
+    w.catch_up()
+    assert order == ["classify"] * 6 + ["extract"] * 3
+    assert lm.unloaded == ["big-classifier"] and lm.loaded == ["small-extractor"]  # one swap, at the phase change
+    assert any("swap" in m for m in logs)
+
+
+def test_a_model_the_user_loaded_is_not_swapped_out(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])  # theirs
+    w.catch_up()
+    assert order == ["classify"] * 6 and lm.unloaded == []  # extraction waits for its model
+    assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["classified"]
+    assert json.loads(w.status_path.read_text())["state"] == LMSTUDIO_UNAVAILABLE
+
+
+def test_files_that_arrive_during_extraction_wait_for_the_next_classify_phase(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    late = []
+
+    def extract_and_drop_a_file(**kw):
+        if not late:
+            late.append(_pdf(w.dirs[0] / "late.pdf", "Lecture notes arriving late, on things", old=False))
+            w.watcher.inject(late[0])
+        return FakeBackend(PAPER).extract(**kw)
+
+    w.resolve_models()[0].inner.extract = extract_and_drop_a_file
+    w.catch_up()
+    assert order == ["classify"] * 6 + ["extract"] * 3  # the late file isn't slipped into this phase
+    w.clock.advance(5)  # it settles
+    w.pump()
+    assert order == ["classify"] * 6 + ["extract"] * 3 + ["classify"] * 2 + ["extract"]
 
 
 # --- LM Studio: never a second model, unload only our own -------------------------------------

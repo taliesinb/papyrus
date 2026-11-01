@@ -5,10 +5,13 @@ swaps (AGENTS.md, Gotchas). So before each request for an LM Studio model, `Mode
 looks at what is loaded:
 
 * the model is loaded: use it (whoever loaded it);
-* another language model is loaded: don't ask, since the request would load a second one;
-  back off;
+* another language model, loaded by someone else, is loaded: don't ask, since the request
+  would load a second one beside theirs; back off;
 * nothing is loaded: the request will load the model just in time. It is then *ours*, unless
-  memory is already under pressure, in which case we back off instead.
+  memory is already under pressure, in which case we back off instead;
+* only models of ours are loaded (the classifier's, when extraction needs another): the new one
+  loads beside them while memory pressure is normal; under pressure ours are unloaded first (a
+  swap, at a phase change; see daemon.py).
 
 Embedding models (the screen's, 84 MB) don't count: `lmstudio.loaded_models` lists language
 models only, and the watcher's gate lets the screen load its model beside one (daemon.py).
@@ -39,17 +42,33 @@ class ModelLedger:
         self.ours: set[str] = set()
         self.last_used = 0.0
 
-    def claim(self, model: str, may_load: bool = True) -> None:
-        """Called before every request for `model`; raises `Backoff` when we may not ask."""
+    def claim(self, model: str, may_load: bool = True, swap: bool = True) -> None:
+        """Called before every request for `model`; raises `Backoff` when we may not ask.
+
+        `may_load`: memory pressure is normal, so the model may load beside what is loaded. Else a
+        model may load only into room the watcher makes by unloading its own (with `swap`): the
+        classifier and the extraction model can be different models, and the watcher works through
+        one phase, then the other (daemon.py). A model loaded by someone else is never unloaded:
+        the request waits ("another model is loaded")."""
         loaded = self.list_loaded()
         if loaded is None:
             raise Backoff(LMSTUDIO_UNAVAILABLE, "LM Studio does not answer")
         if model not in loaded:
             self.ours.discard(model)
             others = [m for m in loaded if m != model]
-            if others:
+            theirs = [m for m in others if m not in self.ours]
+            if theirs:
                 raise Backoff(LMSTUDIO_UNAVAILABLE, "another model is loaded", delay=120)
-            if not may_load:
+            if others and not may_load:
+                if not swap:
+                    raise Backoff(WAITING_MEMORY, "loading a second model under memory pressure")
+                for m in others:  # all ours: make room
+                    if self.unload(m):
+                        self.ours.discard(m)
+                        self.log(f"unloaded {m} to load {model} (swap)")
+                    else:
+                        raise Backoff(LMSTUDIO_UNAVAILABLE, "could not unload the watcher's other model", delay=120)
+            elif not others and not may_load:
                 raise Backoff(WAITING_MEMORY, "loading a model under memory pressure")
             self.ours.add(model)
             self.log(f"loading {model} (the watcher will unload it when idle)")

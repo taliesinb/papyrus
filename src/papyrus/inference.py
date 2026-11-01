@@ -300,8 +300,9 @@ class Store:
         return round(statistics.median(rates) * input_chars / 1000, 2) if rates else None
 
 
-    def document_estimate_s(self, last: int = 50) -> float | None:
-        """Seconds the models take for one more typical document: the questions asked about the
+    def document_estimate_s(self, kind: str | None = None, last: int = 50) -> float | None:
+        """Seconds the models take for one more typical document (only questions of `kind`, e.g.
+        "classify" or "extract", if given): the questions asked about the
         most recently asked-about document (so the current models and prompts), each estimated by
         `estimate_s` at the median input length of its last `last` calls (the latest document's
         own length made it jumpy: a short one halved the estimate). None without history."""
@@ -313,7 +314,8 @@ class Store:
         if r is None:
             return None
         pairs = {(c[0], c[1]) for c in self.conn.execute(
-            "SELECT model_id, query_id FROM calls WHERE subject=? AND status='ok'", (r[0],))}
+            "SELECT c.model_id, c.query_id FROM calls c JOIN queries q ON q.id=c.query_id"
+            " WHERE c.subject=? AND c.status='ok' AND (? IS NULL OR q.kind=?)", (r[0], kind, kind))}
         ests = []
         for m, q in pairs:
             chars = [c[0] for c in self.conn.execute(

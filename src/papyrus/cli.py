@@ -21,6 +21,14 @@ def _conn(ctx: click.Context) -> sqlite3.Connection:
     return ctx.obj["conn"]
 
 
+def _filename(conn: sqlite3.Connection, file_id: int) -> str:
+    """A file's name where no model gave it a title (personal paperwork gets no metadata)."""
+    r = conn.execute("SELECT json_extract(c.extra, '$.filename'), c.locator FROM context_refs r JOIN contexts c"
+                     " ON c.id=r.context_id WHERE r.file_id=? AND c.kind IN ('filesystem', 'download')"
+                     " ORDER BY c.kind='filesystem' DESC LIMIT 1", (file_id,)).fetchone()
+    return (r[0] or Path(r[1] or "").name) if r else ""
+
+
 def _check_home(db_path: Path | None) -> None:
     """Refuse to create a library by accident: in the old single-library layout, or for a variant
     that was never made (a typo would otherwise start an empty library)."""
@@ -195,7 +203,9 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
 @click.pass_context
 def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
            redo_all: bool, fresh: bool, no_screen: bool, limit: int | None) -> None:
-    """Ask a local model what each file is (kind, title, authors, abstract, topics...).
+    """Ask local models what each file is: first the classifier (kind, library or personal) for
+    every pending file, then the extraction model (title, authors, abstract, summary, topics...)
+    for those it classified as library material. Personal paperwork gets no metadata.
 
     The backend and classifier come from --backend/--classifier, else PAPYRUS_BACKEND/PAPYRUS_CLASSIFIER,
     else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
@@ -209,7 +219,7 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
     from . import config, inference
     from .llm import get_backend
     from .llm.base import BackendUnavailable
-    from .triage import PROMPT_VERSION, triage_file
+    from .triage import PROMPT_VERSION, classify_file, extract_metadata
     from .watch.system import memory_pressure
 
     conn = _conn(ctx)
@@ -242,6 +252,8 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
         where = ("text_status IN ('ok','no_text') AND purged_at IS NULL"
                  + ("" if redo_all else " AND triage_status<>'done'"))
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
+    # Already classified (an earlier run stopped between the phases): straight to extraction.
+    classified = {r[0] for r in conn.execute("SELECT id FROM files WHERE triage_status='classified'")} if not redo_all else set()
     ids = ids[:limit] if limit else ids
     be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
     dec = inference.cached_classifier(dec, fresh=fresh, pressure=memory_pressure) if dec else None
@@ -263,9 +275,12 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
     with db.recorded_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag,
                          prompt_version=PROMPT_VERSION) as (run_id, stats):
         stats.update(ok=0, error=0)
-        for fid in ids:
+        # Phase 1: classify every file (one model), phase 2: extract metadata for those classified
+        # as library material (possibly another model): each model is used once, not per file.
+        to_extract = [fid for fid in ids if fid in classified]
+        for fid in [i for i in ids if i not in classified]:
             try:
-                r = triage_file(conn, fid, be, dec, run_id=run_id, screen=scr)
+                r = classify_file(conn, fid, dec, run_id=run_id, screen=scr)
             except Exception as e:  # keep going; record the failure
                 stats["error"] += 1
                 conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (fid,))
@@ -277,12 +292,26 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
                 s = r["screen"]
                 click.echo(f"{fid:5} - {'personal':13} {s['screen_s']:5.2f}s screen P(personal)={s['p_personal']:.2f}")
                 continue
+            kind = r.get("kind", ("?",))[0]
+            took = f"{r.get('classify_s', 0):5.1f}s" if "classify_s" in r else "     -"
+            if r["status"] == "classified":
+                to_extract.append(fid)
+                click.echo(f"{fid:5} + {kind:13} {took:>6} classified")
+            else:
+                stats["not_library"] = stats.get("not_library", 0) + 1
+                click.echo(f"{fid:5} - {kind:13} {took:>6} P(personal)={r['p_personal']:.2f}: no metadata")
+        if to_extract:
+            click.echo(f"extracting metadata of {len(to_extract)} files with {be.info().tag}")
+        for fid in to_extract:
+            try:
+                r = extract_metadata(conn, fid, be, run_id=run_id)
+            except Exception as e:  # stays 'classified': the next run extracts it
+                stats["error"] += 1
+                click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
+                continue
             e = r["extracted"]
-            mark = "+" if e.get("is_library_material") else "-"
-            kind = r.get("kind", (e.get("kind"),))[0]  # classifier's answer when available
-            took = "cached" if r.get("cached") else f"{r['extract_s'] + r.get('classify_s', 0):5.1f}s"
-            click.echo(f"{fid:5} {mark} {kind or '?':13} {took:>6} "
-                       f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
+            took = "cached" if r.get("cached") else f"{r['extract_s']:5.1f}s"
+            click.echo(f"{fid:5} + {'metadata':13} {took:>6} {r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
 
@@ -331,7 +360,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
     for fid in held:
         claims = db.current_assertions(conn, "file", fid)
         probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("classify:")), {})
-        title = next((c["value"] for c in claims.get("title", [])), "")
+        title = next((c["value"] for c in claims.get("title", [])), "") or _filename(conn, fid)
         by = ""
         if not probs and (p := screen_rejected(claims)) is not None:
             probs, by = {"personal": p}, " (screen)"

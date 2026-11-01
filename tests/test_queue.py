@@ -30,24 +30,24 @@ def _rows(queue):
 
 def test_sync_mirrors_the_library(q):
     queue, clock = q
-    queue.sync({"triage": [1, 2], "extract": [5]})
-    assert _rows(queue) == {("triage", 1): "pending", ("triage", 2): "pending", ("extract", 5): "pending"}
-    queue.done("triage", 1, 900)
-    queue.sync({"triage": [2, 3], "extract": [5]})  # 1 done, 3 new
-    assert _rows(queue)[("triage", 3)] == "pending" and _rows(queue)[("triage", 1)] == "done"
-    queue.sync({"triage": [1, 3], "extract": []})  # 1 pending again (e.g. OCR found text), 2 and 5 done elsewhere
+    queue.sync({"classify": [1, 2], "extract": [5]})
+    assert _rows(queue) == {("classify", 1): "pending", ("classify", 2): "pending", ("extract", 5): "pending"}
+    queue.done("classify", 1, 900)
+    queue.sync({"classify": [2, 3], "extract": [5]})  # 1 done, 3 new
+    assert _rows(queue)[("classify", 3)] == "pending" and _rows(queue)[("classify", 1)] == "done"
+    queue.sync({"classify": [1, 3], "extract": []})  # 1 pending again (e.g. OCR found text), 2 and 5 done elsewhere
     rows = _rows(queue)
-    assert rows[("triage", 1)] == "pending" and rows[("triage", 2)] == "done" and rows[("extract", 5)] == "done"
+    assert rows[("classify", 1)] == "pending" and rows[("classify", 2)] == "done" and rows[("extract", 5)] == "done"
     queue.sync({"enrich": [7]})  # stages not given are left alone
-    assert _rows(queue)[("triage", 1)] == "pending"
+    assert _rows(queue)[("classify", 1)] == "pending"
 
 
 def test_next_takes_stages_in_order_and_waits_for_retries(q):
     queue, clock = q
-    queue.sync({"triage": [1], "enrich": [4], "extract": [9]})
+    queue.sync({"classify": [1], "enrich": [4], "extract": [9]})
     assert queue.next() == ("extract", 9)
-    assert queue.next(["triage"]) == ("triage", 1)  # e.g. model work allowed only
-    assert queue.next(["enrich", "triage"]) == ("enrich", 4)
+    assert queue.next(["classify"]) == ("classify", 1)  # e.g. model work allowed only
+    assert queue.next(["enrich", "classify"]) == ("enrich", 4)
     assert queue.retry("extract", 9, "PdfiumError") == RETRY_S[0]
     assert queue.next() == ("enrich", 4)
     clock.advance(RETRY_S[0])
@@ -69,14 +69,14 @@ def test_retries_back_off_then_give_up(q):
 
 def test_counts_and_eta(q):
     queue, clock = q
-    queue.sync({"triage": [1, 2, 3], "extract": [8, 9]})
+    queue.sync({"classify": [1, 2, 3], "extract": [8, 9]})
     assert queue.eta_s() is None  # no history yet
     queue.done("extract", 8, 2000)
-    assert queue.eta_s() is None  # triage has none yet: no partial sum
-    queue.done("triage", 1, 20_000)
-    assert queue.counts() == {"extract": 1, "ocr": 0, "enrich": 0, "triage": 2, "failed": 0}
+    assert queue.eta_s() is None  # classify has none yet: no partial sum
+    queue.done("classify", 1, 20_000)
+    assert queue.counts() == {"extract": 1, "ocr": 0, "enrich": 0, "classify": 2, "metadata": 0, "failed": 0}
     assert queue.eta_s() == 2 * 20 + 1 * 2
-    assert queue.eta_s({"triage": 10.0}) == 2 * 10 + 2  # e.g. the inference cache's estimate
+    assert queue.eta_s({"classify": 10.0}) == 2 * 10 + 2  # e.g. the inference cache's estimate
 
 
 def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
@@ -123,9 +123,9 @@ def test_eta_uses_the_inference_cache_for_triage(tmp_path):
 
 def test_cli_retry_failed(tmp_path):
     queue = Queue(tmp_path / "papyrus-home" / "queue.sqlite")
-    queue.sync({"triage": [1]})
+    queue.sync({"classify": [1]})
     for _ in range(MAX_ATTEMPTS):
-        queue.retry("triage", 1, "ValueError")
+        queue.retry("classify", 1, "ValueError")
     queue.close()
     r = CliRunner().invoke(main, ["watch", "--retry-failed"])
     assert r.exit_code == 0 and "1 failed items are pending again" in r.output

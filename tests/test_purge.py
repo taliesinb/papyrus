@@ -126,8 +126,10 @@ def test_confirmed_work_and_user_claim_are_never_purged(tmp_path, monkeypatch):
     conn = _payslip(tmp_path, p=0.7)
     monkeypatch.setenv("PAPYRUS_DB", str(tmp_path / "t.sqlite"))
     r = CliRunner().invoke(main, ["keep", "1"])  # the user says it's library material
-    assert r.exit_code == 0 and "created" in r.output, r.output
+    assert r.exit_code == 0 and "retriage" in r.output, r.output  # held: no title yet
+    assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "classified"
     triage_file(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=1.0))  # the classifier disagrees
+    assert promote_file(conn, 1)[0] == "created"
     assert purge.verdict(conn, 1) is None and promote_file(conn, 1)[0] == "already_linked"
     conn.execute("UPDATE works SET status='confirmed'")
     conn.execute("DELETE FROM assertions WHERE source='user'")

@@ -72,7 +72,7 @@ version change is migrated once, by hand.
 | `sha256`, `size`, `media_type` | identity of the bytes |
 | `page_count`, `pdf_*` | the PDF's own document-info dictionary, verbatim |
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
-| `triage_status` | `pending`, `done` or `error` (LLM triage) |
+| `triage_status` | `pending`, `classified` (the classifier kept it as library material: metadata extraction next), `done` or `error` (LLM triage, in two stages; see docs/architecture.md) |
 | `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
 | `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 16 hex digits of sha256>.pdf`, one flat directory (a different file whose 16 digits are already taken would be stored under its full sha256). Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed), and NULL again once purged. |
 | `purged_at` | set when the file was purged as personal paperwork; the row is then a tombstone (see below) |

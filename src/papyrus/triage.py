@@ -27,9 +27,9 @@ from .textspan import best_abstract
 # triage-2: model gives start/end anchors; the exact span is cut from the page text.
 # triage-3: the state gives the file's size, and caps each PDF metadata field at META_CHARS.
 # triage-4: with a classifier, it runs first and settles kind and library-ness: extraction no longer
-#           asks for `kind` / `is_library_material` (EXTRACT_SCHEMA_DECIDED), keeps topics and the
-#           abstract only if P(kind=personal) < 0.5, and is skipped when P(personal) >= the purge
-#           threshold (promote purges those files anyway).
+#           asks for `kind` / `is_library_material` (EXTRACT_SCHEMA_DECIDED), and runs only for files
+#           the classifier keeps (P(kind=personal) < 0.5) or the user kept: two stages,
+#           classify_file (triage_status 'classified') and extract_metadata.
 PROMPT_VERSION = "triage-4"
 META_CHARS = 200  # per PDF metadata field in the state: a long keywords list must not crowd out page 1
 ANCHOR_WORDS = 8
@@ -227,15 +227,17 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     return {k: v for k, v in found.items() if v}
 
 
-def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, classifier: Classifier | None,
-                run_id: int | None = None, max_chars: int = STATE_CHARS, screen: Any = None) -> dict[str, Any]:
-    """Ask the models about one file and record their claims. With cached models
-    (inference.cached_backend / cached_classifier), each claim carries the call it came from, and
-    the calls carry the file's sha256, so a purge can find them.
+def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier | None,
+                  run_id: int | None = None, max_chars: int = STATE_CHARS, screen: Any = None) -> dict[str, Any]:
+    """Triage's first stage: the screen, then the classifier (kind, library or not).
 
-    With a `screen` (screen.py), a file it sets aside as personal paperwork stops there:
-    result["screened"] is True and no language model is asked."""
+    Sets triage_status to `classified` when the file goes on to metadata extraction (library
+    material, or no classifier to say otherwise), else to `done`: set aside by the screen, or
+    judged not library material (promote then purges or holds it, named by its file name: personal
+    paperwork never gets a title, summary or topics from a model). The user's `keep` outranks the
+    classifier."""
     from . import inference
+    from .purge import user_says
 
     result: dict[str, Any] = {"file_id": file_id}
     if screen is not None:
@@ -246,55 +248,91 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, classi
             result["screen"] = s
             if s["rejected"]:
                 result["screened"] = True
+                result["status"] = "done"
                 return result
-    from .purge import PURGE_THRESHOLD, user_says
-
-    state = build_state(conn, file_id, max_chars=max_chars)
-    sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
-    btag = "llm:" + backend.info().tag
-    # The classifier first (outside the write transaction: model calls can take seconds). With one,
-    # kind and library-ness are its answers: P(kind=personal), as works.is_library reads it.
-    answers, dcalls = {}, {}
-    if classifier is not None:
+    answers, ccalls = {}, {}
+    if classifier is not None:  # outside the write transaction: model calls can take seconds
+        state = build_state(conn, file_id, max_chars=max_chars)
+        sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
         t1 = time.monotonic()
         with inference.subject(sha):
             answers = classifier.classify(state, CLASSIFICATIONS)
-        dcalls = inference.calls_of(classifier)
+        ccalls = inference.calls_of(classifier)
         result["classify_s"] = round(time.monotonic() - t1, 2)
     p_personal = answers["kind"].probabilities.get("personal", 0.0) if "kind" in answers else None
-    user = user_says(conn, file_id)  # the user's own judgement outranks the classifier (`papyrus keep`)
-    extracted: dict[str, Any] = {"abstract": None}
-    abstract_source, ecall = None, None
-    if user is not True and p_personal is not None and p_personal >= PURGE_THRESHOLD:
-        result["extract_skipped"] = True  # promote purges it: a title or summary would be wasted work
-    else:
-        t0 = time.monotonic()
-        with inference.subject(sha):
-            extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state,
-                                        schema=EXTRACT_SCHEMA if p_personal is None else EXTRACT_SCHEMA_DECIDED,
-                                        max_tokens=1500)
-        ecall = inference.call_of(backend)
-        if p_personal is not None:  # not asked; LM Studio doesn't enforce the schema, so drop them
-            extracted.pop("kind", None)
-            extracted.pop("is_library_material", None)
-        result["extract_s"] = round(time.monotonic() - t0, 2)
-        result["cached"] = bool(getattr(backend, "last_hit", False))
-        library = (user if user is not None else p_personal < 0.5 if p_personal is not None
-                   else extracted.get("is_library_material") is not False)
-        # Abstract: cut the exact span out of the page text using the model's anchors, falling back
-        # to an 'Abstract ... Introduction' heuristic. Only for library material, so that personal
-        # paperwork never gets copied into the database as an "abstract".
-        extracted["abstract"] = None
-        if extracted.get("has_abstract") and library:
-            pages = "\n".join(r[0] for r in conn.execute(  # the first pages, even once the full text is in
-                "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
-            text, method = best_abstract(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
-            if text:
-                extracted["abstract"] = text
-                abstract_source = "heuristic:abstract" if method == "heuristic" else f"{btag}#{method}"
-            result["abstract_method"] = method
-        if not library:
-            extracted["topics"] = []  # don't index personal paperwork by topic
+    user = user_says(conn, file_id)
+    library = user if user is not None else (p_personal < 0.5 if p_personal is not None else None)
+    status = "done" if library is False else "classified"
+    with db.tx(conn):
+        if answers:
+            ctag = "classify:" + classifier.info().tag
+            for key, ans in answers.items():
+                value = ans.best if key == "kind" else ans.best == "yes"
+                db.assert_(conn, "file", file_id, key, value, source=ctag, confidence=ans.confidence,
+                           run_id=run_id, call_id=ccalls.get(key))
+                db.assert_(conn, "file", file_id, key + "_probs", ans.probabilities, source=ctag, run_id=run_id,
+                           call_id=ccalls.get(key))
+                result[key] = (value, round(ans.confidence, 3))
+        ids = detect_ids(conn, file_id)
+        if ids:
+            db.assert_(conn, "file", file_id, "ids", ids, source="heuristic:regex", run_id=run_id)
+            result["ids"] = ids
+        conn.execute("UPDATE files SET triage_status=? WHERE id=?", (status, file_id))
+    result["status"], result["p_personal"], result["library"] = status, p_personal, library
+    return result
+
+
+def classified_p_personal(conn: sqlite3.Connection, file_id: int) -> float | None:
+    """P(kind=personal) from the file's current classifier claim, if it has one."""
+    r = conn.execute("SELECT value FROM assertions WHERE subject_type='file' AND subject_id=? AND field='kind_probs'"
+                     " AND source LIKE 'classify:%' AND superseded_at IS NULL ORDER BY id DESC LIMIT 1",
+                     (file_id,)).fetchone()
+    return None if r is None else float(json.loads(r[0]).get("personal", 0.0))
+
+
+def extract_metadata(conn: sqlite3.Connection, file_id: int, backend: Backend, run_id: int | None = None,
+                     max_chars: int = STATE_CHARS) -> dict[str, Any]:
+    """Triage's second stage, for `classified` files: title, authors, year, venue, summary,
+    topics, language and the abstract, from the extraction model. Sets triage_status to `done`.
+
+    After a classifier, the model isn't asked for kind or library-ness (EXTRACT_SCHEMA_DECIDED).
+    Without one (classifier "none"), it is, and its own answer gates topics and the abstract."""
+    from . import inference
+    from .purge import user_says
+
+    result: dict[str, Any] = {"file_id": file_id}
+    p_personal = classified_p_personal(conn, file_id)
+    user = user_says(conn, file_id)
+    state = build_state(conn, file_id, max_chars=max_chars)
+    sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
+    btag = "llm:" + backend.info().tag
+    t0 = time.monotonic()
+    with inference.subject(sha):
+        extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state,
+                                    schema=EXTRACT_SCHEMA if p_personal is None else EXTRACT_SCHEMA_DECIDED,
+                                    max_tokens=1500)
+    ecall = inference.call_of(backend)
+    if p_personal is not None:  # not asked; LM Studio doesn't enforce the schema, so drop them
+        extracted.pop("kind", None)
+        extracted.pop("is_library_material", None)
+    result["extract_s"] = round(time.monotonic() - t0, 2)
+    result["cached"] = bool(getattr(backend, "last_hit", False))
+    library = (user if user is not None else p_personal < 0.5 if p_personal is not None
+               else extracted.get("is_library_material") is not False)
+    # Abstract: cut the exact span out of the page text using the model's anchors, falling back
+    # to an 'Abstract ... Introduction' heuristic. Only for library material, so that personal
+    # paperwork never gets copied into the database as an "abstract".
+    extracted["abstract"], abstract_source = None, None
+    if extracted.get("has_abstract") and library:
+        pages = "\n".join(r[0] for r in conn.execute(  # the first pages, even once the full text is in
+            "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
+        text, method = best_abstract(pages, extracted.get("abstract_start"), extracted.get("abstract_end"))
+        if text:
+            extracted["abstract"] = text
+            abstract_source = "heuristic:abstract" if method == "heuristic" else f"{btag}#{method}"
+        result["abstract_method"] = method
+    if not library:
+        extracted["topics"] = []  # don't index personal paperwork by topic
     with db.tx(conn):
         for field in ["title", "authors", "year", "venue", "summary", "topics", "language",
                       "kind", "is_library_material"]:
@@ -304,19 +342,24 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, classi
         if extracted["abstract"]:
             db.assert_(conn, "file", file_id, "abstract", extracted["abstract"], source=abstract_source,
                        run_id=run_id, call_id=ecall)
-        if answers:
-            dtag = "classify:" + classifier.info().tag
-            for key, ans in answers.items():
-                value = ans.best if key == "kind" else ans.best == "yes"
-                db.assert_(conn, "file", file_id, key, value, source=dtag, confidence=ans.confidence,
-                           run_id=run_id, call_id=dcalls.get(key))
-                db.assert_(conn, "file", file_id, key + "_probs", ans.probabilities, source=dtag, run_id=run_id,
-                           call_id=dcalls.get(key))
-                result[key] = (value, round(ans.confidence, 3))
-        ids = detect_ids(conn, file_id)
-        if ids:
-            db.assert_(conn, "file", file_id, "ids", ids, source="heuristic:regex", run_id=run_id)
-            result["ids"] = ids
         conn.execute("UPDATE files SET triage_status='done' WHERE id=?", (file_id,))
     result["extracted"] = extracted
+    return result
+
+
+def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, classifier: Classifier | None,
+                run_id: int | None = None, max_chars: int = STATE_CHARS, screen: Any = None) -> dict[str, Any]:
+    """Both stages for one file (`classify_file`, then `extract_metadata` if it was classified
+    as library material). The CLI and the watcher run the stages in batches instead, one model
+    at a time; this is for single files and tests.
+
+    result: the classifier's answers (key -> (value, confidence)), `screened` if the screen set it
+    aside, `extract_skipped` if no extraction was needed, and `extracted` (empty then)."""
+    result = classify_file(conn, file_id, classifier, run_id=run_id, max_chars=max_chars, screen=screen)
+    if result["status"] == "classified":
+        e = extract_metadata(conn, file_id, backend, run_id=run_id, max_chars=max_chars)
+        result.update({k: v for k, v in e.items() if k != "file_id"})
+    else:
+        result["extract_skipped"] = not result.get("screened")
+        result["extracted"] = {"abstract": None}
     return result

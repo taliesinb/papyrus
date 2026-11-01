@@ -34,7 +34,7 @@ SCHEMA_VERSION = 1
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS items (
-    stage       TEXT NOT NULL,              -- extract | ocr | enrich | triage
+    stage       TEXT NOT NULL,              -- extract | ocr | enrich | classify | metadata
     item_id     INTEGER NOT NULL,           -- files.id (works.id for enrich) in papyrus.sqlite
     state       TEXT NOT NULL,              -- pending | done | failed
     attempts    INTEGER NOT NULL DEFAULT 0, -- failed or fruitless tries so far
@@ -50,7 +50,8 @@ CREATE INDEX IF NOT EXISTS items_state ON items(state, stage, next_at);
 CREATE INDEX IF NOT EXISTS items_done ON items(stage, done_at) WHERE duration_ms IS NOT NULL;
 """
 
-STAGES = ("extract", "ocr", "enrich", "triage")  # the order work is taken in: finish files first
+STAGES = ("extract", "ocr", "enrich", "classify", "metadata")  # the order work is taken in: finish files first
+MODEL_STAGES = ("ocr", "classify", "metadata")  # ask a model (paused by watch.pause, gated by memory)
 RETRY_S = (3600, 4 * 3600, 16 * 3600)  # after the 1st, 2nd, 3rd failure; the 4th gives up
 MAX_ATTEMPTS = len(RETRY_S) + 1
 
@@ -90,6 +91,9 @@ class Queue:
         c = self.conn
         c.execute("BEGIN")
         try:
+            # stages of an older papyrus (e.g. 'triage', split into classify + metadata): done
+            c.execute(f"UPDATE items SET state='done', updated_at=? WHERE state<>'done' AND stage NOT IN "
+                      f"({','.join('?' * len(STAGES))})", (now, *STAGES))
             for stage, ids in pending.items():
                 ids = set(ids)
                 known: dict[int, str] = {}
@@ -174,7 +178,7 @@ class Queue:
         per_item = per_item or {}
         total = 0.0
         for stage, n in self.counts().items():
-            if stage == "failed" or not n:
+            if stage in ("failed", "triage") or not n:
                 continue
             est = per_item.get(stage)
             est = self.median_s(stage) if est is None else est

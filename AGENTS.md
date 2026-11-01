@@ -356,10 +356,18 @@ The seed is part of the inference cache's key either way.
 * **Memory pressure reads "warn" on this machine whenever LM Studio holds a
   model.** So warn blocks only calls that may *load* a model; critical
   blocks all of them (`Watch._gate`).
-* **Never a second LM Studio model, unload only its own**
-  (`watch/models.ModelLedger`). If the user's model is loaded and differs
-  from the configured one, triage waits (state `lmstudio-unavailable`, "another
-  model is loaded").
+* **Triage runs in phases** (`Watch._next_task`, `papyrus triage`): classify
+  every pending file, then extract metadata for every `classified` file, then
+  classify what arrived meanwhile. The classifier and the extraction model may
+  be different models (`classifier = "lmstudio:qwen3.5-4b-mlx"`, `backend =
+  "lmstudio:qwen3.5-2b-optiq"`); a phase change is where one replaces the
+  other.
+* **Never a model beside the user's, unload only its own**
+  (`watch/models.ModelLedger`). Under normal memory pressure the watcher
+  loads the next phase's model beside its own other one; under pressure it
+  unloads its own first (a swap). If the user's model is loaded and differs
+  from the one a phase needs, that phase waits (state `lmstudio-unavailable`,
+  "another model is loaded") and the other goes on.
 * **`uv run` forwards SIGTERM** to the watcher and passes its exit status
   through, so Papyrus Server.app can supervise `uv run … papyrus watch`
   directly. SIGTERM closes the open run as `interrupted`.

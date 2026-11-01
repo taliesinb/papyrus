@@ -149,7 +149,10 @@ export interface WatchStatus {
 	detail: string;
 	retryAt: string | null;
 	/** The watcher's queue: items per stage, due or waiting for a retry. */
-	pending: { triage: number; extract: number; enrich: number; ocr: number } | null;
+	/** `triage` is classify + metadata, the two triage phases. */
+	pending: { triage: number; classify?: number; metadata?: number; extract: number; enrich: number; ocr: number } | null;
+	/** The triage phase in progress: classify | metadata. */
+	phase?: string;
 	/** Items the queue gave up on (`papyrus watch --retry-failed`). */
 	failed: number;
 	/** Seconds of work left, from past timings; null while there is no history. */

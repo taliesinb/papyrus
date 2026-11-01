@@ -160,10 +160,13 @@ def test_extraction_is_skipped_when_the_classifier_is_sure_it_is_personal(tmp_pa
     assert promote_file(conn, 1) == ("purged", None)
 
 
-def test_held_files_get_a_title_but_no_topics_or_abstract(tmp_path):
+def test_held_files_get_no_metadata_from_a_model(tmp_path):
+    """Not library material (0.5-0.9: held): no extraction at all; it is known by its file name."""
     conn = _lib(tmp_path, "letter.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
-    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("personal", False, p=0.7))  # 0.5-0.9: held
-    assert _claims(conn, "title") and not _claims(conn, "topics") and not _claims(conn, "abstract")
+    be = FakeBackend(PAPER)
+    triage_file(conn, 1, be, FakeClassifier("personal", False, p=0.7))
+    assert be.prompts == [] and not _claims(conn, "title") and not _claims(conn, "topics")
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
     assert promote_file(conn, 1)[0] == "held"
 
 
