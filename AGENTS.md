@@ -184,8 +184,9 @@ unit (Linux) keeps it running.
 **LM Studio** (0.4.x, `localhost:1234`, shared with the user and other agents):
 
 * **The server is separate from the app** and is often off.
-  `lmstudio.ensure_server` starts it with `~/.lmstudio/bin/lms server start`
-  (not on PATH) when the backend or decider selects LM Studio; turn that off
+  `lmstudio.ensure_server` starts it with `lms server start` (not on PATH:
+  `~/.cache/lm-studio/bin/lms` since LM Studio 0.4, `~/.lmstudio/bin/lms`
+  before; `lmstudio.lms_path` tries both) when the backend or decider selects LM Studio; turn that off
   with `lmstudio.autostart = false` or `PAPYRUS_LMSTUDIO_AUTOSTART=0`. Tests
   set the latter (`tests/conftest.py`).
 * **Live tests load models:** once the server is up, `test_live_lmstudio_decides`
@@ -208,7 +209,7 @@ unit (Linux) keeps it running.
 * **Model loading:** models load just-in-time and unload after an idle
   timeout. Two models at once on this 24 GB **base M4** caused 8 GB of swap
   and a 5× slowdown. Don't load models you don't need, and only unload what
-  you loaded (`~/.lmstudio/bin/lms ps / unload`).
+  you loaded (`~/.cache/lm-studio/bin/lms ps / unload`).
 * **Speed on this machine:**
 
   | model | prompt processing | generation | per file |

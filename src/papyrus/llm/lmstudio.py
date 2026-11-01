@@ -43,8 +43,11 @@ def lms_path() -> str | None:
     found = shutil.which("lms")
     if found:
         return found
-    p = Path.home() / ".lmstudio" / "bin" / "lms"
-    return str(p) if p.exists() else None
+    # LM Studio 0.4 installs it under ~/.cache/lm-studio; older versions under ~/.lmstudio
+    for p in (Path.home() / ".cache" / "lm-studio" / "bin" / "lms", Path.home() / ".lmstudio" / "bin" / "lms"):
+        if p.exists():
+            return str(p)
+    return None
 
 
 def server_up(base_url: str, timeout: float = 2.0) -> bool:
