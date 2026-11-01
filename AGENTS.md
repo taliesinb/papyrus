@@ -261,7 +261,10 @@ The seed is part of the inference cache's key either way.
 
 * `data/screen.bin` is the production classifier: a logistic regression on
   nomic-embed-text embeddings of the name, folder, size, download host and
-  first 128 words. Retrain it with `tools/screen/export.py` (each library, any
+  first 128 words (input version 1; version 2 adds the page count and PDF
+  metadata, and the weights record which one they were trained on: on
+  156 files the two were indistinguishable, so data/screen.bin is still v1).
+  Retrain it with `tools/screen/export.py` (each library, any
   machine) and `tools/screen/train.py` (its docstring has the commands), then
   commit the new file. The weights hold no text (standardisation folded in).
 * The exports and the training run see the first pages of personal

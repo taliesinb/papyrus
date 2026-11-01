@@ -5,6 +5,9 @@ extraction). The screen embeds what it sees of a file first, with a small embedd
 (`llm/embed.py`, nomic-embed-text v1.5, ~30 ms), and scores it with a logistic regression:
 
     input   "File name: …\\nFolder: ~/…\\nSize: N KB\\nDownloaded from: host\\nFirst words: <128 words>"
+            (input version 1); version 2 adds "Pages: N" and "PDF metadata: title=…; creator=…" (each
+            field capped at 200 characters, as in triage) before the first words. The weights say
+            which version they were trained on (`input_version`, 1 if absent).
     p       sigmoid(w · e/|e| + b), e the embedding of "classification: " + input
 
 When p >= the threshold (default: the weights' own, 0.9), triage stops there: the file gets a
@@ -65,20 +68,33 @@ def host_of(url: str | None) -> str | None:
     return m.group(1) if m else None
 
 
-def screen_input(name: str, folder: str, size_bytes: int, host: str | None, text: str) -> str:
-    """What the screen sees of a file (the text it embeds, without the task prefix)."""
+META_FIELDS = ("title", "author", "subject", "keywords", "creator", "producer")
+
+
+def screen_input(name: str, folder: str, size_bytes: int, host: str | None, text: str, *, version: int = 1,
+                 pages: int | None = None, meta: dict[str, Any] | None = None) -> str:
+    """What the screen sees of a file (the text it embeds, without the task prefix). Version 2
+    adds the page count and the PDF's own metadata."""
+    from .triage import _cap
+
     lines = [f"File name: {name}", f"Folder: {folder}", f"Size: {round(size_bytes / 1024)} KB"]
     if host:
         lines.append(f"Downloaded from: {host}")
+    if version >= 2:
+        if pages:
+            lines.append(f"Pages: {pages}")
+        fields = [f"{k}={_cap(str(meta[k]))}" for k in META_FIELDS if meta and meta.get(k)]
+        if fields:
+            lines.append("PDF metadata: " + "; ".join(fields))
     lines.append("First words: " + (" ".join(text.split()[:WORDS]) or "(no text layer)"))
     return "\n".join(lines)
 
 
-def file_input(conn: sqlite3.Connection, file_id: int) -> str | None:
+def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str | None:
     """The screen's input for a file in the library, or None if it has no text to go on."""
     from .pdf import TRIAGE_PAGES
 
-    f = conn.execute("SELECT size FROM files WHERE id=?", (file_id,)).fetchone()
+    f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     text = "\n".join(r[0] for r in conn.execute(
         "SELECT text FROM file_pages WHERE file_id=? AND page<=? ORDER BY page", (file_id, TRIAGE_PAGES)))
     if f is None or not text.strip():
@@ -91,7 +107,8 @@ def file_input(conn: sqlite3.Connection, file_id: int) -> str | None:
     path = c["locator"] if c and c["kind"] == "filesystem" else None
     name = extra.get("filename") or (Path(path).name if path else "unknown.pdf")
     folder = home_relative(str(Path(path).parent)) if path else "~/Downloads"
-    return screen_input(name, folder, f["size"] or 0, host_of((extra.get("where_froms") or [None])[0]), text)
+    return screen_input(name, folder, f["size"] or 0, host_of((extra.get("where_froms") or [None])[0]), text,
+                        version=version, pages=f["page_count"], meta={k: f[f"pdf_{k}"] for k in META_FIELDS})
 
 
 # --- the weights --------------------------------------------------------------------------------
@@ -106,6 +123,10 @@ class Weights:
     @property
     def threshold(self) -> float:
         return float(self.meta.get("threshold", 0.9))
+
+    @property
+    def input_version(self) -> int:
+        return int(self.meta.get("input_version", 1))
 
     def p(self, embedding: list[float]) -> float:
         """P(personal) for an embedding (L2-normalised here)."""
@@ -191,7 +212,7 @@ def screen_file(conn: sqlite3.Connection, file_id: int, screen: Screen, run_id: 
 
     if user_says(conn, file_id) is not None:
         return None
-    text = file_input(conn, file_id)
+    text = file_input(conn, file_id, screen.weights.input_version)
     if text is None:
         return None
     sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]

@@ -62,7 +62,7 @@ CS = [0.01, 0.1, 1, 10, 100]
 THRESHOLD = 0.9
 
 
-def from_exports(name: str, d: Path) -> list[dict]:
+def from_exports(name: str, d: Path, version: int = 1) -> list[dict]:
     out = []
     for p in sorted(d.glob("*.json")):
         r = json.loads(p.read_text())
@@ -77,11 +77,12 @@ def from_exports(name: str, d: Path) -> list[dict]:
                     "input": screen.screen_input(inp.get("filename") or (Path(path).name if path else "unknown.pdf"),
                                                  screen.home_relative(str(Path(path).parent)) if path else "~/Downloads",
                                                  inp.get("size") or 0, screen.host_of((inp.get("where_froms") or [None])[0]),
-                                                 inp["text"])})
+                                                 inp["text"], version=version,
+                                                 pages=inp.get("page_count"), meta=inp.get("pdf_info"))})
     return out
 
 
-def from_originals(name: str, db: Path, dirs: list[Path]) -> list[dict]:
+def from_originals(name: str, db: Path, dirs: list[Path], version: int = 1) -> list[dict]:
     lib = sqlite3.connect(db)  # SELECT only
     purged = {r[0]: r[1] for r in lib.execute("SELECT sha256, id FROM files WHERE purged_at IS NOT NULL")}
     out, seen = [], set()
@@ -96,14 +97,16 @@ def from_originals(name: str, db: Path, dirs: list[Path]) -> list[dict]:
                 continue
             seen.add(sha)
             try:
-                text = "\n".join(read_pdf(p, max_pages=2).pages)
+                info = read_pdf(p, max_pages=2)
+                text = "\n".join(info.pages)
             except Exception:  # noqa: BLE001  unreadable: skip (the message may hold the path)
                 continue
             if not text.strip():
                 continue
             out.append({"key": f"{name}:{purged[sha]}", "source": name, "sha256": sha, "label": 1,
                         "input": screen.screen_input(p.name, screen.home_relative(str(p.parent)), p.stat().st_size,
-                                                     screen.host_of((where_froms(p) or [None])[0]), text)})
+                                                     screen.host_of((where_froms(p) or [None])[0]), text,
+                                                     version=version, pages=info.page_count, meta=info.meta)})
     return out
 
 
@@ -151,14 +154,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true", help=f"write {screen.weights_path()}")
     ap.add_argument("--out", type=Path, help="write the weights here instead")
     ap.add_argument("--json", type=Path, help="leave-one-out probabilities and metrics (keys, no text)")
+    ap.add_argument("--input-version", type=int, default=2, choices=(1, 2),
+                    help="1: name, folder, size, host, first words; 2: also pages and PDF metadata [2]")
     a = ap.parse_args(argv)
 
     recs: list[dict] = []
     if a.db and a.originals:
-        recs += from_originals(a.name, a.db, [d.expanduser() for d in a.originals])
+        recs += from_originals(a.name, a.db, [d.expanduser() for d in a.originals], a.input_version)
     for spec in a.export:
         name, _, d = spec.partition("=")
-        recs += from_exports(name, Path(d).expanduser())
+        recs += from_exports(name, Path(d).expanduser(), a.input_version)
     override = {}
     if a.personal or a.library:
         lib = sqlite3.connect(a.db)
@@ -230,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     w = lr.coef_[0] / scaler.scale_
     b = float(lr.intercept_[0] - np.dot(w, scaler.mean_))
     meta = {"model": emb.model, "prefix": screen.PREFIX, "words": screen.WORDS, "threshold": THRESHOLD, "C": c,
+            "input_version": a.input_version,
             "label_overrides": len(override),
             "trained_at": time.strftime("%Y-%m-%d"), "sources": {s: {"personal": int(y[src == s].sum()),
                                                                      "library": int((src == s).sum() - y[src == s].sum())}
