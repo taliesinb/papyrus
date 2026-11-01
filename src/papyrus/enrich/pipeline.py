@@ -20,7 +20,7 @@ from typing import Any
 
 from papyrus import db, works
 from papyrus.enrich import ids as _ids
-from papyrus.enrich import match
+from papyrus.enrich import match, semanticscholar
 from papyrus.models import AuthorRecord, WorkRecord
 
 THRESHOLD = 0.85
@@ -360,8 +360,17 @@ def enrich_work(
     hint = build_hint(conn, work_id)
     if not (hint.arxiv_id or hint.doi or hint.isbn or hint.title):
         return {"status": "not_found", "work_id": work_id, "reason": "no identifiers or title"}
-    records = match.resolve(hint, **resolve_kw)
+    report: dict[str, Any] = {}
+    records = match.resolve(hint, report=report, **resolve_kw)
     good = [r for r in records if (r.match_score or 0) >= threshold]
+    # Nothing matched while a source we rely on refused us: that is "not asked", not "not found".
+    # Record no verdict (the work stays pending); try again later. Semantic Scholar without a key
+    # refuses almost always, so it doesn't count.
+    limited = {s: w for s, w in (report.get("rate_limited") or {}).items()
+               if s != "s2" or semanticscholar.api_key()}
+    if not good and limited:
+        return {"status": "rate_limited", "work_id": work_id, "sources": sorted(limited),
+                "retry_after": max(limited.values())}
     # A candidate that is demonstrably a *different* work must not be merged in, however well
     # its title matches (e.g. a thesis vs. the journal paper with the same title prefix).
     excluded = [(r, why) for r in good if (why := _conflict(conn, work_id, hint, r))]

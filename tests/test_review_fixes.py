@@ -211,3 +211,30 @@ def test_promote_ignores_null_author_claims_already_stored(tmp_path):
     action, wid = promote_file(conn, 1)
     assert action == "created"
     assert [r[0] for r in conn.execute("SELECT raw_name FROM work_authors WHERE work_id=?", (wid,))] == ["Jane Doe"]
+
+
+def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
+    """2026-11-01 (test variant): OpenAlex answered 429, and enrichment recorded the work as
+    'ambiguous' after waiting 5 minutes. Not asked is not found: no claim, the work stays pending."""
+    from papyrus.enrich import match, pipeline
+
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe.")
+    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
+    _, wid = promote_file(conn, 1)
+
+    def resolve(hint, report=None, **kw):
+        report["rate_limited"] = {"openalex": 120.0, "s2": 0.0}
+        return []
+
+    monkeypatch.setattr(match, "resolve", resolve)
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    r = pipeline.enrich_work(conn, wid)
+    assert r["status"] == "rate_limited" and r["sources"] == ["openalex"] and r["retry_after"] == 120.0
+    assert wid in pipeline.unenriched_works(conn)  # still pending
+
+    def resolve_s2_only(hint, report=None, **kw):  # Semantic Scholar without a key refuses almost always
+        report["rate_limited"] = {"s2": 0.0}
+        return []
+
+    monkeypatch.setattr(match, "resolve", resolve_s2_only)
+    assert pipeline.enrich_work(conn, wid)["status"] == "not_found"

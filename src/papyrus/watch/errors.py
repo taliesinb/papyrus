@@ -8,11 +8,14 @@ INGESTING = "ingesting"  # adding new files, or triaging / extracting / enrichin
 WAITING_MEMORY = "waiting-memory"
 LMSTUDIO_UNAVAILABLE = "lmstudio-unavailable"  # off, not serving the model, or busy with another
 PAUSED = "paused"  # model work paused by the user (<home>/watch.pause); files are still added
+RATE_LIMITED = "rate-limited"  # an enrichment API refused (429/503): matching waits, the rest goes on
 STOPPED = "stopped"
 
 # How long to wait before trying model work again (seconds). Memory doubles up to the cap.
 MEMORY_DELAY, MEMORY_DELAY_MAX = 30.0, 600.0
 LMSTUDIO_DELAY = 300.0
+RATE_LIMIT_DELAY = 300.0  # when the server didn't say how long (Retry-After)
+ENRICH_PATIENCE_S = 15.0  # seconds of retry waits one enrichment may spend before backing off
 
 
 class Backoff(Exception):

@@ -25,8 +25,10 @@ import json
 import logging
 import os
 import random
+import contextvars
 import threading
 import time
+from contextlib import contextmanager
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +63,30 @@ class HttpError(RuntimeError):
         self.status = status
         self.url = url
         self.body = body
+
+
+class RateLimited(HttpError):
+    """A retryable refusal (429, 503) whose wait would exceed the caller's `patience`. `retry_after`:
+    the seconds the server asked for, or the backoff we would have slept."""
+
+    def __init__(self, status: int, url: str, retry_after: float):
+        super().__init__(status, url, f"rate limited; retry after {retry_after:.0f} s")
+        self.retry_after = retry_after
+
+
+_patience: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("papyrus_http_patience", default=None)
+
+
+@contextmanager
+def patience(seconds: float):
+    """Within the block, retries sleep at most `seconds` in all: a 429/503 whose backoff would go
+    beyond raises `RateLimited` instead of waiting. For callers that have other work to do (the
+    watcher); without it a request waits through all its retries (up to minutes)."""
+    token = _patience.set([seconds])
+    try:
+        yield
+    finally:
+        _patience.reset(token)
 
 
 def mailto() -> str | None:
@@ -272,6 +298,16 @@ class HttpClient:
             _log_attempt(method, url, req_headers, body, started, attempt, response=r, resp_body=r.text)
             if r.status_code in RETRY_STATUSES and attempt < retries:
                 delay = self._backoff(attempt, r.headers.get("Retry-After"), backoff_cap)
+                budget = _patience.get()
+                if budget is not None and r.status_code in (429, 503):
+                    if delay > budget[0]:
+                        asked = r.headers.get("Retry-After")
+                        try:
+                            wait = float(asked) if asked else delay
+                        except ValueError:
+                            wait = delay
+                        raise RateLimited(r.status_code, url, wait)
+                    budget[0] -= delay
                 log.info("%s %s -> %d; retrying in %.1fs", method, redact_url(url), r.status_code, delay)
                 limiter.penalise(delay)
                 self._sleep(delay)

@@ -53,7 +53,7 @@ from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
 from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, PAUSED,
                      STARTING,
-                     STOPPED, WAITING_MEMORY, Backoff)
+                     STOPPED, WAITING_MEMORY, Backoff, ENRICH_PATIENCE_S, RATE_LIMIT_DELAY, RATE_LIMITED)
 from .models import ModelLedger
 from .events import NAME as EVENTS_NAME, EventLog
 from .queue import MODEL_STAGES, STAGES, Queue
@@ -623,11 +623,19 @@ class Watch:
         self.log(f"file {fid} OCR: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)} pages read")
 
     def _enrich(self, wid: int, run_id: int, c: Counter) -> None:
+        from ..enrich import http
         from ..enrich.pipeline import enrich_work
 
-        r = enrich_work(self.conn, wid, run_id=run_id)
+        # Don't sit through a rate limit's retries (minutes, with everything else waiting): give up
+        # on a refusal that would cost more than ENRICH_PATIENCE_S, record no verdict, come back.
+        with http.patience(ENRICH_PATIENCE_S):
+            r = enrich_work(self.conn, wid, run_id=run_id)
         c[f"enrich_{r['status']}"] += 1
         self.log(f"work {wid} enrich: {r['status']}")
+        if r["status"] == "rate_limited":
+            names = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref", "s2": "Semantic Scholar"}
+            raise Backoff(RATE_LIMITED, "rate limited by " + ", ".join(names.get(x, x) for x in r["sources"]),
+                          delay=max(RATE_LIMIT_DELAY, r.get("retry_after") or 0))
 
     def _classify(self, fid: int, run_id: int, c: Counter) -> None:
         from ..triage import classify_file
@@ -723,7 +731,8 @@ class Watch:
             self.memory_delay = min(self.memory_delay * 2, MEMORY_DELAY_MAX)
         else:
             delay = b.delay or LMSTUDIO_DELAY
-            self.models = None
+            if b.state != RATE_LIMITED:  # (the models are fine)
+                self.models = None
         self.backoffs[stage] = (self.clock() + delay, b.state, b.reason)
         c[f"backoff_{b.state}"] += 1
         self.log(f"{stage} waits {delay:.0f} s: {b.reason}")

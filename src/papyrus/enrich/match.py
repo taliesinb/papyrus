@@ -161,6 +161,7 @@ class _Collector:
         self.sources = set(sources)
         self.records: list[WorkRecord] = []
         self.errors: list[str] = []
+        self.rate_limited: dict[str, float] = {}  # source -> seconds it asked us to wait (429/503)
 
     def call(self, source: str, fn: Callable[..., Any], *args: Any, **kw: Any) -> Any:
         if source not in self.sources:
@@ -168,7 +169,12 @@ class _Collector:
         try:
             return fn(*args, **kw)
         except (HttpError, httpx.HTTPError, ET.ParseError, ValueError, KeyError) as e:
-            msg = f"{source}.{getattr(fn, '__name__', fn)}: {e}"
+            if isinstance(e, HttpError) and e.status in (429, 503):
+                self.rate_limited[source] = max(self.rate_limited.get(source, 0.0), getattr(e, "retry_after", 0.0))
+            # the status, not the message: an HttpError's names its URL, which holds search terms (a
+            # title), and this goes to the watcher's log, which names ids and counts only
+            what = f"HTTP {e.status}" if isinstance(e, HttpError) else type(e).__name__
+            msg = f"{source}.{getattr(fn, '__name__', fn)}: {what}"
             log.warning("%s", msg)
             self.errors.append(msg)
             return None
@@ -206,8 +212,11 @@ def resolve(
     sources: Sequence[str] = ALL_SOURCES,
     find_published: bool = True,
     http: HttpClient | None = None,
+    report: dict[str, Any] | None = None,
 ) -> list[WorkRecord]:
     """Candidate records from all sources for `hint`, best first (match_score set).
+    `report`, if given, receives `rate_limited`: {source: seconds to wait} for sources that refused
+    with 429/503 (so "nothing found" may only mean "not asked").
 
     Identifier route first (arXiv id → arXiv + OpenAlex + S2, then the published
     version via its DOI or an OpenAlex title search; DOI → OpenAlex + Crossref + S2;
@@ -295,6 +304,8 @@ def resolve(
         _title_route(ref, c, found_by_id=found_by_id, http=http)
 
     recs = sorted(c.records, key=lambda r: -(r.match_score or 0))
+    if report is not None:
+        report["rate_limited"] = dict(c.rate_limited)
     return recs
 
 

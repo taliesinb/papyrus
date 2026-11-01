@@ -862,3 +862,18 @@ def test_a_stage_average_starts_from_the_performance_log(tmp_path):
     assert w.per_item_s("metadata") == 3.0
     w._average("metadata", 8.0)
     assert w.per_item_s("metadata") == pytest.approx(0.2 * 8 + 0.8 * 3)
+
+
+def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypatch):
+    from papyrus.enrich import pipeline
+
+    monkeypatch.setattr(pipeline, "enrich_work", lambda conn, wid, **kw: {
+        "status": "rate_limited", "work_id": wid, "sources": ["openalex"], "retry_after": 120.0})
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    _pdf(dl / "a.pdf", "Lecture notes on things", old=True)
+    w.catch_up()
+    assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"  # triage went on
+    until, state, reason = w.backoffs["enrich"]
+    assert state == "rate-limited" and reason == "rate limited by OpenAlex" and until - clock() == 300
+    stages = {s["stage"]: s for s in json.loads(w.status_path.read_text())["stages"]}
+    assert stages["enrich"]["state"] == "waiting" and stages["enrich"]["reason"] == "rate limited by OpenAlex"

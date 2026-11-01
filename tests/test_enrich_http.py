@@ -151,3 +151,26 @@ def test_env_disables_cache(monkeypatch):
 
 def test_redact_url():
     assert h.redact_url("https://x.org/a?b=1&api_key=s&a=2") == "https://x.org/a?a=2&b=1"
+
+
+def test_patience_gives_up_on_a_long_rate_limit_instead_of_waiting():
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(429, headers={"Retry-After": "120"})
+
+    client, fc = make(handler)
+    with h.patience(15):
+        with pytest.raises(h.RateLimited) as e:
+            client.get("https://api.example.org/x")
+    assert e.value.retry_after == 120 and e.value.status == 429
+    assert fc.sleeps == [] and len(calls) == 1  # no waiting: the caller has other work
+
+
+def test_patience_still_allows_short_retries():
+    seq = iter([httpx.Response(429, headers={"Retry-After": "2"}), httpx.Response(200, json={"ok": 1})])
+    client, fc = make(lambda req: next(seq))
+    with h.patience(15):
+        assert client.get_json("https://api.example.org/x") == {"ok": 1}
+    assert fc.sleeps == [2.0]
