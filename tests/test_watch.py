@@ -327,6 +327,38 @@ def test_an_unreadable_folder_is_skipped_not_emptied(tmp_path):
     assert json.loads(w.status_path.read_text())["detail"] == ""
 
 
+def test_a_database_replaced_under_the_watcher_is_rescued(tmp_path, monkeypatch):
+    """What SQLPro for SQLite did on 2026-11-01: a safe-save swapped a copy in over papyrus.sqlite
+    while the watcher held it open. The watcher's writes then went to the nameless old file."""
+    import shutil
+    import sqlite3
+
+    from papyrus.watch import daemon
+
+    exits = []
+    monkeypatch.setattr(daemon.os, "_exit", lambda code: (exits.append(code), (_ for _ in ()).throw(SystemExit(code))))
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    _pdf(dl / "a.pdf", "Lecture notes on things")
+    w.catch_up()
+    dbfile = tmp_path / "t.sqlite"
+    shutil.copy(dbfile, tmp_path / "copy.sqlite")  # an editor's copy, saved back over the original
+    (tmp_path / "copy.sqlite").replace(dbfile)
+    conn.execute("INSERT INTO meta(key, value) VALUES ('written-after-the-swap', '1')")
+    with pytest.raises(SystemExit):
+        w.pump()
+    assert exits == [daemon.EXIT_REPLACED]
+    [rescued] = (tmp_path / "papyrus-home").glob("rescued-*")
+    assert {p.name for p in rescued.iterdir()} == {"papyrus.sqlite", "inference.sqlite", "queue.sqlite"}
+    r = sqlite3.connect(rescued / "papyrus.sqlite")
+    assert r.execute("SELECT value FROM meta WHERE key='written-after-the-swap'").fetchone() == ("1",)
+    assert r.execute("SELECT count(*) FROM files").fetchone()[0] == 1
+    assert json.loads(w.status_path.read_text())["state"] == "error"
+    assert any("replaced while the watcher had them open" in m for m in logs)
+    # a new watcher won't build on the damaged files while the rescued copy waits
+    r = CliRunner().invoke(main, ["watch", "--once", "--dir", str(dl)])
+    assert r.exit_code == daemon.EXIT_RESCUED and "rescued-" in r.output
+
+
 # --- back-off -----------------------------------------------------------------------------------
 
 

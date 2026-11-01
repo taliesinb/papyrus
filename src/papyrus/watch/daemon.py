@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -59,6 +60,8 @@ BATCH_STEPS = 25
 RECHECK_S = 600  # look for work other processes left pending this often
 AUTOSTART_EVERY_S = 3600  # let `lms server start` be tried again (lmstudio.autostart) this often
 EXIT_LOCKED = 75  # another watcher holds the library's lock (EX_TEMPFAIL): don't restart
+EXIT_REPLACED = 70  # a database file was replaced under the watcher; a copy is in <home>/rescued-*
+EXIT_RESCUED = 78  # a rescued-* copy waits to be restored: refuse to start (EX_CONFIG)
 
 TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status <> 'done'")
 
@@ -139,6 +142,7 @@ class Watch:
         self.last_check = clock()
         self.last_autostart = -AUTOSTART_EVERY_S
         self.last_refresh = clock()
+        self.inodes: dict[Path, int] = {}  # the database files as first seen (see _guard)
         self.unreadable: list[Path] = []  # watched directories macOS won't let us read
         self.last_access_check = clock()
         self.totals: Counter = Counter()
@@ -187,6 +191,7 @@ class Watch:
     def pump(self, timeout: float = 0.0) -> None:
         """One turn of the loop: take events (waiting up to `timeout`), run a batch if there is
         anything to do, unload idle models."""
+        self._guard()
         if self.watcher is not None:
             for p in self.watcher.get(timeout):
                 self.debouncer.touch(p)
@@ -262,6 +267,7 @@ class Watch:
                         for p in self.watcher.get(0):
                             self.debouncer.touch(p)
                     self._take(*self._due(), run_id, c)
+                    self._guard()
                     task = self._next_task()
                     if task is None:
                         break
@@ -333,6 +339,60 @@ class Watch:
             self.log(f"file {fid} added ({outcome})")
         elif outcome == "purged_skipped":
             self.log("skipped a file whose bytes were purged as personal paperwork")
+
+    # --- the database files under us -----------------------------------------------------------
+
+    def _databases(self) -> dict[str, tuple[sqlite3.Connection, Path]]:
+        main = Path(self.conn.execute("PRAGMA database_list").fetchone()[2])
+        store = inference.store()
+        return {"papyrus.sqlite": (self.conn, main), "inference.sqlite": (store.conn, store.path),
+                "queue.sqlite": (self.queue.conn, self.queue.path)}
+
+    def _guard(self) -> None:
+        """Stop if a database file (or its WAL) was replaced while we hold it open. A GUI editor
+        that "safe-saves" (SQLPro for SQLite did, 2026-11-01) swaps a copy in: our connections keep
+        writing to the old, now nameless file, and everything since is lost when we close, while
+        new readers pair the copy with the live WAL and find a corrupt database. So: copy what our
+        connections see into <home>/rescued-<time>/ and exit without closing them."""
+        replaced = []
+        for _name, (_conn, path) in self._databases().items():
+            for f in (path, Path(f"{path}-wal")):
+                try:
+                    ino = f.stat().st_ino
+                except FileNotFoundError:
+                    if f in self.inodes:
+                        replaced.append(f)
+                    continue
+                if self.inodes.setdefault(f, ino) != ino:
+                    replaced.append(f)
+        if replaced:
+            self._rescue(replaced)
+
+    def _rescue(self, replaced: list[Path]) -> None:
+        dest = db.library_home() / f"rescued-{time.strftime('%Y%m%d-%H%M%S')}"
+        dest.mkdir(parents=True, exist_ok=True)
+        saved = []
+        for name, (conn, _path) in self._databases().items():
+            try:
+                out = sqlite3.connect(dest / name)
+                conn.backup(out)
+                out.close()
+                saved.append(name)
+            except Exception as e:  # noqa: BLE001  save what can be saved
+                self.log(f"could not rescue {name}: {type(e).__name__}")
+        self.log(f"{', '.join(p.name for p in replaced)} replaced while the watcher had them open (another program "
+                 f"saved over them?). What the watcher had: {', '.join(saved)} in {dest}. Stopping without closing "
+                 "the databases. To restore: stop the web server, set the damaged files aside, copy these in "
+                 f"(AGENTS.md, papyrus watch). The watcher won't start while {dest.name} exists.")
+        self.state, self.detail = "error", f"database replaced; rescued to {dest.name}"
+        try:
+            tmp = self.status_path.with_name(self.status_path.name + ".tmp")
+            tmp.write_text(json.dumps({"state": "error", "detail": self.detail, "pid": os.getpid(),
+                                       "updated": db.now_iso()}) + "\n")
+            os.replace(tmp, self.status_path)
+        except OSError:
+            pass
+        os._exit(EXIT_REPLACED)
 
     def _due(self) -> tuple[list[Path], list[Path]]:
         """The debouncer's settled and gone paths, less those with nothing to record: a file whose

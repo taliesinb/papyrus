@@ -473,6 +473,7 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
     interrupted."""
     from . import config
     from .watch import EXIT_LOCKED, Watch, read_status
+    from .watch.daemon import EXIT_RESCUED
     from .watch.sources import PollingWatcher
     from .watch.system import InstanceLock, lower_priority
 
@@ -497,6 +498,12 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
     roots = [d for d in roots if d not in missing]
     if not roots:
         raise click.ClickException("no directory to watch (config: [watch] dirs, or --dir)")
+    rescued = sorted(home.glob("rescued-*"))
+    if rescued:  # watch/daemon.py, Watch._guard: the files on disk are not what the last watcher had
+        click.echo(f"watch: {rescued[-1]} holds the databases as a watcher had them when another program "
+                   "replaced the files; restore them, or delete the folder, before starting again "
+                   "(AGENTS.md, papyrus watch)", err=True)
+        ctx.exit(EXIT_RESCUED)
     lock = InstanceLock(home / "watch.lock")
     if not lock.acquire():
         click.echo(f"another papyrus watch is running for {home}" + (f" (pid {lock.holder})" if lock.holder else ""),

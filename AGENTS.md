@@ -333,6 +333,26 @@ The seed is part of the inference cache's key either way.
   pending counts as `no_progress` and is retried later (1 h, 4 h, 16 h, then
   `failed`), which is what stops an enrichment that finds nothing from
   looping.
+* **Never open the live databases in a GUI SQLite editor that saves**
+  (SQLPro for SQLite, DB Browser, …). On 2026-11-01 SQLPro, a sandboxed app,
+  safe-saved copies over `papyrus.sqlite` and `inference.sqlite-wal` (leaving
+  `*.sb-<hex>-<random>` names) while the watcher held them. Its writes then
+  went to the nameless old files, and every new reader paired the copy with
+  the live WAL ("file is not a database"). Read the live files with `sqlite3`,
+  datasette or MCP's `sql`, or give the editor a `.backup` copy.
+  * The watcher now notices a replaced file (`Watch._guard`, inode checks
+    before every step). It writes what its connections see to
+    `<home>/rescued-<time>/` with SQLite's backup API, then exits (status 70)
+    *without closing*, since closing would checkpoint into the replaced
+    files. It refuses to start (status 78) while a `rescued-*` folder exists.
+  * **To restore:** quit Papyrus Server.app and any watcher; check
+    `lsof +D ~/.papyrus/<variant>` is empty; move `papyrus.sqlite*`,
+    `inference.sqlite*` and `queue.sqlite*` aside; copy the rescued files in;
+    run `PRAGMA integrity_check`; delete the set-aside copies (they can hold
+    text that purge erased) and the rescued folder.
+  * A process without the guard can still be rescued: `lldb -p PID` and
+    `expr (int)fcopyfile(FD, open("/tmp/x", 0x601, 420), 0, 8)` for each
+    database fd that `lsof -p PID` lists, then `kill -9` it (not SIGTERM).
 * **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
   not involved; `scan.ingest_path` is the shared per-file body.
 * **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and

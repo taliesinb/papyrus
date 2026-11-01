@@ -115,6 +115,10 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
   not clone. Other filesystems get a copy.
 * Schema: [`src/papyrus/schema.sql`](src/papyrus/schema.sql), explained in
   [`docs/schema.md`](docs/schema.md).
+* Read the databases with `sqlite3`, datasette or the MCP `sql` tool. Don't
+  open them in a GUI editor that saves (SQLPro for SQLite, DB Browser): a
+  sandboxed app's safe-save swaps a copy in under the running watcher. Give
+  such an editor a `.backup` copy instead.
 * Inference cache: `~/.papyrus/<variant>/inference.sqlite` (hashes and
   timings of every model call) and `~/.papyrus/<variant>/inference/` (the
   texts asked about and answered, by hash; private, like the store).
