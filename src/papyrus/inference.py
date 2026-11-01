@@ -290,19 +290,23 @@ class Store:
         return round(statistics.median(rates) * input_chars / 1000, 2) if rates else None
 
 
-    def document_estimate_s(self) -> float | None:
-        """Seconds the models take for one more document like the last: the questions asked
-        about the most recently asked-about document (so the current models and prompts), each
-        estimated by `estimate_s` from its own history. None without history."""
+    def document_estimate_s(self, last: int = 50) -> float | None:
+        """Seconds the models take for one more typical document: the questions asked about the
+        most recently asked-about document (so the current models and prompts), each estimated by
+        `estimate_s` at the median input length of its last `last` calls (the latest document's
+        own length made it jumpy: a short one halved the estimate). None without history."""
         r = self.conn.execute("SELECT subject FROM calls WHERE status='ok' AND subject IS NOT NULL"
                               " ORDER BY started_at DESC LIMIT 1").fetchone()
         if r is None:
             return None
-        latest: dict[tuple[str, str], int] = {}
-        for c in self.conn.execute("SELECT model_id, query_id, input_chars FROM calls WHERE subject=? AND status='ok'"
-                                   " ORDER BY started_at", (r[0],)):
-            latest[(c["model_id"], c["query_id"])] = c["input_chars"]
-        ests = [self.estimate_s(m, q, chars) for (m, q), chars in latest.items()]
+        pairs = {(c[0], c[1]) for c in self.conn.execute(
+            "SELECT model_id, query_id FROM calls WHERE subject=? AND status='ok'", (r[0],))}
+        ests = []
+        for m, q in pairs:
+            chars = [c[0] for c in self.conn.execute(
+                "SELECT input_chars FROM calls WHERE model_id=? AND query_id=? AND status='ok'"
+                " ORDER BY started_at DESC LIMIT ?", (m, q, last))]
+            ests.append(self.estimate_s(m, q, round(statistics.median(chars))))
         ests = [e for e in ests if e is not None]
         return round(sum(ests), 2) if ests else None
 
