@@ -4,17 +4,17 @@ Today: links that carry an identifier, i.e. arXiv ids and DOIs (`contexts.links.
 For each distinct identifier:
 
 1. a live work already has it → link the refs to that work;
-2. else look it up (`enrich.match.resolve`, network, outside any transaction). Nothing
+2. else look it up (`match.candidates.resolve`, network, outside any transaction). Nothing
    good enough → the refs stay ``unresolved`` and the next run tries again;
 3. a live work already has one of the record's other ids, or its title and year (the
    published DOI of an arXiv link, say) → link to that work;
-4. else create a ``candidate`` work holding the identifier and enrich it
-   (`enrich.pipeline.match_work`, which repeats the lookup from the HTTP cache), so its
+4. else create a ``candidate`` work holding the identifier and match it
+   (`match.pipeline.match_work`, which repeats the lookup from the HTTP cache), so its
    title, authors, abstract and topics come with API provenance.
 
 Refs become ``resolved`` with ``work_id``, ``confidence`` 1.0 (identifier match) and
 ``source`` ``resolve:<scheme>``. PDF links and uploads are left for later (they need a
-download and triage).
+download and ingesting).
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def resolve_one(conn: sqlite3.Connection, scheme: str, value: str, ref_ids: list
         _link(conn, ref_ids, wid, scheme)
         works.reindex_work(conn, wid)
     r = match_work(conn, wid, run_id=run_id, **resolve_kw)
-    return {"status": "created", "work_id": wid, "enrich": r["status"], "title": rec.title}
+    return {"status": "created", "work_id": wid, "match": r["status"], "title": rec.title}
 
 
 def resolve_refs(conn: sqlite3.Connection, *, context_kind: str | None = None, run_id: int | None = None,

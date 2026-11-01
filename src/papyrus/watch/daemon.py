@@ -81,7 +81,7 @@ STAGE_LABELS = {"read": "Reading", "classify": "Classifying", "extract": "Extrac
                 "match": "Matching"}
 EMA_ALPHA = 0.2  # weight of the newest step in a stage's seconds-per-item average
 # a stage worked within this many seconds is "active": steps of other stages come in between
-# (each extracted document's full text and enrichment run before the next document's metadata)
+# (each extracted document's indexing and matching run before the next document's extraction)
 ACTIVE_S = 30.0
 
 
@@ -533,7 +533,7 @@ class Watch:
     @property
     def paused(self) -> bool:
         """Model work (read, classify, extract) is paused: `<home>/watch.pause` exists (the menu bar's Pause
-        Model Work, `papyrus watch --pause`). Files are still added, extracted and enriched."""
+        Model Work, `papyrus watch --pause`). Files are still scanned, indexed and matched."""
         return self.pause_path.exists()
 
     def _next_task(self) -> tuple[str, int] | None:
@@ -547,7 +547,7 @@ class Watch:
         if paused:
             waiting |= set(MODEL_STAGES)
         free = [s for s in STAGES if s not in waiting]
-        # Triage in phases: classify everything pending, then extract metadata for everything
+        # In phases: classify everything pending, then extract metadata for everything
         # classified, then classify what arrived meanwhile, and so on. The two may be different
         # models; each phase runs as far as it can, so a model is loaded (or swapped in) once
         # per phase, not once per file.
@@ -572,7 +572,7 @@ class Watch:
         outcome = "done"
         try:
             getattr(self, f"_{stage}")(i, run_id, c)
-            if self._still_pending(stage, i):  # nothing changed (e.g. enrichment found nothing)
+            if self._still_pending(stage, i):  # nothing changed (e.g. matching found nothing)
                 outcome = "no_progress"
                 self._retry(task, "no_progress")
             else:
@@ -639,7 +639,7 @@ class Watch:
         with http.patience(MATCH_PATIENCE_S):
             r = match_work(self.conn, wid, run_id=run_id)
         c[f"match_{r['status']}"] += 1
-        self.log(f"work {wid} enrich: {r['status']}")
+        self.log(f"work {wid} match: {r['status']}")
         if r["status"] == "rate_limited":
             names = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref", "s2": "Semantic Scholar"}
             raise Backoff(RATE_LIMITED, "rate limited by " + ", ".join(names.get(x, x) for x in r["sources"]),

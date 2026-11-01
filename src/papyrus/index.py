@@ -1,18 +1,18 @@
-"""Full text (`papyrus extract`): every page of the files of live works, page kinds, outlines, OCR.
+"""Full text (`papyrus index`): every page of the files of live works, page kinds, outlines, OCR.
 
-Scanning reads only the first pages of a file (enough for triage). Once a file belongs to a live
+Scanning reads only the first pages of a file (enough to classify and extract). Once a file belongs to a live
 work (candidate or confirmed), this stage reads the rest. Files that are only personal paperwork
-are never extracted past those first pages.
+are never read past those first pages.
 
 Two passes, each idempotent:
 
 1. **Text layer** (pypdfium2): for files with `index_status='pending'`, every page's text, its
    kind (`page_kind`) and the PDF outline (`file_outline`), then `index_status='done'`.
 2. **OCR** (Apple Vision, `ocr.py`) for pages with (almost) no text layer:
-   * every such page of an extracted file;
+   * every such page of an indexed file;
    * the first pages of image-only files (`read_status='no_text'`) that are not works yet, so
      that the classifier can read them. Such a file goes back to `classify_status='pending'` if OCR found
-     text, since its earlier triage saw none.
+     text, since the classifier saw none before.
 
    Results are written in batches, so an interrupted run over a long scanned book keeps what it
    did. OCR'd pages get `source='ocr:vision'` and are never overwritten by the text layer.
@@ -172,7 +172,7 @@ def run(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: bool 
         progress: Callable[[str, int, str], None] | None = None) -> Counter:
     """Both passes over whatever is pending (or over `file_ids`), as one recorded run."""
     stats: Counter = Counter()
-    with db.recorded_run(conn, "extract", {"files": list(file_ids), "redo": redo, "ocr": ocr}) as (_run_id, rs):
+    with db.recorded_run(conn, "index", {"files": list(file_ids), "redo": redo, "ocr": ocr}) as (_run_id, rs):
         try:
             process(conn, file_ids, redo=redo, ocr=ocr, progress=progress, stats=stats)
         finally:
@@ -224,7 +224,7 @@ def process(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), *, redo: b
                                lambda done, total, fid=fid: say("ocr-progress", fid, f"{done}/{total}"))
                 stats["ocr_pages"] += len(pages)
                 stats["ocr_pages_with_text"] += got
-                # An image-only file that never became a work was triaged blind: triage it again.
+                # An image-only file that never became a work was classified blind: classify it again.
                 if got and not conn.execute("SELECT 1 FROM file_works WHERE file_id=?", (fid,)).fetchone():
                     conn.execute("UPDATE files SET classify_status='pending', extract_status='pending' WHERE id=? AND read_status='no_text'",
                                  (fid,))
