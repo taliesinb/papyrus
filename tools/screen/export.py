@@ -25,10 +25,10 @@ Each file is <out>/<first 16 hex digits of sha256>.json with three sections:
                   purged             erased as personal paperwork: a tombstone, no inputs left
                                      (train.py recovers them from the originals)
                 `sources` gives, per field, the provenance of the value where it can be traced
-                (api:*, decide:*, llm:*, heuristic:*, user). No label is user-reviewed unless
+                (api:*, classify:*, llm:*, heuristic:*, user). No label is user-reviewed unless
                 its source is `user` or `work_status` is `confirmed`.
   predictions   the live triage claims on the file (every source, with confidence and the
-                decider's probability distributions): the current classifiers' outputs.
+                classifier's probability distributions): the current classifiers' outputs.
 
 This contains the first pages of personal documents (payslips, CVs, tax certificates): keep the
 output out of git (`/training/` is ignored), tests, fixtures and logs.

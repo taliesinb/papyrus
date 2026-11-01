@@ -12,13 +12,13 @@ from click.testing import CliRunner
 from papyrus import db, inference, purge
 from papyrus.cli import main
 from papyrus.llm.base import Answer, BackendUnavailable, ModelBusy, ModelInfo, Question
-from papyrus.llm.decide import OpenAICompatDecider
+from papyrus.llm.classify import OpenAICompatClassifier
 from papyrus.llm.lmstudio import LMStudioBackend
 from papyrus.triage import triage_file
 from papyrus.works import promote_file
 
-from test_decide import chat_response, oa_transport, top
-from test_triage_promote import PAPER, FakeBackend, FakeDecider, _lib
+from test_classify import chat_response, oa_transport, top
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
 
 SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}
 MARK = "Quuxperson"  # in a payslip: must survive nowhere after a purge
@@ -160,28 +160,28 @@ def test_unknown_build_means_no_caching():
     assert len(inner.prompts) == 2 and be.last_call is None and _calls() == []
 
 
-def test_decider_is_cached_per_question():
+def test_classifyr_is_cached_per_question():
     kind = Question("kind", "choice", "What kind?", {"paper": "a paper", "personal": "paperwork"})
     lib = Question("is_library_material", "yesno", "Library material?")
     new = Question("language", "choice", "Language?", {"en": "English", "de": "German"})
 
-    class Counting(FakeDecider):
+    class Counting(FakeClassifier):
         def __init__(self):
             super().__init__("paper", True)
             self.asked = []
 
-        def decide(self, state, questions):
+        def classify(self, state, questions):
             self.asked += [q.key for q in questions]
-            out = super().decide(state, questions)
+            out = super().classify(state, questions)
             out["language"] = Answer("language", {"en": 0.9, "de": 0.1})
             return {q.key: out[q.key] for q in questions}
 
     inner = Counting()
-    dec = inference.cached_decider(inner)
-    a = dec.decide("STATE", [kind, lib])
+    dec = inference.cached_classifier(inner)
+    a = dec.classify("STATE", [kind, lib])
     assert a["kind"].best == "paper" and set(dec.last_calls) == {"kind", "is_library_material"}
     first = dict(dec.last_calls)
-    b = dec.decide("STATE", [kind, lib, new])
+    b = dec.classify("STATE", [kind, lib, new])
     assert inner.asked == ["kind", "is_library_material", "language"]  # only the new question was asked
     assert b["kind"].probabilities == a["kind"].probabilities
     assert dec.last_calls["kind"] == first["kind"] and dec.last_calls["language"] not in first.values()
@@ -189,7 +189,7 @@ def test_decider_is_cached_per_question():
 
 def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
     conn = _lib(tmp_path, "notes.pdf", "Lecture notes on things, with exercises.")
-    be, dec = inference.cached_backend(FakeBackend(PAPER)), inference.cached_decider(FakeDecider("paper", True))
+    be, dec = inference.cached_backend(FakeBackend(PAPER)), inference.cached_classifier(FakeClassifier("paper", True))
     r = triage_file(conn, 1, be, dec)
     assert not r["cached"]
     rows = conn.execute("SELECT field, call_id FROM assertions WHERE subject_id=1 AND superseded_at IS NULL"
@@ -210,13 +210,13 @@ def test_purge_leaves_no_inference_text(tmp_path):
     conn = _lib(tmp_path, "Payslip_2026-10.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1234.00")
     slip = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip {MARK}", topics=[])
     triage_file(conn, 1, inference.cached_backend(FakeBackend(slip)),
-                inference.cached_decider(FakeDecider("personal", False, p=0.98)))
+                inference.cached_classifier(FakeClassifier("personal", False, p=0.98)))
     root = tmp_path / "papyrus-home" / "inference"
     assert any(MARK.encode() in p.read_bytes() for p in root.rglob("*") if p.is_file())
     assert promote_file(conn, 1) == ("purged", None)
     assert [p for p in root.rglob("*") if p.is_file()] == []
     s = inference.store()
-    assert len(_calls()) == 2  # the decider's two questions (sure: no extraction); the rows stay
+    assert len(_calls()) == 2  # the classifier's two questions (sure: no extraction); the rows stay
     on_disk = b"".join(p.read_bytes() for p in s.path.parent.glob("inference.sqlite*"))
     assert MARK.encode() not in on_disk and b"Payslip" not in on_disk
 
@@ -262,7 +262,7 @@ def test_lmstudio_backend_sends_the_seed_and_reports_usage():
     assert be.cache_params()["impl"] and be.seed_honoured({"format": "mlx"}) is False
 
 
-def test_openai_decider_seeds_every_request_and_sums_usage():
+def test_openai_classifier_seeds_every_request_and_sums_usage():
     rec = []
     seq = iter(["Yes", "No", "Yes", "Yes", "Yes"])
 
@@ -271,8 +271,8 @@ def test_openai_decider_seeds_every_request_and_sums_usage():
             return chat_response(None, "Yes")
         return {**chat_response(None, next(seq)), "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
 
-    d = OpenAICompatDecider(model="qwen3.5-4b-mlx", vote_samples=5, transport=oa_transport(rec, respond))
-    d.decide("s", [Question("lib", "yesno", "Library?")], seed=3)
+    d = OpenAICompatClassifier(model="qwen3.5-4b-mlx", vote_samples=5, transport=oa_transport(rec, respond))
+    d.classify("s", [Question("lib", "yesno", "Library?")], seed=3)
     # the prime and the probe, then seed * 5 + i per vote
     assert [b["seed"] for b in rec] == [3, 3, 15, 16, 17, 18, 19]
     assert d.last_usage == {"prompt_tokens": 50, "completion_tokens": 5}

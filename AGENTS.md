@@ -18,7 +18,7 @@ Read these first:
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
 uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | watch | inference | works | work | files | show | search | stats | config | mcp | slack | resolve
-uv run papyrus config                  # config file path and the backend/decider in effect
+uv run papyrus config                  # config file path and the backend/classifier in effect
 uv run papyrus inference stats         # every model call so far: hits, failures, timings (also: show CALL_ID, prune)
 PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl   # the ingestion daemon in the foreground (--once: catch up and exit; --status)
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
@@ -93,11 +93,11 @@ unit (Linux) keeps it running.
   commits or fixtures. Model calls about a document must run inside
   `with inference.subject(files.sha256):`, or purge can't find their texts.
 * **Personal paperwork is purged, or held out of sight** (`purge.py`):
-  * when the decider gives P(kind=personal) ≥ 0.9, promote purges the file down
+  * when the classifier gives P(kind=personal) ≥ 0.9, promote purges the file down
     to a tombstone: sha256, size, `purged_at`, the download URL, and one
     `purged` assertion. Scan and download then skip those bytes without
     recording anything;
-  * between 0.5 and 0.9 (or without a decider) the file is *held*: no work,
+  * between 0.5 and 0.9 (or without a classifier) the file is *held*: no work,
     first pages kept for review (`papyrus purge --dry-run`, `purge ID`,
     `keep ID`);
   * so is a file the screen (`screen.py`, triage's embedding-model first
@@ -112,7 +112,7 @@ unit (Linux) keeps it running.
 
 1. **Provenance on every claim.** Model and API output goes into `assertions`
    with a `source` tag:
-   * `llm:<backend>:<model>`, `decide:<backend>:<model>`, `screen:<backend>:<model>`
+   * `llm:<backend>:<model>`, `classify:<backend>:<model>`, `screen:<backend>:<model>`
    * `api:<service>`, `api:enrich`
    * `heuristic:<name>`, `papyrus:<action>`
    * `user`
@@ -155,9 +155,9 @@ unit (Linux) keeps it running.
    The schema is a public contract: users and agents query it with SQL over
    MCP.
 7. **Changing a prompt** in `triage.py` (instructions, schema, `KINDS`,
-   `DECISIONS`) means bumping `PROMPT_VERSION` and noting what changed in the
+   `CLASSIFICATIONS`) means bumping `PROMPT_VERSION` and noting what changed in the
    comment above it. It is recorded on every run.
-8. **The `Backend` / `Decider` / `Embedder` contracts** in `llm/base.py` and the
+8. **The `Backend` / `Classifier` / `Embedder` contracts** in `llm/base.py` and the
    `WorkRecord` / `AuthorRecord` types in `models.py` are shared by several
    modules. Change them deliberately, and update every implementation.
    The optional hooks the inference cache uses (`seed`, `cache_params`,
@@ -177,11 +177,11 @@ unit (Linux) keeps it running.
      headers;
    * the log is private data (Slack messages): never copy it into commits,
      tests or fixtures;
-   * LM Studio and decider calls are *not* logged (`llm/*` uses its own httpx
+   * LM Studio and classifier calls are *not* logged (`llm/*` uses its own httpx
      clients): their prompts hold the first pages of personal documents.
      They are recorded by the inference cache instead (next).
 10. **Model calls go through the inference cache** (`inference.cached_backend`
-    / `cached_decider` / `cached_embedder`) so they are recorded, timed and reusable, and claims
+    / `cached_classifier` / `cached_embedder`) so they are recorded, timed and reusable, and claims
     carry `call_id`. New callers wrap their models the same way.
 
 ## Gotchas (all learned the hard way)
@@ -191,14 +191,14 @@ unit (Linux) keeps it running.
 * **The server is separate from the app** and is often off.
   `lmstudio.ensure_server` starts it with `lms server start` (not on PATH:
   `~/.cache/lm-studio/bin/lms` since LM Studio 0.4, `~/.lmstudio/bin/lms`
-  before; `lmstudio.lms_path` tries both) when the backend or decider selects LM Studio; turn that off
+  before; `lmstudio.lms_path` tries both) when the backend or classifier selects LM Studio; turn that off
   with `lmstudio.autostart = false` or `PAPYRUS_LMSTUDIO_AUTOSTART=0`. Tests
   set the latter (`tests/conftest.py`).
 * **Live tests load models:** once the server is up, `test_live_lmstudio_decides`
   runs and loads the 4B model (1 h idle timeout). Unload it afterwards
   (`lms unload qwen3.5-4b-mlx`) unless the user is using it.
-* **No silent downgrade:** `triage` exits if no decider is available unless
-  the decider is explicitly `none` (option, `PAPYRUS_DECIDER` or the
+* **No silent downgrade:** `triage` exits if no classifier is available unless
+  the classifier is explicitly `none` (option, `PAPYRUS_CLASSIFIER` or the
   config). Without one, library-ness rests on the extraction model's biased
   yes/no.
 
@@ -225,14 +225,14 @@ unit (Linux) keeps it running.
   | model | prompt processing | generation | per file |
   |---|---|---|---|
   | qwen3.5-9b | ~60–100 tok/s | ~11 tok/s | 60–100 s |
-  | qwen3.5-4b | — | — | 12–30 s, including the decider |
+  | qwen3.5-4b | — | — | 12–30 s, including the classifier |
 
   The 4B is the default for both extraction and decisions. Prompt caching is
   automatic (prefix-based), with no markers to set, but for Qwen3.5 (hybrid
   layers) the MLX engine restores a prefix only at 256-token checkpoints where
   a prefill call ended. Questions that share a prefix but diverge after it get
-  no reuse unless something primes it: the decider sends one short prime per
-  state (`OpenAICompatDecider._prime`). Restore counts are in
+  no reuse unless something primes it: the classifier sends one short prime per
+  state (`OpenAICompatClassifier._prime`). Restore counts are in
   `~/.cache/lm-studio/server-logs` ("Prompt cache restore: cached_tokens=").
 
 **Seeds:** LM Studio accepts `seed` but its MLX engine ignores it (same seed,
@@ -242,14 +242,14 @@ The seed is part of the inference cache's key either way.
 
 **Apple Foundation Models** (`tools/afm-bridge`, `llm/apple.py`):
 
-* 8192-token context, about 40 output tokens/s, no logprobs (so no decider).
+* 8192-token context, about 40 output tokens/s, no logprobs (so no classifier).
 * Requests from command-line processes are refused under memory pressure
   (`CriticalMemoryPressure`, error 1013), which is likely while LM Studio
   models are loaded.
 * It misclassifies document kinds (it called a CV an "article"). Use it for
   extraction only, as a fallback.
 
-**The decider** (`llm/decide.py`, a Jev / "System One" style API):
+**The classifier** (`llm/classify.py`, a Jev / "System One" style API):
 
 * Its `kind` distribution is good. Its yes/no "is this library material?"
   answer is biased towards yes (0.73 for an exam paper it labels `personal`
@@ -410,7 +410,7 @@ with the same decorators.
 ## Testing patterns
 
 * **No model needed:** `tests/test_triage_promote.py` has `FakeBackend`,
-  `FakeDecider` and `_lib()`, which builds a temporary library from
+  `FakeClassifier` and `_lib()`, which builds a temporary library from
   generated PDFs (`test_core._make_pdf`).
 * **No network:** record API responses as fixtures under `tests/fixtures/`,
   and monkeypatch `match.resolve` for pipeline tests.
@@ -418,12 +418,12 @@ with the same decorators.
   landing pages through `httpx.MockTransport`; pass the client to
   `download.download` (or `http.set_default_client` for CLI tests).
 * **The inference cache:** `tests/test_inference.py`. Wrap `FakeBackend` /
-  `FakeDecider` with `inference.cached_backend` / `cached_decider`; the store
+  `FakeClassifier` with `inference.cached_backend` / `cached_classifier`; the store
   follows `PAPYRUS_HOME`, so each test has its own.
 * **The watcher:** `tests/test_watch.py` drives `Watch` with a fake watcher
   (`inject` paths), a fake clock, a fake memory probe, a fake LM Studio
   (`LMStudio`: what is loaded, what was unloaded) and `FakeBackend` /
-  `FakeDecider`. Call `pump()` once after injecting (the settle timer starts
+  `FakeClassifier`. Call `pump()` once after injecting (the settle timer starts
   there), advance the clock, then `pump()` again. Use `_pdf(..., old=True)`
   for files the catch-up scan should take at once. The watcher enriches what
   it promotes: a test module that runs it (even through `test_watch`'s

@@ -26,8 +26,8 @@ It can't be undone from the database; the original file, which papyrus never tou
 brought back with `papyrus keep PATH`.
 
 When: `verdict` says purge when the user said so (an `is_library_material` claim from `user`),
-or when the decider's P(kind=personal) >= PURGE_THRESHOLD. Between 0.5 (where `works.is_library`
-stops promoting) and the threshold, or without a decider, a personal-looking file is *held*:
+or when the classifier's P(kind=personal) >= PURGE_THRESHOLD. Between 0.5 (where `works.is_library`
+stops promoting) and the threshold, or without a classifier, a personal-looking file is *held*:
 no work, not served, its first pages kept for review (`papyrus purge --held`). So is a file
 the screen (screen.py) set aside: the screen alone never purges.
 """
@@ -70,10 +70,10 @@ def verdict(conn: sqlite3.Connection, file_id: int) -> dict[str, Any] | None:
         return None if user else {"by": "user"}
     r = conn.execute(
         "SELECT a.value, a.source, r.prompt_version FROM assertions a LEFT JOIN runs r ON r.id=a.run_id"
-        " WHERE a.subject_type='file' AND a.subject_id=? AND a.field='kind_probs' AND a.source LIKE 'decide:%'"
+        " WHERE a.subject_type='file' AND a.subject_id=? AND a.field='kind_probs' AND a.source LIKE 'classify:%'"
         " AND a.superseded_at IS NULL ORDER BY a.id DESC LIMIT 1", (file_id,)).fetchone()
     if r is None:
-        return None  # no decider: the extraction model's own yes/no is too unreliable to act on
+        return None  # no classifier: the extraction model's own yes/no is too unreliable to act on
     p = (json.loads(r["value"]) or {}).get("personal", 0.0)
     if p < PURGE_THRESHOLD:
         return None
@@ -179,7 +179,7 @@ def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> t
 def restore(conn: sqlite3.Connection, path: Path, run_id: int | None = None) -> tuple[str, int | None]:
     """Bring back a purged file from its original at `path`, as the user's library material:
     the stored copy, first pages and the path come back, triage is pending again (a `user`
-    claim makes promote keep it whatever the decider says). Returns (action, file_id), action
+    claim makes promote keep it whatever the classifier says). Returns (action, file_id), action
     one of restored | unknown (never scanned) | or what `keep` returns for an unpurged file."""
     import socket
 

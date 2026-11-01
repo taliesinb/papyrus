@@ -8,7 +8,7 @@ Two kinds of question are asked of a document:
 
 * **Decision** (Jev / "System One" style): a fixed set of options and we want a
   probability for each — "is this a paper, book, slides ...", "is this library
-  material at all". Answered by `Decider.decide`, which returns calibrated-ish
+  material at all". Answered by `Classifier.classify`, which returns calibrated-ish
   probabilities per option rather than a single sampled answer.
 
 Backends: LM Studio (OpenAI-compatible HTTP), Apple Foundation Models (Swift
@@ -17,12 +17,12 @@ bridge), and any Jev-compatible `/v1/systemone` endpoint.
 A third contract, `Embedder` (LM Studio's `/v1/embeddings`, llm/embed.py), serves the screen
 (screen.py): a fast first stage of triage.
 
-For the inference cache (`papyrus.inference`, which wraps any Backend or Decider), an
+For the inference cache (`papyrus.inference`, which wraps any Backend or Classifier), an
 implementation may also offer:
 
-* a `seed: int = 0` keyword on `extract` / `decide` (passed only where the signature has it);
+* a `seed: int = 0` keyword on `extract` / `classify` (passed only where the signature has it);
 * `cache_params() -> dict`: settings that shape answers besides the arguments (its prompt
-  layout's version, a decider's method…), so changing one makes a new cache key;
+  layout's version, a classifier's method…), so changing one makes a new cache key;
 * `model_build() -> dict | None`: what pins the weights (None: can't tell right now);
 * `seed_honoured(build) -> bool | None`, `model_loaded() -> bool | None`;
 * `last_usage` ({prompt_tokens, completion_tokens}) and `last_params` (what the last call did)
@@ -121,14 +121,14 @@ class Answer:
 
 
 @runtime_checkable
-class Decider(Protocol):
+class Classifier(Protocol):
     """Answers several typed questions about one `state` (text) in one go."""
 
     def info(self) -> ModelInfo: ...
 
     def available(self) -> bool: ...
 
-    def decide(self, state: str, questions: list[Question]) -> dict[str, Answer]: ...
+    def classify(self, state: str, questions: list[Question]) -> dict[str, Answer]: ...
 
 
 @runtime_checkable

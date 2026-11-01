@@ -23,7 +23,7 @@ Things to know about the model (macOS 27):
   ``permissiveContentTransformations`` and, if guided generation still trips a guardrail, retries
   unguided (JSON as text) — see ``AppleFMGuardrailError`` for what is left.
 * No token log-probabilities are exposed, so this backend implements ``Backend`` but not
-  ``Decider``.
+  ``Classifier``.
 """
 
 from __future__ import annotations

@@ -275,7 +275,7 @@ CREATE INDEX IF NOT EXISTS context_refs_work ON context_refs(work_id);
 --   subject_type: file | work | person | context
 --   field: kind | is_library_material | title | authors | abstract | year |
 --          topics | venue | ids | ...   (value is JSON)
---   source: 'llm:lmstudio:qwen3.5-9b-mlx', 'decide:lmstudio:...', 'api:arxiv',
+--   source: 'llm:lmstudio:qwen3.5-9b-mlx', 'classify:lmstudio:...', 'api:arxiv',
 --           'heuristic:filename', 'pdf:info', 'user'
 CREATE TABLE IF NOT EXISTS assertions (
     id           INTEGER PRIMARY KEY,

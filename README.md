@@ -18,12 +18,12 @@ Early. What works today:
 | scan | `papyrus scan [-r] DIR...` | Finds PDFs, hashes and dedupes them, and reads the PDF info and the text of the first 2 pages into FTS5. It records a `filesystem` context for each path, including the download URL and referrer from macOS `kMDItemWhereFroms` (on Linux, the `user.xdg.origin.url` attributes). New files are copied into the managed store (an APFS clone or a Linux reflink where the filesystem has them, so free). Re-scans are idempotent, and paths that have gone are marked missing. |
 | download | `papyrus download URL...`, `-c`/`--clipboard`, `-`/`--stdin`, `-f`/`--file FILE` | Fetches PDFs into the store and ingests them like `scan`. Takes tabs copied from Safari (titles included), or URLs separated by newlines, commas or spaces, markdown links and arXiv ids. arXiv/OpenReview pages map to their PDF; other landing pages are followed via `citation_pdf_url`. Each URL is a `download` context; URLs already in the library are skipped. `--dry-run` shows what would happen; `--process` then runs triage, promote, extract and enrich on the new files. |
 | store | `papyrus store [--check]` | Copies files scanned before the store existed into it; `--check` re-hashes the stored copies. |
-| triage | `papyrus triage [--backend B] [--decider D] [--no-screen]` | First a **screen**, a small embedding model (~30 ms a file), sets aside files that are surely personal paperwork; they are held for review without asking the language models (`[screen]` in the config). Then it asks a local model what each file is. A **decider** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
-| promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. Personal paperwork the decider is sure of (P(kind=personal) ≥ 0.9) is purged: its text, paths, filenames, PDF metadata, model claims and stored copy are erased. Only the sha256, size and download URL remain, so the same bytes are skipped from then on. Less certain cases are held: no work, never served. |
+| triage | `papyrus triage [--backend B] [--classifier D] [--no-screen]` | First a **screen**, a small embedding model (~30 ms a file), sets aside files that are surely personal paperwork; they are held for review without asking the language models (`[screen]` in the config). Then it asks a local model what each file is. A **classifier** (Jev/System-One style typed questions answered with probabilities) settles `kind` and `is_library_material`. An **extraction** model returns title, authors, year, venue, verbatim abstract, summary, topics with fields, and language. Identifiers (arXiv/DOI/ISBN) are found by regex in the filename, download URL and page 1. |
+| promote | `papyrus promote` | Creates or links `works` from triaged files, deduplicating by identifier, then by normalised title. Personal paperwork the classifier is sure of (P(kind=personal) ≥ 0.9) is purged: its text, paths, filenames, PDF metadata, model claims and stored copy are erased. Only the sha256, size and download URL remain, so the same bytes are skipped from then on. Less certain cases are held: no work, never served. |
 | purge, keep | `papyrus purge [FILE_IDS] [--dry-run]`, `papyrus keep ID\|PATH...` | `purge` erases what promote would, lists held files, or purges the given files on your say-so. `keep` marks files as library material whatever triage says; given the path of the original, it also brings back a purged file. |
 | extract | `papyrus extract [FILE_IDS] [--all] [--no-ocr]` | Reads every page of the files of live works into the full-text index (personal paperwork stays at the 2 pages triage needs). Labels references, index and contents pages, which rank lower; keeps the PDF outline, so hits show their section; OCRs pages without a text layer with Apple Vision (through `tools/afm-bridge`). |
-| process | `papyrus process [FILE_IDS] [--backend B] [--decider D]` | Shorthand for `triage && promote && extract && enrich` over whatever is pending (with FILE_IDS: those files and their works). Stops before promoting if triage can't run. |
-| watch | `papyrus watch [--once] [--dir DIR] [--status]` | A background daemon: adds new PDFs from `~/Downloads` and `~/Desktop` (config `[watch] dirs`) once they have finished downloading, through the same path as `scan`, then triages, promotes, extracts and enriches them one at a time at background priority. Model work waits under memory pressure, while LM Studio is off or has another model loaded, and without a decider; it never loads a second model and unloads only what it loaded. Logs carry file ids and counts only. Its queue (`queue.sqlite`) retries failed steps after 1 h, 4 h and 16 h, then gives up (`--retry-failed`). `--pause` / `--resume` (Pause Model Work in the menu) hold triage and OCR, e.g. while you experiment with LM Studio; new files are still added. Papyrus Server.app runs it on macOS (Watch for New PDFs in its menu, with what's left and an estimate of the time; the menu-bar scroll's paper is solid while there is work), a systemd user unit on Linux; `--once` catches up and exits. |
+| process | `papyrus process [FILE_IDS] [--backend B] [--classifier D]` | Shorthand for `triage && promote && extract && enrich` over whatever is pending (with FILE_IDS: those files and their works). Stops before promoting if triage can't run. |
+| watch | `papyrus watch [--once] [--dir DIR] [--status]` | A background daemon: adds new PDFs from `~/Downloads` and `~/Desktop` (config `[watch] dirs`) once they have finished downloading, through the same path as `scan`, then triages, promotes, extracts and enriches them one at a time at background priority. Model work waits under memory pressure, while LM Studio is off or has another model loaded, and without a classifier; it never loads a second model and unloads only what it loaded. Logs carry file ids and counts only. Its queue (`queue.sqlite`) retries failed steps after 1 h, 4 h and 16 h, then gives up (`--retry-failed`). `--pause` / `--resume` (Pause Model Work in the menu) hold triage and OCR, e.g. while you experiment with LM Studio; new files are still added. Papyrus Server.app runs it on macOS (Watch for New PDFs in its menu, with what's left and an estimate of the time; the menu-bar scroll's paper is solid while there is work), a systemd user unit on Linux; `--once` catches up and exits. |
 | enrich | `papyrus enrich [IDS] [--all] [--reset]` | Matches works against arXiv, OpenAlex, Semantic Scholar and Crossref. Adds the abstract, venue, the published DOI next to the arXiv id, authors with ORCID/OpenAlex/S2 ids, and topics. Candidates that are provably other works are excluded. |
 | search | `papyrus search QUERY [--kind K] [--files] [--json]` | Works matching in their metadata or anywhere in their pages, ranked by Reciprocal Rank Fusion of the two, each with its best pages (page, section, snippet). Free text or FTS5 syntax. `--files` ranks files instead, personal ones included. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus stats` | |
@@ -55,13 +55,13 @@ All models run locally.
 |---|---|---|
 | extraction | LM Studio (OpenAI-compatible, `localhost:1234`); the default is the 4B model | `--backend lmstudio:qwen3.5-4b-mlx` |
 | extraction | Apple Foundation Models (on-device; Swift bridge in `tools/afm-bridge`) | `--backend apple` |
-| decisions | LM Studio emulation of the Jev `/v1/systemone` API, using logprobs over option letters | `--decider lmstudio:qwen3.5-4b-mlx` |
-| decisions | any Jev-compatible server (TypeSafe, Ollama `tev1`, decider, Lichen…) | `--decider jev:http://host:port` |
+| decisions | LM Studio emulation of the Jev `/v1/systemone` API, using logprobs over option letters | `--classifier lmstudio:qwen3.5-4b-mlx` |
+| decisions | any Jev-compatible server (TypeSafe, Ollama `tev1`, classifier, Lichen…) | `--classifier jev:http://host:port` |
 
 `--backend auto` picks LM Studio, starting its server (`lms server start`) if it
-is off, otherwise Apple FM. Triage stops if no decider is available rather than
+is off, otherwise Apple FM. Triage stops if no classifier is available rather than
 relying on the extraction model's own kind and "library material" answers;
-pass `--decider none` to triage anyway. Build the Apple bridge once with:
+pass `--classifier none` to triage anyway. Build the Apple bridge once with:
 
 ```sh
 cd tools/afm-bridge && swift build -c release
@@ -84,7 +84,7 @@ writes a commented template.
 
 ```toml
 backend = "auto"      # auto | lmstudio[:model] | apple
-decider = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url
+classifier = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url
 
 [lmstudio]
 autostart = true      # start LM Studio's server when it is off
@@ -96,7 +96,7 @@ unload_after = 600    # seconds idle before unloading a model the watcher loaded
 ```
 
 Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
-`PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`) > config file > `auto`.
+`PAPYRUS_CLASSIFIER`, `PAPYRUS_LMSTUDIO_AUTOSTART`) > config file > `auto`.
 
 ## Data
 
@@ -130,11 +130,11 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 | `PAPYRUS_VARIANT`, `PAPYRUS_ROOT` | the variant (default `release`; also `--variant`) and where homes live (default `~/.papyrus`): the home is `$PAPYRUS_ROOT/$PAPYRUS_VARIANT` |
 | `PAPYRUS_DB`, `PAPYRUS_HOME` | database location; `PAPYRUS_HOME` (default: the variant's home) also holds the store and config, and overrides the variant |
 | `PAPYRUS_LMSTUDIO_URL`, `PAPYRUS_LMSTUDIO_MODEL` | extraction via LM Studio |
-| `PAPYRUS_BACKEND`, `PAPYRUS_DECIDER` | override `backend` / `decider` from the config |
-| `PAPYRUS_DECIDE_MODEL` | decider model via LM Studio |
+| `PAPYRUS_BACKEND`, `PAPYRUS_CLASSIFIER` | override `backend` / `classifier` from the config |
+| `PAPYRUS_CLASSIFY_MODEL` | classifier model via LM Studio |
 | `PAPYRUS_LMSTUDIO_AUTOSTART` | `0` stops papyrus starting LM Studio's server |
 | `PAPYRUS_CONFIG` | config file (default `$PAPYRUS_HOME/config.toml`) |
-| `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible decider server |
+| `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible classifier server |
 | `PAPYRUS_AFM_BIN` | Apple bridge binary |
 | `OPENALEX_API_KEY`, `S2_API_KEY`, `PAPYRUS_MAILTO` | enrichment APIs |
 

@@ -10,7 +10,7 @@ from papyrus.triage import detect_ids, triage_file
 from papyrus.works import find_work, promote_file
 
 from test_core import _make_pdf
-from test_triage_promote import PAPER, FakeBackend, FakeDecider, _lib
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
 
 
 def test_cv_citing_arxiv_url_gets_no_arxiv_id(tmp_path):
@@ -25,11 +25,11 @@ def test_arxiv_margin_stamp_is_trusted(tmp_path):
 
 def test_rejecting_a_work_releases_its_ids(tmp_path):
     conn = _lib(tmp_path, "2411.00161.pdf", "Jane Doe CV")  # filename id -> trusted
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeDecider("paper", True))
+    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("paper", True))
     action, wid = promote_file(conn, 1)
     assert action == "created" and find_work(conn, {"arxiv": "2411.00161"}, None, None) == wid
     # re-triage says personal (held, below the purge threshold) -> promote rejects the work, frees the id
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeDecider("personal", False, p=0.7))
+    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("personal", False, p=0.7))
     assert promote_file(conn, 1)[0] == "rejected"
     assert conn.execute("SELECT count(*) FROM work_ids").fetchone()[0] == 0
     assert find_work(conn, {"arxiv": "2411.00161"}, None, None) is None
@@ -141,33 +141,33 @@ def _claims(conn, field):
                                        " superseded_at IS NULL", (field,))]
 
 
-def test_the_decider_settles_library_ness_not_the_extraction_model(tmp_path):
+def test_the_classifier_settles_library_ness_not_the_extraction_model(tmp_path):
     """triage-4. A small extraction model called slides and manuals 'not library material', which
-    dropped their topics and abstract though the decider kept them (2026-11-01, Qwen3.5-2B)."""
+    dropped their topics and abstract though the classifier kept them (2026-11-01, Qwen3.5-2B)."""
     conn = _lib(tmp_path, "slides.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = _SchemaBackend(dict(PAPER, is_library_material=False, kind="other"))
-    triage_file(conn, 1, be, FakeDecider("slides", True))
+    triage_file(conn, 1, be, FakeClassifier("slides", True))
     assert "kind" not in be.schemas[0]["properties"] and "is_library_material" not in be.schemas[0]["properties"]
-    assert _claims(conn, "topics") and _claims(conn, "abstract")  # kept: the decider says library
-    assert all(s.startswith("decide:") for s in _claims(conn, "kind") + _claims(conn, "is_library_material"))
+    assert _claims(conn, "topics") and _claims(conn, "abstract")  # kept: the classifier says library
+    assert all(s.startswith("classify:") for s in _claims(conn, "kind") + _claims(conn, "is_library_material"))
 
 
-def test_extraction_is_skipped_when_the_decider_is_sure_it_is_personal(tmp_path):
+def test_extraction_is_skipped_when_the_classifier_is_sure_it_is_personal(tmp_path):
     conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeDecider("personal", False, p=0.98))
+    r = triage_file(conn, 1, be, FakeClassifier("personal", False, p=0.98))
     assert r["extract_skipped"] and be.prompts == [] and _claims(conn, "title") == []
     assert promote_file(conn, 1) == ("purged", None)
 
 
 def test_held_files_get_a_title_but_no_topics_or_abstract(tmp_path):
     conn = _lib(tmp_path, "letter.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
-    triage_file(conn, 1, FakeBackend(PAPER), FakeDecider("personal", False, p=0.7))  # 0.5-0.9: held
+    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("personal", False, p=0.7))  # 0.5-0.9: held
     assert _claims(conn, "title") and not _claims(conn, "topics") and not _claims(conn, "abstract")
     assert promote_file(conn, 1)[0] == "held"
 
 
-def test_without_a_decider_the_extraction_model_still_judges(tmp_path):
+def test_without_a_classifier_the_extraction_model_still_judges(tmp_path):
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = _SchemaBackend(dict(PAPER, is_library_material=False))
     triage_file(conn, 1, be, None)

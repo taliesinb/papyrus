@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 import papyrus.llm as llm
-import papyrus.llm.decide as decide
+import papyrus.llm.classify as classify
 from papyrus import config
 from papyrus.cli import main
 from papyrus.llm import lmstudio
@@ -27,9 +27,9 @@ def test_path_defaults_to_library_home_and_can_be_overridden(tmp_path, monkeypat
 def test_precedence_cli_env_file_default(monkeypatch):
     assert config.setting("backend") == ("auto", "default")
     assert config.lmstudio_autostart() == (False, "PAPYRUS_LMSTUDIO_AUTOSTART")  # conftest turns it off
-    _write('backend = "lmstudio:qwen3.5-9b-mlx"\ndecider = "none"\n[lmstudio]\nautostart = false\n')
+    _write('backend = "lmstudio:qwen3.5-9b-mlx"\nclassifier = "none"\n[lmstudio]\nautostart = false\n')
     assert config.setting("backend") == ("lmstudio:qwen3.5-9b-mlx", str(config.path()))
-    assert config.decider() == "none"
+    assert config.classifier() == "none"
     monkeypatch.delenv("PAPYRUS_LMSTUDIO_AUTOSTART")
     assert config.lmstudio_autostart() == (False, str(config.path()))
     monkeypatch.setenv("PAPYRUS_BACKEND", "apple")
@@ -42,7 +42,7 @@ def test_template_parses_to_the_defaults(monkeypatch):
     p, written = config.init()
     assert written and p.exists()
     assert config.init() == (p, False)  # never overwrites
-    assert config.backend() == "auto" and config.decider() == "auto"
+    assert config.backend() == "auto" and config.classifier() == "auto"
     assert config.lmstudio_autostart() == (True, str(p))
 
 
@@ -91,24 +91,24 @@ def test_ensure_server_follows_config(monkeypatch):
     assert not lmstudio.ensure_server("http://localhost:1234/v1")
 
 
-# --- triage picks its models from the config and refuses to run without a decider ---------
+# --- triage picks its models from the config and refuses to run without a classifier ---------
 
-def _no_decider(spec):
+def _no_classifier(spec):
     raise BackendUnavailable("LM Studio not reachable")
 
 
-def test_triage_refuses_without_decider_unless_none(tmp_path, monkeypatch):
+def test_triage_refuses_without_classifier_unless_none(tmp_path, monkeypatch):
     _lib(tmp_path, "paper.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     specs = []
     monkeypatch.setattr(llm, "get_backend", lambda spec: specs.append(spec) or FakeBackend(PAPER))
-    monkeypatch.setattr(decide, "get_decider", _no_decider)
+    monkeypatch.setattr(classify, "get_classifier", _no_classifier)
     runner, db_arg = CliRunner(), ["--db", str(tmp_path / "t.sqlite")]
 
     r = runner.invoke(main, [*db_arg, "triage"])
-    assert r.exit_code == 1 and "no decider" in r.output and "--decider none" in r.output
+    assert r.exit_code == 1 and "no classifier" in r.output and "--classifier none" in r.output
     assert specs == ["auto"]
 
-    _write('backend = "lmstudio:qwen3.5-9b-mlx"\ndecider = "none"\n')
+    _write('backend = "lmstudio:qwen3.5-9b-mlx"\nclassifier = "none"\n')
     r = runner.invoke(main, [*db_arg, "triage"])
     assert r.exit_code == 0, r.output
     assert "triaging 1 files with fake:m" in r.output and specs[-1] == "lmstudio:qwen3.5-9b-mlx"
@@ -124,6 +124,23 @@ def test_config_command(tmp_path):
     assert "backend            auto" in r.output and "(default)" in r.output
     r = runner.invoke(main, [*db_arg, "config", "--init"])
     assert r.exit_code == 0 and "wrote" in r.output and config.path().exists()
-    _write("decider = 7\n")
+    _write("classifier = 7\n")
     r = runner.invoke(main, [*db_arg, "config"])
-    assert r.exit_code == 1 and "decider must be a non-empty string" in r.output
+    assert r.exit_code == 1 and "classifier must be a non-empty string" in r.output
+
+
+def test_the_old_decider_names_still_set_the_classifier(tmp_path, monkeypatch):
+    """The classifier was called the decider until 2026-11-01: `decider = …` in config.toml and
+    PAPYRUS_DECIDER keep working (the new names win)."""
+    from papyrus import config
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('decider = "none"\n')
+    monkeypatch.setenv("PAPYRUS_CONFIG", str(cfg))
+    monkeypatch.delenv("PAPYRUS_CLASSIFIER", raising=False)
+    monkeypatch.delenv("PAPYRUS_DECIDER", raising=False)
+    assert config.classifier() == "none"
+    monkeypatch.setenv("PAPYRUS_DECIDER", "lmstudio:x")
+    assert config.classifier() == "lmstudio:x"
+    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "lmstudio:y")
+    assert config.classifier() == "lmstudio:y"

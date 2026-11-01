@@ -4,7 +4,7 @@ Lives next to the database and the store, so each variant (`~/.papyrus/<variant>
 scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at another file. Every key is optional:
 
     backend = "auto"      # extraction model: auto | lmstudio[:model] | apple
-    decider = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url
+    classifier = "auto"      # auto | none | lmstudio[:model] | jev[:url] | openai:model@url
 
     [lmstudio]
     autostart = true      # run `lms server start` when LM Studio's server is off
@@ -27,7 +27,7 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     domains = []          # extra hosts counted as paper links
 
 Precedence for each setting: command-line option > environment variable
-(`PAPYRUS_BACKEND`, `PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`, `PAPYRUS_SCREEN`) > this file
+(`PAPYRUS_BACKEND`, `PAPYRUS_CLASSIFIER`, `PAPYRUS_LMSTUDIO_AUTOSTART`, `PAPYRUS_SCREEN`) > this file
 > default.
 """
 
@@ -43,17 +43,17 @@ from . import db
 
 TEMPLATE = '''\
 # papyrus configuration. Every key is optional; command-line options and the
-# PAPYRUS_BACKEND / PAPYRUS_DECIDER / PAPYRUS_LMSTUDIO_AUTOSTART environment
+# PAPYRUS_BACKEND / PAPYRUS_CLASSIFIER / PAPYRUS_LMSTUDIO_AUTOSTART environment
 # variables take precedence over this file.
 
 # Extraction model for `papyrus triage`: auto | lmstudio[:model] | apple
 # auto = LM Studio (started if needed, see below), else Apple Foundation Models.
 backend = "auto"
 
-# Decider for kind / library-vs-personal: auto | none | lmstudio[:model] | jev[:url] | openai:model@url
+# Classifier for kind / library-vs-personal: auto | none | lmstudio[:model] | jev[:url] | openai:model@url
 # auto = PAPYRUS_JEV_URL if set, else LM Studio. Triage refuses to run without a
-# decider unless this is "none".
-decider = "auto"
+# classifier unless this is "none".
+classifier = "auto"
 
 [lmstudio]
 # Start LM Studio's local server (`lms server start`) when it isn't running.
@@ -112,15 +112,21 @@ def _str(cfg: dict, key: str) -> str | None:
     return v.strip()
 
 
+LEGACY = {"classifier": ("decider",)}  # old names still read: key `decider`, PAPYRUS_DECIDER
+
+
 def setting(name: str, cli: str | None = None) -> tuple[str, str]:
-    """(value, where it came from) for 'backend' or 'decider'."""
+    """(value, where it came from) for 'backend' or 'classifier'."""
     if cli:
         return cli, "command line"
-    env = f"PAPYRUS_{name.upper()}"
-    if os.environ.get(env, "").strip():
-        return os.environ[env].strip(), env
-    if (v := _str(load(), name)) is not None:
-        return v, str(path())
+    names = [name, *LEGACY.get(name, ())]  # the classifier was called the decider until 2026-11-01
+    for n in names:
+        env = f"PAPYRUS_{n.upper()}"
+        if os.environ.get(env, "").strip():
+            return os.environ[env].strip(), env
+    for n in names:
+        if (v := _str(load(), n)) is not None:
+            return v, str(path())
     return "auto", "default"
 
 
@@ -128,8 +134,8 @@ def backend(cli: str | None = None) -> str:
     return setting("backend", cli)[0]
 
 
-def decider(cli: str | None = None) -> str:
-    return setting("decider", cli)[0]
+def classifier(cli: str | None = None) -> str:
+    return setting("classifier", cli)[0]
 
 
 def lmstudio_autostart() -> tuple[bool, str]:

@@ -16,7 +16,7 @@ from papyrus.scan import ScanOptions, scan
 from papyrus.triage import triage_file
 from papyrus.works import promote_all, promote_file
 
-from test_triage_promote import PAPER, FakeBackend, FakeDecider, _lib
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
 
 MARK = "Quuxperson"  # the employee's surname, which must not survive a purge
 SLIP = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip October {MARK}",
@@ -25,7 +25,7 @@ SLIP = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip O
 
 def _payslip(tmp_path, p=0.98):
     conn = _lib(tmp_path, "Payslip_2026-10.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1234.00")
-    triage_file(conn, 1, FakeBackend(SLIP), FakeDecider("personal", False, p=p))
+    triage_file(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=p))
     return conn
 
 
@@ -47,7 +47,7 @@ def test_sure_personal_file_is_purged_to_a_tombstone(tmp_path, monkeypatch):
 
     claims = db.current_assertions(conn, "file", 1)
     assert list(claims) == ["purged"]
-    assert claims["purged"][0]["value"] == {"by": "decide:fakedec:d", "p_personal": 0.98, "prompt_version": None}
+    assert claims["purged"][0]["value"] == {"by": "classify:fakedec:d", "p_personal": 0.98, "prompt_version": None}
     row = conn.execute("SELECT * FROM files WHERE id=1").fetchone()
     assert (row["sha256"], row["size"]) == (f["sha256"], f["size"]) and row["purged_at"]
     assert all(row[k] is None for k in ["page_count", "pdf_title", "pdf_producer", "stored_path"])
@@ -109,10 +109,10 @@ def test_unsure_personal_file_is_held_and_purge_command(tmp_path, monkeypatch):
 def test_purging_a_works_only_file_strips_the_work(tmp_path):
     conn = _lib(tmp_path, "2411.00161.pdf", f"Zebedee {MARK} CV")  # filename id -> trusted
     triage_file(conn, 1, FakeBackend(dict(PAPER, title=f"{MARK} CV", authors=[f"Zebedee {MARK}"])),
-                FakeDecider("paper", True))
+                FakeClassifier("paper", True))
     action, wid = promote_file(conn, 1)
     assert action == "created"
-    triage_file(conn, 1, FakeBackend(SLIP), FakeDecider("personal", False, p=0.95))
+    triage_file(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=0.95))
     assert promote_file(conn, 1) == ("purged", None)
     w = conn.execute("SELECT * FROM works WHERE id=?", (wid,)).fetchone()
     assert w["status"] == "rejected" and w["title"] is None and w["abstract"] is None
@@ -127,7 +127,7 @@ def test_confirmed_work_and_user_claim_are_never_purged(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPYRUS_DB", str(tmp_path / "t.sqlite"))
     r = CliRunner().invoke(main, ["keep", "1"])  # the user says it's library material
     assert r.exit_code == 0 and "created" in r.output, r.output
-    triage_file(conn, 1, FakeBackend(SLIP), FakeDecider("personal", False, p=1.0))  # the decider disagrees
+    triage_file(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=1.0))  # the classifier disagrees
     assert purge.verdict(conn, 1) is None and promote_file(conn, 1)[0] == "already_linked"
     conn.execute("UPDATE works SET status='confirmed'")
     conn.execute("DELETE FROM assertions WHERE source='user'")
@@ -147,8 +147,8 @@ def test_keep_path_brings_back_a_purged_file(tmp_path, monkeypatch):
     assert f["purged_at"] is None and f["triage_status"] == "pending" and store.is_stored(f["stored_path"], f["size"])
     assert conn.execute("SELECT count(*) FROM file_pages WHERE file_id=1").fetchone()[0] == 1
     assert conn.execute("SELECT locator FROM contexts").fetchone()[0] == str(path.resolve())
-    triage_file(conn, 1, FakeBackend(SLIP), FakeDecider("personal", False, p=1.0))
-    assert promote_file(conn, 1)[0] == "created"  # the user's claim outranks the decider
+    triage_file(conn, 1, FakeBackend(SLIP), FakeClassifier("personal", False, p=1.0))
+    assert promote_file(conn, 1)[0] == "created"  # the user's claim outranks the classifier
 
 
 def test_mcp_shows_only_live_works_files(tmp_path, monkeypatch):
@@ -162,8 +162,8 @@ def test_mcp_shows_only_live_works_files(tmp_path, monkeypatch):
     scan(conn, [d], ScanOptions())
     ids = {r[0]: r[1] for r in conn.execute("SELECT c.title, r.file_id FROM contexts c JOIN context_refs r"
                                             " ON r.context_id=c.id")}
-    triage_file(conn, ids["paper.pdf"], FakeBackend(PAPER), FakeDecider("paper", True))
-    triage_file(conn, ids["slip.pdf"], FakeBackend(SLIP), FakeDecider("personal", False, p=0.7))
+    triage_file(conn, ids["paper.pdf"], FakeBackend(PAPER), FakeClassifier("paper", True))
+    triage_file(conn, ids["slip.pdf"], FakeBackend(SLIP), FakeClassifier("personal", False, p=0.7))
     assert promote_all(conn) == {"created": 1, "held": 1}
     assert mcp_server.get_file(ids["paper.pdf"])["works"]
     with pytest.raises(ValueError):

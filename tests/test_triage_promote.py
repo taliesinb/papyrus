@@ -25,7 +25,7 @@ class FakeBackend:
         return dict(self.out)
 
 
-class FakeDecider:
+class FakeClassifier:
     def __init__(self, kind, lib, p=0.9):
         self.kind, self.lib, self.p = kind, lib, p
 
@@ -35,7 +35,7 @@ class FakeDecider:
     def available(self):
         return True
 
-    def decide(self, state, questions):
+    def classify(self, state, questions):
         return {"kind": Answer("kind", {self.kind: self.p, "other": round(1 - self.p, 6)}),
                 "is_library_material": Answer("is_library_material",
                                               {"yes": 0.8 if self.lib else 0.2, "no": 0.2 if self.lib else 0.8})}
@@ -60,11 +60,11 @@ def test_triage_and_promote_paper(tmp_path):
     conn = _lib(tmp_path, "2412.06464v3.pdf",
                 "A Study of Things. Jane Doe. arXiv:2412.06464v3 [cs.LG] Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeDecider("paper", True))
+    r = triage_file(conn, 1, be, FakeClassifier("paper", True))
     assert "Found at:" in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
     assert r["ids"]["arxiv"] == "2412.06464" and r["ids"]["arxiv_version"] == "v3"
     claims = db.current_assertions(conn, "file", 1)
-    assert {c["source"] for c in claims["kind"]} == {"decide:fakedec:d"}  # triage-4: kind is the decider's
+    assert {c["source"] for c in claims["kind"]} == {"classify:fakedec:d"}  # triage-4: kind is the classifier's
     assert claims["abstract"][0]["value"] == "We study things in great detail."
     assert claims["abstract"][0]["source"] == "llm:fake:m#anchors"
     action, wid = promote_file(conn, 1)
@@ -81,16 +81,16 @@ def test_personal_document_not_promoted_and_abstract_dropped(tmp_path):
     conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
     out = dict(PAPER, kind="personal", is_library_material=False, abstract_start="Payslip October",
                abstract_end="Net pay 1234.00", title="Payslip")
-    triage_file(conn, 1, FakeBackend(out), FakeDecider("personal", False))
+    triage_file(conn, 1, FakeBackend(out), FakeClassifier("personal", False))
     claims = db.current_assertions(conn, "file", 1)
     assert "abstract" not in claims and "topics" not in claims
     assert promote_file(conn, 1) == ("purged", None)  # P(personal) = 0.9: sure enough to erase
 
 
-def test_decider_kind_overrides_biased_yesno(tmp_path):
-    """Decider says kind=personal (p=.7) but its yes/no says library: kind wins (held: not
+def test_classifyr_kind_overrides_biased_yesno(tmp_path):
+    """Classifier says kind=personal (p=.7) but its yes/no says library: kind wins (held: not
     promoted, not sure enough to purge)."""
     conn = _lib(tmp_path, "exam.pdf", "Grade 9 June Paper 1. Answer all questions.")
-    dec = FakeDecider("personal", True, p=0.7)
+    dec = FakeClassifier("personal", True, p=0.7)
     triage_file(conn, 1, FakeBackend(dict(PAPER, title="Grade 9 Paper")), dec)
     assert promote_file(conn, 1) == ("held", None)

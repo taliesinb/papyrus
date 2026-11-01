@@ -1,7 +1,7 @@
 """Model backends. Specs:
 
   extraction backends:  'lmstudio' | 'lmstudio:<model>' | 'apple' | 'auto'
-  deciders:             see papyrus.llm.decide.get_decider ('jev:<url>', 'lmstudio:<model>', None=auto)
+  classifiers:             see papyrus.llm.classify.get_classifier ('jev:<url>', 'lmstudio:<model>', None=auto)
 
 'auto' prefers LM Studio (starting its server if it is off, see
 `lmstudio.ensure_server`) when it serves the model, then Apple's on-device

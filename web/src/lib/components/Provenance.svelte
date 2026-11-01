@@ -40,7 +40,7 @@
 
 	function sourceClass(s: string): string {
 		if (s.startsWith('llm:') || s === 'triage') return 'llm';
-		if (s.startsWith('decide:')) return 'decide';
+		if (s.startsWith('classify:')) return 'classify';
 		if (s.startsWith('api:')) return 'api';
 		if (s.startsWith('heuristic:') || s.startsWith('pdf:')) return 'heur';
 		if (s === 'user') return 'user';
@@ -63,7 +63,7 @@
 					{@const p = pretty(a.value)}
 					<li class:superseded={a.superseded}>
 						<div class="src">
-							<span class="source {sourceClass(a.source)}" title={a.source}>{a.source.replace(/^(llm|decide):lmstudio:/, '$1:')}</span>
+							<span class="source {sourceClass(a.source)}" title={a.source}>{a.source.replace(/^(llm|classify):lmstudio:/, '$1:')}</span>
 							{#if a.subjectType === 'file'}<span class="subj" title="claim about file #{a.subjectId}">file</span>{/if}
 							{#if a.confidence != null && a.confidence < 1}<span class="conf">{(a.confidence * 100).toFixed(0)}%</span>{/if}
 							<span class="when">{formatDate(a.createdAt)}</span>
@@ -137,7 +137,7 @@
 	.source.llm {
 		color: var(--accent-2);
 	}
-	.source.decide {
+	.source.classify {
 		color: #f39ac6;
 	}
 	.source.api {

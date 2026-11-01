@@ -2,7 +2,7 @@ from click.testing import CliRunner
 
 import papyrus.enrich.pipeline as pipeline
 import papyrus.llm as llm
-import papyrus.llm.decide as decide
+import papyrus.llm.classify as classify
 from papyrus.cli import main
 from papyrus.llm.base import BackendUnavailable
 
@@ -12,7 +12,7 @@ from test_triage_promote import PAPER, FakeBackend, _lib
 def test_process_runs_triage_promote_enrich_and_is_idempotent(tmp_path, monkeypatch):
     conn = _lib(tmp_path, "paper.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(PAPER))
-    monkeypatch.setenv("PAPYRUS_DECIDER", "none")
+    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")
     enriched = []
 
     def fake_enrich(conn, wid, run_id=None):
@@ -39,9 +39,9 @@ def test_process_stops_when_triage_cannot_run(tmp_path, monkeypatch):
     _lib(tmp_path, "paper.pdf", "A Study of Things.")
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(PAPER))
 
-    def no_decider(spec):
+    def no_classifier(spec):
         raise BackendUnavailable("LM Studio not reachable")
 
-    monkeypatch.setattr(decide, "get_decider", no_decider)
+    monkeypatch.setattr(classify, "get_classifier", no_classifier)
     r = CliRunner().invoke(main, ["--db", str(tmp_path / "t.sqlite"), "process"])
-    assert r.exit_code == 1 and "no decider" in r.output and "== promote" not in r.output
+    assert r.exit_code == 1 and "no classifier" in r.output and "== promote" not in r.output

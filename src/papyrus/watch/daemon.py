@@ -74,13 +74,13 @@ def default_log(msg: str) -> None:
 
 
 def resolve_models() -> tuple[Any, Any]:
-    """The triage backend and decider from the config, as `papyrus triage` picks them. Raises
-    Backoff when there is none: triage never runs without a decider unless it is `none`."""
+    """The triage backend and classifier from the config, as `papyrus triage` picks them. Raises
+    Backoff when there is none: triage never runs without a classifier unless it is `none`."""
     from .. import config
     from ..llm import get_backend
-    from ..llm.decide import get_decider
+    from ..llm.classify import get_classifier
 
-    backend_spec, decider_spec = config.backend(), config.decider()
+    backend_spec, classifier_spec = config.backend(), config.classifier()
     try:
         be = get_backend(backend_spec)
         if not be.available():
@@ -88,13 +88,13 @@ def resolve_models() -> tuple[Any, Any]:
     except BackendUnavailable as e:
         raise Backoff(LMSTUDIO_UNAVAILABLE, "no extraction model", delay=LMSTUDIO_DELAY) from e
     dec = None
-    if decider_spec != "none":
+    if classifier_spec != "none":
         try:
-            dec = get_decider(None if decider_spec == "auto" else decider_spec)
+            dec = get_classifier(None if classifier_spec == "auto" else classifier_spec)
             if not dec.available():
-                raise BackendUnavailable(f"decider {dec.info().tag} is not available")
+                raise BackendUnavailable(f"classifier {dec.info().tag} is not available")
         except BackendUnavailable as e:
-            raise Backoff(LMSTUDIO_UNAVAILABLE, "no decider (triage needs one unless decider = \"none\")",
+            raise Backoff(LMSTUDIO_UNAVAILABLE, "no classifier (triage needs one unless classifier = \"none\")",
                           delay=LMSTUDIO_DELAY) from e
     return be, dec
 
@@ -575,7 +575,7 @@ class Watch:
                 self.last_autostart = self.clock()
             be, dec = self.resolve_models()
             self.models = (self._cached(be, inference.cached_backend),
-                           self._cached(dec, inference.cached_decider) if dec is not None else None)
+                           self._cached(dec, inference.cached_classifier) if dec is not None else None)
             try:
                 self.screen = self.resolve_screen()
             except Exception as e:  # noqa: BLE001  the screen only saves work: go on without it
@@ -588,7 +588,7 @@ class Watch:
             tag = be.info().tag
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
             self.log("triage with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
-                     + tag + (f" + {dec.info().tag}" if dec is not None else " (no decider)"))
+                     + tag + (f" + {dec.info().tag}" if dec is not None else " (no classifier)"))
         return self.models
 
     def _cached(self, m: Any, wrap: Callable) -> Any:

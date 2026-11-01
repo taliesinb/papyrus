@@ -1,7 +1,7 @@
-"""LLM triage: from filename + path + PDF info + first pages, decide what a document is.
+"""LLM triage: from filename + path + PDF info + first pages, classify what a document is.
 
 Produces assertions on the file (never overwrites anything):
-  kind, is_library_material      - Decider probabilities (Jev-style) if available,
+  kind, is_library_material      - Classifier probabilities (Jev-style) if available,
                                     else from the extraction call
   title, authors, year, venue,
   abstract (verbatim), summary,
@@ -19,14 +19,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import db
-from .llm.base import Backend, Decider, Question
+from .llm.base import Backend, Classifier, Question
 from .pdf import TRIAGE_PAGES
 from .textspan import best_abstract
 
 # triage-1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
 # triage-2: model gives start/end anchors; the exact span is cut from the page text.
 # triage-3: the state gives the file's size, and caps each PDF metadata field at META_CHARS.
-# triage-4: with a decider, it runs first and settles kind and library-ness: extraction no longer
+# triage-4: with a classifier, it runs first and settles kind and library-ness: extraction no longer
 #           asks for `kind` / `is_library_material` (EXTRACT_SCHEMA_DECIDED), keeps topics and the
 #           abstract only if P(kind=personal) < 0.5, and is skipped when P(personal) >= the purge
 #           threshold (promote purges those files anyway).
@@ -95,14 +95,14 @@ EXTRACT_SCHEMA: dict[str, Any] = {
                  "abstract_end", "summary", "topics", "language"],
 }
 
-# With a decider, kind and library-ness are its questions; the extraction model isn't asked them.
+# With a classifier, kind and library-ness are its questions; the extraction model isn't asked them.
 EXTRACT_SCHEMA_DECIDED: dict[str, Any] = {
     **EXTRACT_SCHEMA,
     "properties": {k: v for k, v in EXTRACT_SCHEMA["properties"].items() if k not in ("kind", "is_library_material")},
     "required": [k for k in EXTRACT_SCHEMA["required"] if k not in ("kind", "is_library_material")],
 }
 
-DECISIONS = [
+CLASSIFICATIONS = [
     Question("kind", "choice", "What kind of document is this?", KINDS),
     Question("is_library_material", "yesno",
              "Is this something to keep in a personal research/reading library (a paper, book, notes, "
@@ -227,10 +227,10 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     return {k: v for k, v in found.items() if v}
 
 
-def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decider: Decider | None,
+def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, classifier: Classifier | None,
                 run_id: int | None = None, max_chars: int = STATE_CHARS, screen: Any = None) -> dict[str, Any]:
     """Ask the models about one file and record their claims. With cached models
-    (inference.cached_backend / cached_decider), each claim carries the call it came from, and
+    (inference.cached_backend / cached_classifier), each claim carries the call it came from, and
     the calls carry the file's sha256, so a purge can find them.
 
     With a `screen` (screen.py), a file it sets aside as personal paperwork stops there:
@@ -252,17 +252,17 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
     state = build_state(conn, file_id, max_chars=max_chars)
     sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
     btag = "llm:" + backend.info().tag
-    # The decider first (outside the write transaction: model calls can take seconds). With one,
+    # The classifier first (outside the write transaction: model calls can take seconds). With one,
     # kind and library-ness are its answers: P(kind=personal), as works.is_library reads it.
     answers, dcalls = {}, {}
-    if decider is not None:
+    if classifier is not None:
         t1 = time.monotonic()
         with inference.subject(sha):
-            answers = decider.decide(state, DECISIONS)
-        dcalls = inference.calls_of(decider)
-        result["decide_s"] = round(time.monotonic() - t1, 2)
+            answers = classifier.classify(state, CLASSIFICATIONS)
+        dcalls = inference.calls_of(classifier)
+        result["classify_s"] = round(time.monotonic() - t1, 2)
     p_personal = answers["kind"].probabilities.get("personal", 0.0) if "kind" in answers else None
-    user = user_says(conn, file_id)  # the user's own judgement outranks the decider (`papyrus keep`)
+    user = user_says(conn, file_id)  # the user's own judgement outranks the classifier (`papyrus keep`)
     extracted: dict[str, Any] = {"abstract": None}
     abstract_source, ecall = None, None
     if user is not True and p_personal is not None and p_personal >= PURGE_THRESHOLD:
@@ -305,7 +305,7 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
             db.assert_(conn, "file", file_id, "abstract", extracted["abstract"], source=abstract_source,
                        run_id=run_id, call_id=ecall)
         if answers:
-            dtag = "decide:" + decider.info().tag
+            dtag = "classify:" + classifier.info().tag
             for key, ans in answers.items():
                 value = ans.best if key == "kind" else ans.best == "yes"
                 db.assert_(conn, "file", file_id, key, value, source=dtag, confidence=ans.confidence,

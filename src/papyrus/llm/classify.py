@@ -1,19 +1,19 @@
-"""Jev / "System One" style deciders: typed questions in, probabilities out.
+"""Jev / "System One" style classifiers: typed questions in, probabilities out.
 
-Two implementations of `papyrus.llm.base.Decider`:
+Two implementations of `papyrus.llm.base.Classifier`:
 
-* `JevHTTPDecider` speaks TypeSafe's ``POST /v1/systemone`` wire format
+* `JevHTTPClassifier` speaks TypeSafe's ``POST /v1/systemone`` wire format
   (https://docs.typesafe.ai/api/system-one). It works against the hosted Jev
-  API and against open servers that copy the format (Lichen, OpenJev, decider,
+  API and against open servers that copy the format (Lichen, OpenJev, classifier,
   jevk5-serve/Plumb, Ollama >= 0.35 ...).
 
-* `OpenAICompatDecider` emulates the decision API on an OpenAI-compatible
+* `OpenAICompatClassifier` emulates the decision API on an OpenAI-compatible
   ``/v1/chat/completions`` endpoint (LM Studio by default). Every option gets a
   one-token label (A, B, C ... for choice; Yes/No for yes/no; 0..9 for score
   levels); we ask for exactly one label and read the probability of each label
   from ``top_logprobs`` of the first answer token, summed over spelling
   variants ("B", " B") and renormalised over the options. That is the same
-  readout Lichen, JevK5/SemIf and decider's chat layout use. If the server
+  readout Lichen, JevK5/SemIf and classifier's chat layout use. If the server
   returns no logprobs, it falls back to k-sample voting (``method = "vote"``).
 
   Thinking is disabled by pre-filling the assistant turn with an empty
@@ -25,9 +25,9 @@ Two implementations of `papyrus.llm.base.Decider`:
   Every question about one state is a separate request that starts with the
   same system prompt and STATE, so the server can reuse that prefix. On LM
   Studio's MLX engine that reuse needs a *prime* for hybrid models such as
-  Qwen3.5 (see `OpenAICompatDecider._prime`).
+  Qwen3.5 (see `OpenAICompatClassifier._prime`).
 
-`get_decider(spec)` builds one from a short spec string.
+`get_classifier(spec)` builds one from a short spec string.
 """
 
 from __future__ import annotations
@@ -42,20 +42,20 @@ from typing import Any
 
 import httpx
 
-from papyrus.llm.base import Answer, BackendUnavailable, Decider, ModelInfo, Question
+from papyrus.llm.base import Answer, BackendUnavailable, Classifier, ModelInfo, Question
 
 __all__ = [
-    "JevHTTPDecider",
-    "OpenAICompatDecider",
-    "get_decider",
+    "JevHTTPClassifier",
+    "OpenAICompatClassifier",
+    "get_classifier",
     "DEFAULT_LMSTUDIO_URL",
-    "DEFAULT_DECIDE_MODELS",
+    "DEFAULT_CLASSIFY_MODELS",
 ]
 
 DEFAULT_LMSTUDIO_URL = "http://localhost:1234/v1"
 TYPESAFE_URL = "https://api.typesafe.ai"
 # Preference order for auto-selection on LM Studio (small + fast first).
-DEFAULT_DECIDE_MODELS = ("qwen3.5-4b-mlx", "qwen3.5-9b-mlx")
+DEFAULT_CLASSIFY_MODELS = ("qwen3.5-4b-mlx", "qwen3.5-9b-mlx")
 QWEN_NO_THINK_PREFILL = "<think>\n\n</think>\n\n"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # Every rendered question (`_render`) starts with this, so it belongs to the prefix that all
@@ -85,7 +85,7 @@ def _score_levels(q: Question) -> list[str]:
 # --------------------------------------------------------------------------------------
 
 
-class JevHTTPDecider:
+class JevHTTPClassifier:
     """Client for a ``/v1/systemone`` endpoint (TypeSafe Jev or a compatible server).
 
     Mapping between papyrus `Question` and the wire format:
@@ -203,7 +203,7 @@ class JevHTTPDecider:
             return Answer(q.key, {"score": min(1.0, max(0.0, expected / max(1, n - 1)))})
         raise ValueError(f"cannot parse answer for {q.key!r}: {a!r}")
 
-    def decide(self, state: str, questions: list[Question]) -> dict[str, Answer]:
+    def classify(self, state: str, questions: list[Question]) -> dict[str, Answer]:
         if not questions:
             return {}
         body = self.request_body(state, questions)
@@ -308,7 +308,7 @@ def _norm_token(tok: str) -> str:
     return t
 
 
-class OpenAICompatDecider:
+class OpenAICompatClassifier:
     """Decision API emulated over ``/v1/chat/completions`` with token logprobs.
 
     Parameters
@@ -335,7 +335,7 @@ class OpenAICompatDecider:
     def __init__(
         self,
         base_url: str = DEFAULT_LMSTUDIO_URL,
-        model: str = DEFAULT_DECIDE_MODELS[0],
+        model: str = DEFAULT_CLASSIFY_MODELS[0],
         *,
         method: str = "auto",
         permutations: int = 1,
@@ -372,12 +372,12 @@ class OpenAICompatDecider:
         self._context: int | None = None
         self.calls = 0  # chat requests made (for latency accounting)
         self.last_coverage: dict[str, float] = {}  # question key -> label mass seen in top_logprobs
-        self.last_usage: dict[str, int] | None = None  # tokens of the last decide() (inference cache)
+        self.last_usage: dict[str, int] | None = None  # tokens of the last classify() (inference cache)
         self.last_params: dict[str, Any] | None = None
         self._seed = 0
         self._configured_method = method
 
-    # -- Decider protocol -------------------------------------------------------------
+    # -- Classifier protocol -------------------------------------------------------------
     def info(self) -> ModelInfo:
         model = self.model if self.method == "logprobs" else f"{self.model}#{self.method}"
         return ModelInfo(backend=self.backend, model=model, context_tokens=self._context_tokens())
@@ -391,7 +391,7 @@ class OpenAICompatDecider:
             return False
         return self.model in ids
 
-    def decide(self, state: str, questions: list[Question], seed: int = 0) -> dict[str, Answer]:
+    def classify(self, state: str, questions: list[Question], seed: int = 0) -> dict[str, Answer]:
         """`seed` goes to every request (voting: seed * vote_samples + i). LM Studio's MLX engine
         ignores it; with logprobs at temperature 0 it doesn't matter."""
         out: dict[str, Answer] = {}
@@ -409,7 +409,7 @@ class OpenAICompatDecider:
     def cache_params(self) -> dict[str, Any]:
         """What shapes the answer besides the question and the state. (Not `prime_prefix`:
         the prime changes which prefix the server recomputes, not the prompt of a question.)"""
-        return {"impl": "openai-decide-1", "method": self._configured_method, "permutations": self.permutations,
+        return {"impl": "openai-classify-1", "method": self._configured_method, "permutations": self.permutations,
                 "calibration_temperature": self.temperature, "assistant_prefill": self.assistant_prefill,
                 "system_prompt": self.system_prompt, "vote_samples": self.vote_samples,
                 "top_logprobs": self.top_logprobs}
@@ -472,7 +472,7 @@ class OpenAICompatDecider:
         the shared prefix, so its checkpoint falls at the last 256-boundary inside it and
         every question restores all but < 256 + its own tokens. It costs one generated
         token. Sent once per new state, since the inference cache asks one question per
-        `decide` call.
+        `classify` call.
         """
         if not self.prime_prefix or state == self._primed:
             return False
@@ -617,26 +617,26 @@ def _pick_model(ids: Iterable[str], preferred: Iterable[str]) -> str | None:
     return None
 
 
-def get_decider(
+def get_classifier(
     spec: str | None = None,
     *,
     env: dict[str, str] | None = None,
     probe: Callable[[str], list[str] | None] = _lmstudio_models,
     start: Callable[[str], bool] | None = None,
-) -> Decider:
-    """Build a decider from a spec.
+) -> Classifier:
+    """Build a classifier from a spec.
 
     * ``"jev"`` -> TypeSafe's hosted API (key from ``PAPYRUS_JEV_API_KEY`` or
       ``TYPESAFE_API_KEY``).
     * ``"jev:http://host:port"`` -> any ``/v1/systemone`` server; model from
       ``PAPYRUS_JEV_MODEL`` (default ``jev-latest``).
-    * ``"lmstudio"`` / ``"lmstudio:MODEL"`` -> `OpenAICompatDecider` on
+    * ``"lmstudio"`` / ``"lmstudio:MODEL"`` -> `OpenAICompatClassifier` on
       ``PAPYRUS_LMSTUDIO_URL`` (default http://localhost:1234/v1).
-    * ``"openai:MODEL@http://host:port/v1"`` -> `OpenAICompatDecider` on any
+    * ``"openai:MODEL@http://host:port/v1"`` -> `OpenAICompatClassifier` on any
       OpenAI-compatible server.
-    * ``None`` -> ``PAPYRUS_DECIDER`` if set; else ``PAPYRUS_JEV_URL`` if set;
-      else LM Studio if reachable, with ``PAPYRUS_DECIDE_MODEL`` or the first of
-      `DEFAULT_DECIDE_MODELS` it serves. Raises `BackendUnavailable` otherwise.
+    * ``None`` -> ``PAPYRUS_CLASSIFIER`` if set; else ``PAPYRUS_JEV_URL`` if set;
+      else LM Studio if reachable, with ``PAPYRUS_CLASSIFY_MODEL`` or the first of
+      `DEFAULT_CLASSIFY_MODELS` it serves. Raises `BackendUnavailable` otherwise.
 
     For LM Studio, `start(url)` is called to start a server that is off (default
     `lmstudio.ensure_server`, which honours the `lmstudio.autostart` setting).
@@ -649,32 +649,32 @@ def get_decider(
     lm_url = env.get("PAPYRUS_LMSTUDIO_URL", DEFAULT_LMSTUDIO_URL)
 
     if spec is None:
-        spec = env.get("PAPYRUS_DECIDER") or None
+        spec = env.get("PAPYRUS_CLASSIFIER") or None
     if spec is None:
         if env.get("PAPYRUS_JEV_URL"):
-            return JevHTTPDecider(env["PAPYRUS_JEV_URL"], api_key=jev_key, model=jev_model)
+            return JevHTTPClassifier(env["PAPYRUS_JEV_URL"], api_key=jev_key, model=jev_model)
         ids = probe(lm_url)
         if ids is None and start(lm_url):
             ids = probe(lm_url)
         if ids is None:
             raise BackendUnavailable(f"PAPYRUS_JEV_URL unset and LM Studio not reachable at {lm_url}")
-        wanted = [env["PAPYRUS_DECIDE_MODEL"]] if env.get("PAPYRUS_DECIDE_MODEL") else []
-        model = _pick_model(ids, [*wanted, *DEFAULT_DECIDE_MODELS])
+        wanted = [env["PAPYRUS_CLASSIFY_MODEL"]] if env.get("PAPYRUS_CLASSIFY_MODEL") else []
+        model = _pick_model(ids, [*wanted, *DEFAULT_CLASSIFY_MODELS])
         if model is None:
-            raise BackendUnavailable(f"LM Studio at {lm_url} serves none of {[*wanted, *DEFAULT_DECIDE_MODELS]}")
-        return OpenAICompatDecider(lm_url, model)
+            raise BackendUnavailable(f"LM Studio at {lm_url} serves none of {[*wanted, *DEFAULT_CLASSIFY_MODELS]}")
+        return OpenAICompatClassifier(lm_url, model)
 
     kind, _, rest = spec.partition(":")
     kind = kind.strip().lower()
     if kind == "jev":
-        return JevHTTPDecider(rest or env.get("PAPYRUS_JEV_URL") or TYPESAFE_URL, api_key=jev_key, model=jev_model)
+        return JevHTTPClassifier(rest or env.get("PAPYRUS_JEV_URL") or TYPESAFE_URL, api_key=jev_key, model=jev_model)
     if kind == "lmstudio":
-        model = rest or env.get("PAPYRUS_DECIDE_MODEL") or DEFAULT_DECIDE_MODELS[0]
+        model = rest or env.get("PAPYRUS_CLASSIFY_MODEL") or DEFAULT_CLASSIFY_MODELS[0]
         start(lm_url)
-        return OpenAICompatDecider(lm_url, model)
+        return OpenAICompatClassifier(lm_url, model)
     if kind in ("openai", "openai-compat"):
         model, sep, url = rest.partition("@")
         if not sep or not model:
             raise ValueError("openai spec must look like 'openai:MODEL@http://host:port/v1'")
-        return OpenAICompatDecider(url, model, backend_name="openai", api_key=env.get("PAPYRUS_OPENAI_API_KEY"))
-    raise ValueError(f"unknown decider spec {spec!r} (expected jev[:url], lmstudio[:model], openai:model@url)")
+        return OpenAICompatClassifier(url, model, backend_name="openai", api_key=env.get("PAPYRUS_OPENAI_API_KEY"))
+    raise ValueError(f"unknown classifier spec {spec!r} (expected jev[:url], lmstudio[:model], openai:model@url)")

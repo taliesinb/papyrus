@@ -37,9 +37,9 @@ CREATE TABLE IF NOT EXISTS models (
 -- temperature, max_tokens, seed, and the backend's own settings (cache_params()).
 CREATE TABLE IF NOT EXISTS queries (
     id            TEXT PRIMARY KEY,
-    kind          TEXT NOT NULL,        -- extract | decide
-    instructions  TEXT NOT NULL,        -- extract: the system instructions; decide: the question
-    output_schema TEXT NOT NULL,        -- JSON: extract: the JSON Schema; decide: {key, type, criteria}
+    kind          TEXT NOT NULL,        -- extract | classify
+    instructions  TEXT NOT NULL,        -- extract: the system instructions; classify: the question
+    output_schema TEXT NOT NULL,        -- JSON: extract: the JSON Schema; classify: {key, type, criteria}
     examples      TEXT,                 -- JSON, when the question carries examples
     params        TEXT NOT NULL,        -- JSON
     first_seen_at TEXT NOT NULL

@@ -1,6 +1,6 @@
 """The screen: a fast first stage of triage that sets obvious personal paperwork aside.
 
-Triage asks a 4B language model about every new file (~1 s for the decider alone, 12-30 s with
+Triage asks a 4B language model about every new file (~1 s for the classifier alone, 12-30 s with
 extraction). The screen embeds what it sees of a file first, with a small embedding model
 (`llm/embed.py`, nomic-embed-text v1.5, ~30 ms), and scores it with a logistic regression:
 
@@ -12,7 +12,7 @@ extraction). The screen embeds what it sees of a file first, with a small embedd
 
 When p >= the threshold (default: the weights' own, 0.9), triage stops there: the file gets a
 `screen` claim ({p_personal, threshold, rejected: true}, source `screen:<backend>:<model>`), no
-extraction and no decider, and promote *holds* it (no work, never served, its first pages kept
+extraction and no classifier, and promote *holds* it (no work, never served, its first pages kept
 for review: `papyrus purge --dry-run` lists it, `purge ID` erases it, `keep ID` sends it through
 full triage). It never purges on its own. Below the threshold triage goes on as before, and the
 claim (rejected: false) is kept for evaluation.

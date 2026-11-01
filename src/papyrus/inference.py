@@ -8,19 +8,19 @@ texts are files beside it, named by their hash (`inference/inputs/<hash>.txt`,
 be deleted whenever (`papyrus inference prune`), a repeated question is answered from the cache,
 and the timings accumulate into estimates of what the next call will cost.
 
-Use: wrap a Backend, Decider or Embedder (`cached_backend`, `cached_decider`, `cached_embedder`).
+Use: wrap a Backend, Classifier or Embedder (`cached_backend`, `cached_classifier`, `cached_embedder`).
 The wrapper implements the
 same contract (llm/base.py) and adds:
 
 * **the cache**: (model, query, input) answered by the newest successful call whose output file
-  still exists (`fresh=True` asks the model anyway). A decider is cached per question, so a new
+  still exists (`fresh=True` asks the model anyway). A classifier is cached per question, so a new
   question reuses the answers to the old ones;
 * **a seed** (default 0), part of the query: another seed is another answer. It is passed to
   backends that take one; whether the model honours it is `models.seed_honoured` (LM Studio's
   MLX engine does not: same seed, different answers, measured 2026-11-01);
 * **`before_call`**: run only on a miss, just before the model is asked (`papyrus watch` checks
   memory pressure and LM Studio there, so a cache hit costs neither);
-* **the call id** of the answer, as `last_call` (backend) / `last_calls[key]` (decider), which
+* **the call id** of the answer, as `last_call` (backend) / `last_calls[key]` (classifier), which
   triage stores in `assertions.call_id`; on a hit, it is the original call's id;
 * **the subject**: the sha256 of the document the call is about, set with `with subject(sha):`.
   It is what `purge` follows to delete every input and output file about a document.
@@ -28,7 +28,7 @@ same contract (llm/base.py) and adds:
 Model identity is {backend, model, build}: not the endpoint. The build comes from the backend's
 `model_build()` (LM Studio: quantization, arch, format; Apple: the OS release). The query is
 {kind, instructions, output_schema, examples, params}, params including the backend's own
-`cache_params()` (its prompt layout version, decider method, guardrails…), so a change to any of
+`cache_params()` (its prompt layout version, classifier method, guardrails…), so a change to any of
 them is a new query. Every id and hash is the first 16 hex digits (64 bits) of a sha256, of
 canonical JSON for models and queries (key order kept: a schema's property order shapes the
 answer). Should two different texts ever share those digits, the second file is named by its
@@ -88,8 +88,8 @@ def call_of(backend: Any) -> str | None:
     return getattr(backend, "last_call", None)
 
 
-def calls_of(decider: Any) -> dict[str, str | None]:
-    return dict(getattr(decider, "last_calls", None) or {})
+def calls_of(classifier: Any) -> dict[str, str | None]:
+    return dict(getattr(classifier, "last_calls", None) or {})
 
 
 # --- the store ----------------------------------------------------------------------------------
@@ -438,25 +438,25 @@ class CachedBackend(_Cached):
         return out
 
 
-class CachedDecider(_Cached):
-    """A `Decider` whose answers are cached and recorded one question at a time."""
+class CachedClassifier(_Cached):
+    """A `Classifier` whose answers are cached and recorded one question at a time."""
 
     def __init__(self, inner: Any, **kw: Any):
         super().__init__(inner, **kw)
         self.last_calls: dict[str, str | None] = {}
 
-    def decide(self, state: str, questions: list[Question]) -> dict[str, Answer]:
+    def classify(self, state: str, questions: list[Question]) -> dict[str, Answer]:
         answers: dict[str, Answer] = {}
         self.last_calls = {}
-        kw = self._seed_kw(self.inner.decide)
+        kw = self._seed_kw(self.inner.classify)
         for q in questions:
             def query(q: Question = q) -> str:
-                return self.store.query_id("decide", q.instructions,
+                return self.store.query_id("classify", q.instructions,
                                            {"key": q.key, "type": q.type, "criteria": q.criteria}, None,
                                            self._params())
 
             probs, call_id = self._ask(query, state,
-                                       lambda q=q: self.inner.decide(state, [q], **kw)[q.key].probabilities)
+                                       lambda q=q: self.inner.classify(state, [q], **kw)[q.key].probabilities)
             answers[q.key] = Answer(q.key, {k: float(v) for k, v in probs.items()})
             self.last_calls[q.key] = call_id
         return answers
@@ -486,5 +486,5 @@ def cached_backend(backend: Any, **kw: Any) -> CachedBackend:
     return backend if isinstance(backend, CachedBackend) else CachedBackend(backend, **kw)
 
 
-def cached_decider(decider: Any, **kw: Any) -> CachedDecider:
-    return decider if isinstance(decider, CachedDecider) else CachedDecider(decider, **kw)
+def cached_classifier(classifier: Any, **kw: Any) -> CachedClassifier:
+    return classifier if isinstance(classifier, CachedClassifier) else CachedClassifier(classifier, **kw)

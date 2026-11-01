@@ -185,21 +185,21 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
 @click.argument("file_ids", nargs=-1, type=int)
 @click.option("--backend", default=None,
               help="Extraction model: auto | lmstudio[:model] | apple  [default: from config, else auto]")
-@click.option("--decider", "decider_spec", default=None,
-              help="Jev-style decider for kind/is-library: auto | none | lmstudio[:model] | jev:<url>  "
+@click.option("--classifier", "--decider", "classifier_spec", default=None,
+              help="Jev-style classifier for kind/is-library: auto | none | lmstudio[:model] | jev:<url>  "
                    "[default: from config, else auto]")
 @click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
 @click.option("--fresh", is_flag=True, help="Ask the models even where the inference cache has the answer.")
 @click.option("--no-screen", is_flag=True, help="Skip the fast first stage: ask the language models about every file.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
+def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
            redo_all: bool, fresh: bool, no_screen: bool, limit: int | None) -> None:
     """Ask a local model what each file is (kind, title, authors, abstract, topics...).
 
-    The backend and decider come from --backend/--decider, else PAPYRUS_BACKEND/PAPYRUS_DECIDER,
+    The backend and classifier come from --backend/--classifier, else PAPYRUS_BACKEND/PAPYRUS_CLASSIFIER,
     else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
-    if it is off. Triage stops if no decider is available, unless the decider is 'none'.
+    if it is off. Triage stops if no classifier is available, unless the classifier is 'none'.
     Answers go through the inference cache (<home>/inference.sqlite): a question already asked
     about the same text is answered from it (marked 'cached').
 
@@ -214,23 +214,23 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
 
     conn = _conn(ctx)
     try:
-        backend, decider_spec = config.backend(backend), config.decider(decider_spec)
+        backend, classifier_spec = config.backend(backend), config.classifier(classifier_spec)
         be = get_backend(backend)
     except (config.ConfigError, BackendUnavailable) as e:
         raise click.ClickException(str(e)) from e
     dec = None
-    if decider_spec != "none":
-        from .llm.decide import get_decider
+    if classifier_spec != "none":
+        from .llm.classify import get_classifier
         try:
-            dec = get_decider(None if decider_spec == "auto" else decider_spec)
+            dec = get_classifier(None if classifier_spec == "auto" else classifier_spec)
             if not dec.available():
-                raise BackendUnavailable(f"decider {dec.info().tag} is not available")
+                raise BackendUnavailable(f"classifier {dec.info().tag} is not available")
         except BackendUnavailable as e:
-            # Without a decider, kind and library-vs-personal rest on the extraction model's own
+            # Without a classifier, kind and library-vs-personal rest on the extraction model's own
             # answers, which proved unreliable (exam papers and a CV promoted to works).
             raise click.ClickException(
-                f"no decider: {e}.\nTriage without one misjudges personal vs library documents. "
-                f"Start LM Studio, or pass --decider none (or set decider = \"none\" in "
+                f"no classifier: {e}.\nTriage without one misjudges personal vs library documents. "
+                f"Start LM Studio, or pass --classifier none (or set classifier = \"none\" in "
                 f"{config.path()}) to triage anyway.") from e
     if file_ids:  # purged files have nothing left to triage
         purged = {r[0] for r in conn.execute(
@@ -244,7 +244,7 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
     ids = ids[:limit] if limit else ids
     be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
-    dec = inference.cached_decider(dec, fresh=fresh, pressure=memory_pressure) if dec else None
+    dec = inference.cached_classifier(dec, fresh=fresh, pressure=memory_pressure) if dec else None
     scr = None
     if not no_screen and ids:
         from .screen import get_screen
@@ -279,8 +279,8 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
                 continue
             e = r["extracted"]
             mark = "+" if e.get("is_library_material") else "-"
-            kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
-            took = "cached" if r.get("cached") else f"{r['extract_s'] + r.get('decide_s', 0):5.1f}s"
+            kind = r.get("kind", (e.get("kind"),))[0]  # classifier's answer when available
+            took = "cached" if r.get("cached") else f"{r['extract_s'] + r.get('classify_s', 0):5.1f}s"
             click.echo(f"{fid:5} {mark} {kind or '?':13} {took:>6} "
                        f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
@@ -303,7 +303,7 @@ def promote(ctx: click.Context) -> None:
 def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> None:
     """Erase personal paperwork from the library, down to a tombstone (sha256, size, URL).
 
-    Without FILE_IDS: every triaged file the decider is sure is personal (P(kind=personal) >= 0.9;
+    Without FILE_IDS: every triaged file the classifier is sure is personal (P(kind=personal) >= 0.9;
     promote already does this as it goes), and a list of the files held for review (personal,
     but less sure). With FILE_IDS: those files, as your decision. Page text, paths, filenames,
     PDF metadata, model claims and the stored copy are erased; the same bytes are skipped from
@@ -330,7 +330,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
         held = [fid for fid, why in found if not why]
     for fid in held:
         claims = db.current_assertions(conn, "file", fid)
-        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("decide:")), {})
+        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("classify:")), {})
         title = next((c["value"] for c in claims.get("title", [])), "")
         by = ""
         if not probs and (p := screen_rejected(claims)) is not None:
@@ -459,19 +459,19 @@ def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) 
 @click.argument("file_ids", nargs=-1, type=int)
 @click.option("--backend", default=None,
               help="Extraction model for triage: auto | lmstudio[:model] | apple  [default: from config, else auto]")
-@click.option("--decider", "decider_spec", default=None,
-              help="Decider for triage: auto | none | lmstudio[:model] | jev:<url>  [default: from config, else auto]")
+@click.option("--classifier", "--decider", "classifier_spec", default=None,
+              help="Classifier for triage: auto | none | lmstudio[:model] | jev:<url>  [default: from config, else auto]")
 @click.option("-n", "--limit", type=int, help="Triage at most N pending files.")
 @click.pass_context
-def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
+def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, classifier_spec: str | None,
             limit: int | None) -> None:
     """Triage, promote, extract and enrich whatever is pending: `triage && promote && extract && enrich`.
-    Promote purges what the decider is sure is personal paperwork (see `papyrus purge`).
+    Promote purges what the classifier is sure is personal paperwork (see `papyrus purge`).
 
     With FILE_IDS, triages those files and enriches only their works. Stops before promoting
-    if triage can't run (e.g. no decider available)."""
+    if triage can't run (e.g. no classifier available)."""
     click.echo("== triage")
-    ctx.invoke(triage, file_ids=file_ids, backend=backend, decider_spec=decider_spec, limit=limit)
+    ctx.invoke(triage, file_ids=file_ids, backend=backend, classifier_spec=classifier_spec, limit=limit)
     click.echo("== promote")
     ctx.invoke(promote)
     click.echo("== extract")
@@ -501,7 +501,7 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
 
     Runs in the foreground; Papyrus Server.app (macOS) or a systemd user service (Linux) runs it
     in the background. One watcher per library. Model work waits under memory pressure, while
-    LM Studio is off or has another model loaded, and without a decider (unless decider =
+    LM Studio is off or has another model loaded, and without a classifier (unless classifier =
     "none"). Logs name file ids and counts only. SIGTERM stops it, closing its run as
     interrupted."""
     from . import config
@@ -529,7 +529,7 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
         return
     try:
         settings = config.watch()
-        config.backend(), config.decider(), config.lmstudio_autostart()  # fail now on a bad config
+        config.backend(), config.classifier(), config.lmstudio_autostart()  # fail now on a bad config
     except config.ConfigError as e:
         raise click.ClickException(str(e)) from e
     roots = [Path(d).expanduser().resolve() for d in (dirs or settings.dirs)]
@@ -775,7 +775,7 @@ def config_cmd(init: bool) -> None:
     p = config.path()
     click.echo(f"config file: {p}{'' if p.exists() else '  (not present; using defaults)'}")
     try:
-        for name in ("backend", "decider"):
+        for name in ("backend", "classifier"):
             value, source = config.setting(name)
             click.echo(f"  {name:18} {value:28} ({source})")
         auto, source = config.lmstudio_autostart()

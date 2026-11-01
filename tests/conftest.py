@@ -9,7 +9,7 @@ def _isolated_library(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPYRUS_HTTP_CACHE", "0")
     monkeypatch.setenv("PAPYRUS_LMSTUDIO_AUTOSTART", "0")
     monkeypatch.setenv("PAPYRUS_SCREEN", "0")  # the screen's embedding model is LM Studio's too
-    for var in ("PAPYRUS_CONFIG", "PAPYRUS_BACKEND", "PAPYRUS_DECIDER", "PAPYRUS_VARIANT", "PAPYRUS_ROOT"):
+    for var in ("PAPYRUS_CONFIG", "PAPYRUS_BACKEND", "PAPYRUS_CLASSIFIER", "PAPYRUS_VARIANT", "PAPYRUS_ROOT"):
         monkeypatch.delenv(var, raising=False)
 
 

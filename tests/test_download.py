@@ -256,7 +256,7 @@ def test_cli_process_triages_promotes_and_enriches_new_files(tmp_path, monkeypat
     client, _ = _web(tmp_path)
     h.set_default_client(client)
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(dict(PAPER, title="Polygraphs")))
-    monkeypatch.setenv("PAPYRUS_DECIDER", "none")  # triage refuses to run without a decider otherwise
+    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")  # triage refuses to run without a classifier otherwise
     enriched = []
     monkeypatch.setattr(pipeline, "enrich_work", lambda conn, wid, run_id=None: enriched.append(wid) or
                         {"status": "nomatch"})

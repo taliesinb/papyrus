@@ -51,7 +51,7 @@ version change is migrated once, by hand.
   * `pdf:info`
   * `llm:<backend>:<model>`, e.g. `llm:lmstudio:qwen3.5-4b-mlx`, `llm:apple:system`.
     For abstracts a suffix says how the span was cut: `#anchors` or `#anchors+heuristic`.
-  * `decide:<backend>:<model>` (Jev-style decision probabilities)
+  * `classify:<backend>:<model>` (Jev-style decision probabilities)
   * `screen:<backend>:<model>`, e.g. `screen:lmstudio:text-embedding-nomic-embed-text-v1.5`:
     triage's first stage (`screen.py`)
   * `api:arxiv`, `api:openalex`, `api:s2`, `api:crossref`: claims from one source
@@ -61,7 +61,7 @@ version change is migrated once, by hand.
   * `user`
   * Link tables also use plain stage names: `scan`, `download`, `triage`, `promote`.
 * Precedence when resolving claims (`works.SOURCE_RANK`):
-  `user > api:* > decide:* > llm:* > heuristic:* > pdf:*`.
+  `user > api:* > classify:* > llm:* > heuristic:* > pdf:*`.
 
 ## Tables
 
@@ -79,7 +79,7 @@ version change is migrated once, by hand.
 
 **Personal paperwork: held or purged** (`purge.py`). A triaged file that is
 not library material never becomes a work. What happens to it next depends on
-the decider's P(kind=personal):
+the classifier's P(kind=personal):
 
 * **Purged** at ≥ 0.9 (by `promote`, `papyrus purge`), or when the user says
   so (`papyrus purge ID`). The `files` row keeps `sha256`, `size`,
@@ -97,7 +97,7 @@ the decider's P(kind=personal):
   abstract, authors or topics, and only its `released_ids` assertion is kept.
   Scan and download skip purged bytes without recording anything.
   `papyrus keep PATH` brings a purged file back from its original.
-* **Held** between 0.5 and 0.9, or without a decider, or when the screen set
+* **Held** between 0.5 and 0.9, or without a classifier, or when the screen set
   it aside before triage asked any language model (a `screen` claim with
   `rejected: true`). No work is made and the first pages are kept, for
   `papyrus purge --dry-run` (which lists held files) and a decision:
@@ -231,7 +231,7 @@ created_at, superseded_at, call_id)`.
 `call_id` (schema v4) names the model call a claim came from: a row of
 `calls` in the separate inference cache, `<home>/inference.sqlite` (see
 below). Claims from the extraction model point at its extraction call (the
-`abstract` too, since it is cut out using the model's anchors), decider claims
+`abstract` too, since it is cut out using the model's anchors), classifier claims
 at the call for their question. When triage is answered from the cache, the
 new claims point at the original call. NULL for claims that no model made.
 
@@ -242,12 +242,12 @@ The fields triage writes for a file:
   threshold, rejected}` from the screen, the embedding classifier that runs
   first (`screen.py`). With `rejected: true` triage stopped there, so the file
   has no other triage claims; `works.is_library` counts it as personal unless
-  the user or a decider says otherwise.
-* `kind`, plus `kind_probs` (`{option: p}`) when a decider is used
+  the user or a classifier says otherwise.
+* `kind`, plus `kind_probs` (`{option: p}`) when a classifier is used
 * `is_library_material`, plus `is_library_material_probs`
 
-  With a decider (prompt `triage-4`), both come from it alone (`decide:`); the extraction model
-  is asked for them only without one. A file the decider is sure is personal (P ≥ 0.9) gets no
+  With a classifier (prompt `triage-4`), both come from it alone (`classify:`); the extraction model
+  is asked for them only without one. A file the classifier is sure is personal (P ≥ 0.9) gets no
   extraction claims at all: promote purges it.
 * `title`, `authors` (list of names), `year`, `venue`
 * `abstract`: an exact span of the page text, located from start/end
@@ -259,9 +259,9 @@ The fields triage writes for a file:
 * `language`
 * `ids`: `{arxiv, doi, isbn}` found by regex
 * `purged` (source `papyrus:purge`): `{by, p_personal, prompt_version}`,
-  where `by` is the decider's tag or `user`. After a purge it is the file's
+  where `by` is the classifier's tag or `user`. After a purge it is the file's
   only assertion; `papyrus keep PATH` supersedes it.
-* `is_library_material` from `user` (`papyrus keep`): outranks the decider,
+* `is_library_material` from `user` (`papyrus keep`): outranks the classifier,
   both for promotion and for purging.
 
 The fields written for a work:
@@ -309,7 +309,7 @@ through MCP's `sql` tool.
 | table | key | what |
 |---|---|---|
 | `models` | hash of `{backend, model, build}` | a model as far as its answers go: `build` pins the weights (LM Studio: quantization, arch, format; Apple: the OS release). The endpoint is not in the key. `seed_honoured`: whether the same seed gives the same answer (Apple: yes; LM Studio MLX: no) |
-| `queries` | hash of `{kind, instructions, output_schema, examples, params}` | a question without its data: `extract` (instructions + JSON Schema) or `decide` (one question: instructions + `{key, type, criteria}`). `params`: temperature, max_tokens, seed and the backend's own settings |
+| `queries` | hash of `{kind, instructions, output_schema, examples, params}` | a question without its data: `extract` (instructions + JSON Schema) or `classify` (one question: instructions + `{key, type, criteria}`). `params`: temperature, max_tokens, seed and the backend's own settings |
 | `calls` | 16 random hex digits (`assertions.call_id`) | one call: `model_id`, `query_id`, `input_hash`, `input_chars`, `subject` (the document's `files.sha256`), `status` (`running`, `ok`, `error`, `busy`, `unavailable`, `interrupted`), `error` (the exception type only), `output_hash`, timings (`started_at`, `finished_at`, `duration_ms`), tokens, `model_loaded`, `memory_pressure`, `endpoint`, `host`, `extra`, and `hits`/`last_hit_at` for the times the cache answered with it |
 
 Every hash and id here is 16 hex digits (64 bits): a hash is the first 16

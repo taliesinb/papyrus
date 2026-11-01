@@ -8,7 +8,7 @@ from papyrus.llm.base import Embedder, ModelInfo
 from papyrus.triage import triage_file
 from papyrus.works import is_library, promote_file
 
-from test_triage_promote import PAPER, FakeBackend, FakeDecider, _lib
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
 
 MARK = "Quuxperson"
 
@@ -68,7 +68,7 @@ def test_screen_input():
 def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_path):
     conn = _payslip(tmp_path)
     be, scr = FakeBackend(PAPER), _screen()
-    r = triage_file(conn, 1, be, FakeDecider("paper", True), screen=scr)
+    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert r["screened"] and r["screen"]["rejected"] and be.prompts == []
     claims = db.current_assertions(conn, "file", 1)
     c = claims["screen"][0]
@@ -92,7 +92,7 @@ def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_pa
 def test_library_material_goes_on_to_full_triage(tmp_path):
     conn = _lib(tmp_path, "things.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeDecider("paper", True), screen=_screen())
+    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=_screen())
     assert not r.get("screened") and r["screen"]["p_personal"] < 0.01 and len(be.prompts) == 1
     claims = db.current_assertions(conn, "file", 1)
     assert claims["screen"][0]["value"]["rejected"] is False
@@ -102,11 +102,11 @@ def test_library_material_goes_on_to_full_triage(tmp_path):
 def test_keep_sends_a_screened_file_through_full_triage(tmp_path):
     conn = _payslip(tmp_path)
     scr = _screen()
-    triage_file(conn, 1, FakeBackend(PAPER), FakeDecider("paper", True), screen=scr)
+    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True), screen=scr)
     assert purge.keep(conn, 1) == ("retriage", None)
     assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "pending"
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeDecider("paper", True), screen=scr)
+    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert "screen" not in r and len(be.prompts) == 1  # the user has judged it: no screen
     assert promote_file(conn, 1)[0] == "created"
 
@@ -115,16 +115,16 @@ def test_no_screen_without_a_text_layer(tmp_path):
     conn = _payslip(tmp_path)
     conn.execute("DELETE FROM file_pages")
     be, scr = FakeBackend(PAPER), _screen()
-    r = triage_file(conn, 1, be, FakeDecider("paper", True), screen=scr)
+    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert "screen" not in r and len(be.prompts) == 1 and scr.embedder.inner.texts == []
 
 
 def test_the_watcher_screens_before_asking_the_language_model(tmp_path, no_enrich_network):
-    from test_watch import LMBackend, LMDecider, LMStudio, Memory, _pdf, _watch
+    from test_watch import LMBackend, LMClassifier, LMStudio, Memory, _pdf, _watch
 
     lm = LMStudio(["gemma"])  # the user's model: the language model may not be asked now
-    be, dec = LMBackend(PAPER, lm), LMDecider("paper", True)
-    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, decider=dec, lm=lm, memory=Memory("warn"),
+    be, dec = LMBackend(PAPER, lm), LMClassifier("paper", True)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, classifier=dec, lm=lm, memory=Memory("warn"),
                                       screen=lambda: screen.Screen(FakeEmbedder(), WEIGHTS, 0.9))
     _pdf(dl / f"Payslip_{MARK}.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1.00")
     w.catch_up()

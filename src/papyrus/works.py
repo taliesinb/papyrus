@@ -1,6 +1,6 @@
 """Turn triaged files into works: dedupe by identifiers / title, link files, index.
 
-Resolution order for a field: user > api:* > decide:* > llm:* > heuristic:*.
+Resolution order for a field: user > api:* > classify:* > llm:* > heuristic:*.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 
 from . import db
 
-SOURCE_RANK = [("user", 0), ("api:", 1), ("decide:", 2), ("llm:", 3), ("heuristic:", 4), ("pdf:", 5)]
+SOURCE_RANK = [("user", 0), ("api:", 1), ("classify:", 2), ("llm:", 3), ("heuristic:", 4), ("pdf:", 5)]
 
 
 def _rank(source: str) -> int:
@@ -74,16 +74,16 @@ def reindex_work(conn: sqlite3.Connection, work_id: int) -> None:
 def is_library(claims: dict[str, list[dict]]) -> bool:
     """Library material vs personal paperwork.
 
-    The decider's *kind* distribution is well calibrated, but its yes/no 'is this library
+    The classifier's *kind* distribution is well calibrated, but its yes/no 'is this library
     material' answer is biased towards yes (0.7 for an exam paper it calls personal with p=1.0).
-    So: the user's own claim if any, else P(kind=personal) from the decider when present, else
+    So: the user's own claim if any, else P(kind=personal) from the classifier when present, else
     the screen's verdict if it set the file aside (screen.py), else the extraction model's flag.
     """
     for c in claims.get("is_library_material") or []:
         if c["source"] == "user":
             return c["value"] is not False
     for c in claims.get("kind_probs") or []:
-        if c["source"].startswith("decide:") and isinstance(c["value"], dict):
+        if c["source"].startswith("classify:") and isinstance(c["value"], dict):
             return c["value"].get("personal", 0.0) < 0.5
     from .screen import rejected
 

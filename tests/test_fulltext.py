@@ -10,7 +10,7 @@ from papyrus.search import fts_query, rank_files, search_works
 from papyrus.triage import build_state, triage_file
 from papyrus.works import promote_file
 
-from test_triage_promote import PAPER, FakeBackend, FakeDecider
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier
 
 
 def make_pdf(path: Path, pages: list[list[str]], outline: list[tuple[str, int]] = ()) -> None:
@@ -85,10 +85,10 @@ def _paper_library(tmp_path: Path):
     ids = {r["title"]: r["file_id"] for r in conn.execute(
         "SELECT c.title, r.file_id FROM contexts c JOIN context_refs r ON r.context_id=c.id")}
     paper, slip = ids["paper.pdf"], ids["payslip.pdf"]
-    triage_file(conn, paper, FakeBackend(PAPER), FakeDecider("paper", True))
+    triage_file(conn, paper, FakeBackend(PAPER), FakeClassifier("paper", True))
     # P(personal) = 0.7: held (not a work, not purged), so its first pages stay
     triage_file(conn, slip, FakeBackend(dict(PAPER, kind="personal", is_library_material=False, title="Payslip")),
-                FakeDecider("personal", False, p=0.7))
+                FakeClassifier("personal", False, p=0.7))
     assert promote_file(conn, paper)[0] == "created"
     assert promote_file(conn, slip) == ("held", None)
     return conn, paper, slip

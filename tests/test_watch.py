@@ -1,7 +1,7 @@
 """`papyrus watch` (watch/): debounce, ingestion through the scan path, back-off, model ledger.
 
 A fake watcher (events injected), a fake clock, a fake memory probe and the FakeBackend /
-FakeDecider of test_triage_promote; enrichment's network is stubbed. Synthetic documents only."""
+FakeClassifier of test_triage_promote; enrichment's network is stubbed. Synthetic documents only."""
 
 import json
 import os
@@ -27,7 +27,7 @@ from papyrus.watch.sources import FSEventsWatcher, InotifyWatcher, PollingWatche
 from papyrus.watch.system import InstanceLock, linux_pressure
 
 from test_core import _make_pdf
-from test_triage_promote import PAPER, FakeBackend, FakeDecider
+from test_triage_promote import PAPER, FakeBackend, FakeClassifier
 
 MARK = "Quuxperson"  # in a payslip's filename and text: must never reach the log
 SLIP = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip {MARK}", topics=[],
@@ -93,7 +93,7 @@ class LMBackend(FakeBackend):
         return super().extract(**kw)
 
 
-class LMDecider(FakeDecider):
+class LMClassifier(FakeClassifier):
     model = "qwen-test"
 
     def info(self):
@@ -129,12 +129,12 @@ def _pdf(path: Path, text: str, old: bool = True) -> Path:
     return path
 
 
-def _watch(tmp_path, *, backend=None, decider=None, memory=None, lm=None, models=None, **kw):
+def _watch(tmp_path, *, backend=None, classifier=None, memory=None, lm=None, models=None, **kw):
     dl = tmp_path / "dl"
     dl.mkdir(exist_ok=True)
     conn = db.connect(tmp_path / "t.sqlite")
     clock, logs = Clock(), []
-    be, dec = backend or FakeBackend(PAPER), decider or FakeDecider("paper", True)
+    be, dec = backend or FakeBackend(PAPER), classifier or FakeClassifier("paper", True)
     lm = lm or LMStudio()
     w = Watch(conn, [dl], watcher=FakeWatcher(), memory=memory or Memory(), clock=clock, log=logs.append,
               ledger=ModelLedger(lm.list_loaded, lm.unload, idle_s=600, clock=clock, log=logs.append),
@@ -281,7 +281,7 @@ def test_new_file_is_ingested_once_settled_and_processed(tmp_path):
 
 def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     be = FakeBackend(SLIP)
-    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, decider=FakeDecider("personal", False, p=0.98))
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, classifier=FakeClassifier("personal", False, p=0.98))
     slip = _pdf(dl / f"Payslip_{MARK}.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1.00")
     shutil.copy2(slip, dl / f"Payslip_{MARK} (1).pdf")  # the same bytes twice: one file
     w.catch_up()
@@ -299,7 +299,7 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
     assert _runs(conn)[-1][1]["purged_skipped"] == 1
-    assert be.prompts == []  # the decider was sure: no extraction (triage-4), and never triaged again
+    assert be.prompts == []  # the classifier was sure: no extraction (triage-4), and never triaged again
     # the log holds ids and counts, never names, paths or text
     assert logs and not any(MARK in m or str(dl) in m or "Zebedee" in m or "Payslip" in m for m in logs)
 
@@ -462,9 +462,9 @@ def test_extract_and_enrich_go_on_while_model_work_waits(tmp_path):
     assert conn.execute("SELECT count(*) FROM assertions WHERE field='enrich_candidates'").fetchone()[0] == 1
 
 
-def test_no_decider_means_no_triage(tmp_path):
+def test_no_classifier_means_no_triage(tmp_path):
     def models():
-        raise Backoff(LMSTUDIO_UNAVAILABLE, "no decider")
+        raise Backoff(LMSTUDIO_UNAVAILABLE, "no classifier")
 
     w, conn, dl, clock, logs = _watch(tmp_path, models=models)
     _pdf(dl / "a.pdf", "Lecture notes on things")
@@ -473,20 +473,20 @@ def test_no_decider_means_no_triage(tmp_path):
     assert w.state == LMSTUDIO_UNAVAILABLE
 
 
-def test_resolve_models_refuses_to_triage_without_a_decider_unless_none(monkeypatch):
+def test_resolve_models_refuses_to_triage_without_a_classifier_unless_none(monkeypatch):
     import papyrus.llm as llm
-    import papyrus.llm.decide as decide
+    import papyrus.llm.classify as classify
 
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(PAPER))
 
-    def no_decider(spec=None):
+    def no_classifier(spec=None):
         raise BackendUnavailable("LM Studio not reachable")
 
-    monkeypatch.setattr(decide, "get_decider", no_decider)
+    monkeypatch.setattr(classify, "get_classifier", no_classifier)
     with pytest.raises(Backoff) as e:
         daemon_mod.resolve_models()
     assert e.value.state == LMSTUDIO_UNAVAILABLE
-    monkeypatch.setenv("PAPYRUS_DECIDER", "none")
+    monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")
     be, dec = daemon_mod.resolve_models()
     assert dec is None
 
@@ -551,8 +551,8 @@ def test_ledger_forgets_a_model_that_went_away():
 
 def test_watch_with_lmstudio_models(tmp_path):
     lm = LMStudio(["gemma"])
-    be, dec = LMBackend(PAPER, lm), LMDecider("paper", True)
-    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, decider=dec, lm=lm)
+    be, dec = LMBackend(PAPER, lm), LMClassifier("paper", True)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, classifier=dec, lm=lm)
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert be.prompts == [] and w.state == LMSTUDIO_UNAVAILABLE  # the user's gemma is loaded
@@ -568,8 +568,8 @@ def test_watch_with_lmstudio_models(tmp_path):
 
 def test_memory_warn_allows_a_loaded_lmstudio_model_but_not_loading_one(tmp_path):
     lm = LMStudio(["qwen-test"])  # loaded by the user
-    be, dec = LMBackend(PAPER, lm), LMDecider("paper", True)
-    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, decider=dec, lm=lm, memory=Memory("warn"))
+    be, dec = LMBackend(PAPER, lm), LMClassifier("paper", True)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be, classifier=dec, lm=lm, memory=Memory("warn"))
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
     assert len(be.prompts) == 1 and not w.ledger.ours
@@ -600,7 +600,7 @@ def test_cli_watch_once_and_lock(tmp_path, monkeypatch):
     dl.mkdir()
     _pdf(dl / "a.pdf", "A Study of Things. Jane Doe.")
     monkeypatch.setattr(system, "lower_priority", lambda: [])
-    monkeypatch.setattr(daemon_mod, "resolve_models", lambda: (FakeBackend(PAPER), FakeDecider("paper", True)))
+    monkeypatch.setattr(daemon_mod, "resolve_models", lambda: (FakeBackend(PAPER), FakeClassifier("paper", True)))
     monkeypatch.setattr(daemon_mod, "memory_pressure", lambda: "normal")
     home = tmp_path / "papyrus-home"
     r = CliRunner().invoke(main, ["watch", "--once", "--dir", str(dl)])
