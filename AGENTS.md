@@ -425,6 +425,11 @@ The seed is part of the inference cache's key either way.
   the watcher, whoever runs it, asks no model (triage and OCR wait; state
   `paused`) but still adds, extracts and enriches files. The file in progress
   finishes first (up to ~20 s). It lasts across restarts until `--resume`.
+* **Its performance log is `<home>/watch-events.jsonl`** (`watch/events.py`):
+  one JSON line per file added, step (stage, id, ms, outcome), model load or
+  swap, back-off, and a `drained` line with the busy time when the queue
+  empties. `papyrus watch --perf` summarises the latest session. Ids, timings
+  and model names only, like the text log.
 * **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
   not involved; `scan.ingest_path` is the shared per-file body.
 * **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and

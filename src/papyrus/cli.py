@@ -517,13 +517,16 @@ def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, 
               help="Watch DIR instead of the config's [watch] dirs (repeatable).")
 @click.option("--poll", is_flag=True, help="Poll the directories instead of using FSEvents / inotify.")
 @click.option("--status", "show_status", is_flag=True, help="Print the running watcher's status (JSON) and exit.")
+@click.option("--perf", "perf", flag_value="latest", default=None,
+              help="Summarise the performance log (<home>/watch-events.jsonl) of the latest session, and exit.")
+@click.option("--perf-all", "perf", flag_value="all", help="The same, over every session.")
 @click.option("--retry-failed", is_flag=True, help="Give the queue's failed items another round of attempts, and exit.")
 @click.option("--pause", "pause", flag_value=True, default=None,
               help="Pause model work (triage, OCR) of this library's watcher, running or not, and exit. New "
                    "files are still added. Lasts until --resume.")
 @click.option("--resume", "pause", flag_value=False, help="Resume model work, and exit.")
 @click.pass_context
-def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, show_status: bool,
+def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, show_status: bool, perf: str | None,
           retry_failed: bool, pause: bool | None) -> None:
     """Add new PDFs from ~/Downloads and ~/Desktop (config: [watch] dirs) as they appear, and
     triage, promote, extract and enrich them one at a time, at background priority.
@@ -540,6 +543,11 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
     from .watch.system import InstanceLock, lower_priority
 
     home = db.library_home()
+    if perf:
+        from .watch import events
+
+        click.echo(events.summary(events.read(home / events.NAME), all_sessions=perf == "all"))
+        return
     if show_status:
         click.echo(json.dumps(read_status(home), indent=2))
         return

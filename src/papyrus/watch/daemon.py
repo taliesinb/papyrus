@@ -55,6 +55,7 @@ from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMO
                      STARTING,
                      STOPPED, WAITING_MEMORY, Backoff)
 from .models import ModelLedger
+from .events import NAME as EVENTS_NAME, EventLog
 from .queue import MODEL_STAGES, STAGES, Queue
 from .sources import PollingWatcher, Watcher, make_watcher
 from . import system
@@ -164,12 +165,22 @@ class Watch:
         self.unreadable: list[Path] = []  # watched directories macOS won't let us read
         self.last_access_check = clock()
         self.totals: Counter = Counter()
+        # the performance log (events.py): every step, file, model change and back-off, timed
+        self.events = EventLog(self.status_path.with_name(EVENTS_NAME), wall)
+        self.wall = wall
+        ledger_log = self.ledger.log
+        self.ledger.log = lambda msg: (ledger_log(msg), self.events.emit("model", msg=msg))
+        self.busy: dict[str, Any] | None = None  # since the queue was last empty: start time, counts
+        self.step_detail: dict[str, Any] = {}  # what the last step found, for its event
 
     # --- running ------------------------------------------------------------------------------
 
     def run(self, once: bool = False) -> None:
         """Catch up, then (unless `once`) follow events until interrupted (SIGTERM, ^C)."""
+        from ..triage import PROMPT_VERSION
+
         self._status(STARTING)
+        self.events.emit("start", pid=os.getpid(), dirs=len(self.dirs), prompt_version=PROMPT_VERSION)
         try:
             if not once:
                 self._start_watcher()
@@ -202,6 +213,7 @@ class Watch:
             self.ledger.release_idle(force=True)
         finally:
             self._status(STOPPED)
+            self.events.emit("stop", totals={k: v for k, v in self.totals.items() if v and k not in ("seen", "unchanged")})
 
     def catch_up(self, once: bool = False) -> None:
         self.batch("startup", catch_up=True, limit=None if once else self.batch_steps)
@@ -294,6 +306,7 @@ class Watch:
                     self._guard()
                     task = self._next_task()
                     if task is None:
+                        self._drained()
                         break
                     if limit is not None and steps >= limit:
                         more = True
@@ -357,8 +370,25 @@ class Watch:
                                   " AND missing_at IS NULL", (now, str(path))).rowcount
             c["went_missing"] += n
 
+    def _busy(self) -> dict[str, Any]:
+        if self.busy is None:
+            self.busy = {"since": self.wall(), "steps": Counter(), "added": 0}
+        return self.busy
+
+    def _drained(self) -> None:
+        """The queue is empty: log how long the work since it was last empty took (if any)."""
+        if self.busy is None or self.backoffs:
+            return
+        b, self.busy = self.busy, None
+        self.events.emit("drained", busy_s=round(self.wall() - b["since"], 1), steps=dict(b["steps"]), added=b["added"])
+
     def _ingest(self, path: Path, run_id: int, c: Counter, now: str) -> None:
+        t0 = time.monotonic()
         outcome, fid = scan.ingest_path(self.conn, path, self.opts, host=self.host, now=now, run_id=run_id, stats=c)
+        if outcome not in ("unchanged", "seen", None):
+            busy = self._busy()
+            busy["added"] += outcome == "new"
+            self.events.emit("ingest", id=fid, outcome=outcome, ms=round((time.monotonic() - t0) * 1000))
         if outcome in ("new", "dup"):
             self.dirty = True
             self.log(f"file {fid} added ({outcome})")
@@ -514,24 +544,36 @@ class Watch:
         stage, i = task
         what = "work" if stage == "enrich" else "file"
         t0 = time.monotonic()
+        self.step_detail = {}
+        outcome = "done"
         try:
             getattr(self, f"_{stage}")(i, run_id, c)
             if self._still_pending(stage, i):  # nothing changed (e.g. enrichment found nothing)
+                outcome = "no_progress"
                 self._retry(task, "no_progress")
             else:
                 self.queue.done(stage, i, round((time.monotonic() - t0) * 1000))
         except Backoff as b:
+            outcome = "backoff"
             self._back_off(stage, b, c)
         except ModelBusy:
+            outcome = "backoff"
             self._back_off(stage, Backoff(WAITING_MEMORY, "the model refused the request under memory pressure"), c)
         except BackendUnavailable:
+            outcome = "backoff"
             self._back_off(stage, Backoff(LMSTUDIO_UNAVAILABLE, "the model is unavailable", delay=LMSTUDIO_DELAY), c)
         except Exception as e:  # noqa: BLE001  the type only: messages may hold paths
+            outcome = f"error:{type(e).__name__}"
             c[f"{stage}_error"] += 1
             if stage == "classify":  # (a failed metadata step stays `classified` and is retried)
                 self.conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (i,))
             self.log(f"{what} {i} {stage} failed ({type(e).__name__})")
             self._retry(task, type(e).__name__)
+        finally:
+            if outcome != "backoff":
+                self._busy()["steps"][stage] += 1
+            self.events.emit("step", stage=stage, id=i, ms=round((time.monotonic() - t0) * 1000), outcome=outcome,
+                             phase=self.phase, **self.step_detail)
 
     def _retry(self, task: tuple[str, int], error: str) -> None:
         stage, i = task
@@ -575,8 +617,13 @@ class Watch:
         r = classify_file(self.conn, fid, clf, run_id=run_id, screen=self.screen)
         self.memory_delay = MEMORY_DELAY
         c["classified"] += 1
+        self.step_detail = {"result": "screened" if r.get("screened") else
+                            "not_library" if r["status"] == "done" else "library"}
+        if r.get("p_personal") is not None:
+            self.step_detail["p_personal"] = round(r["p_personal"], 3)
         if r.get("screened"):
             c["screened"] += 1
+            self.step_detail["p_personal"] = r["screen"]["p_personal"]
             self.log(f"file {fid} set aside by the screen (P(personal)={r['screen']['p_personal']:.2f})")
         elif r["status"] == "done":  # not library material: no metadata extraction
             self.log(f"file {fid} classified: not library (P(personal)={r['p_personal']:.2f})")
@@ -589,7 +636,8 @@ class Watch:
         from ..triage import extract_metadata
 
         be, _ = self._models(run_id)
-        extract_metadata(self.conn, fid, be, run_id=run_id)
+        r = extract_metadata(self.conn, fid, be, run_id=run_id)
+        self.step_detail = {"cached": bool(r.get("cached"))}
         self.memory_delay = MEMORY_DELAY
         c["triaged"] += 1
         self.log(f"file {fid} metadata extracted")
@@ -618,6 +666,8 @@ class Watch:
                     pressure=lambda: self.last_level)
             tag = be.info().tag
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
+            self.events.emit("models", extract=tag, classify=dec.info().tag if dec is not None else None,
+                             screen=self.screen.tag if self.screen else None)
             self.log("triage with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
                      + tag + (f" + {dec.info().tag}" if dec is not None else " (no classifier)"))
         return self.models
@@ -658,6 +708,7 @@ class Watch:
         self.backoffs[stage] = (self.clock() + delay, b.state, b.reason)
         c[f"backoff_{b.state}"] += 1
         self.log(f"{stage} waits {delay:.0f} s: {b.reason}")
+        self.events.emit("backoff", stage=stage, state=b.state, reason=b.reason, delay_s=round(delay))
 
     def _waiting(self) -> tuple[float, str, str] | None:
         """The back-off to show: the triage phases' if one has work, else OCR's."""

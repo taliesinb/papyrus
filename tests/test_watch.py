@@ -813,3 +813,23 @@ def test_has_room(monkeypatch):
     assert has_room(int(2.3 * gb), (8 * gb, 16 * gb))  # the 2B beside the 4B on this Mac
     assert not has_room(int(2.3 * gb), (4 * gb, 16 * gb))  # would leave too little
     assert not has_room(None, (8 * gb, 16 * gb)) and not has_room(gb, None)  # unknown: no
+
+
+def test_the_performance_log_times_every_file_and_step(tmp_path):
+    from papyrus.watch import events
+
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    w.events.emit("start", pid=1, dirs=1, prompt_version="x")
+    w.catch_up()
+    evs = events.read(w.status_path.with_name(events.NAME))
+    kinds = [e["event"] for e in evs]
+    assert kinds.count("ingest") == 3 and kinds[-1] == "drained" and "models" in kinds and "model" in kinds
+    steps = [e for e in evs if e["event"] == "step"]
+    assert {e["stage"] for e in steps} >= {"classify", "metadata"} and all("ms" in e for e in steps)
+    assert all(e["result"] == "library" for e in steps if e["stage"] == "classify")
+    drained = evs[-1]
+    assert drained["added"] == 3 and drained["steps"]["classify"] == 3 and drained["steps"]["metadata"] == 3
+    text = events.summary(evs)
+    assert "classify" in text and "metadata" in text and "queue drained" in text and "library 3" in text
+    raw = w.status_path.with_name(events.NAME).read_text()
+    assert str(tmp_path) not in raw and "Lecture" not in raw and ".pdf" not in raw  # ids and timings only
