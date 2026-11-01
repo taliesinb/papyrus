@@ -7,7 +7,7 @@ for others; override with `PAPYRUS_DB`). The authoritative DDL is
 the model. Everything is plain SQLite (FTS5 for text search); no extensions
 are required to read it.
 
-The schema version is `meta.schema_version` (now 3). papyrus refuses to open
+The schema version is `meta.schema_version` (now 4). papyrus refuses to open
 a database of another version, and there are no automatic migrations: a
 version change is migrated once, by hand.
 
@@ -221,7 +221,14 @@ when the library has none. Works created this way have no files.
 ### assertions
 
 `(subject_type, subject_id, field, value JSON, confidence, source, run_id,
-created_at, superseded_at)`.
+created_at, superseded_at, call_id)`.
+
+`call_id` (schema v4) names the model call a claim came from: a row of
+`calls` in the separate inference cache, `<home>/inference.sqlite` (see
+below). Claims from the extraction model point at its extraction call (the
+`abstract` too, since it is cut out using the model's anchors), decider claims
+at the call for their question. When triage is answered from the cache, the
+new claims point at the original call. NULL for claims that no model made.
 
 The fields triage writes for a file:
 
@@ -276,3 +283,33 @@ for work left over, `once`) and counts; its `stats` combine `scan`'s counters
 steps it took (`triaged`, `promote_<action>`, `extracted`, `enrich_<status>`)
 and its back-offs (`backoff_waiting-memory`, `backoff_lmstudio-unavailable`).
 `backend` is filled in once the batch has triaged with a model.
+
+## The inference cache: `<home>/inference.sqlite`
+
+A second database, beside the library and independent of it (its own DDL,
+[`src/papyrus/inference.sql`](../src/papyrus/inference.sql), and its own
+`meta.schema_version`, now 1). It records every question asked of a model,
+and answers repeated ones (`src/papyrus/inference.py`). It is not reachable
+through MCP's `sql` tool.
+
+| table | key | what |
+|---|---|---|
+| `models` | sha256 of `{backend, model, build}` | a model as far as its answers go: `build` pins the weights (LM Studio: quantization, arch, format; Apple: the OS release). The endpoint is not in the key. `seed_honoured`: whether the same seed gives the same answer (Apple: yes; LM Studio MLX: no) |
+| `queries` | sha256 of `{kind, instructions, output_schema, examples, params}` | a question without its data: `extract` (instructions + JSON Schema) or `decide` (one question: instructions + `{key, type, criteria}`). `params`: temperature, max_tokens, seed and the backend's own settings |
+| `calls` | random hex id (`assertions.call_id`) | one call: `model_id`, `query_id`, `input_sha256`, `input_chars`, `subject` (the document's `files.sha256`), `status` (`running`, `ok`, `error`, `busy`, `unavailable`, `interrupted`), `error` (the exception type only), `output_sha256`, timings (`started_at`, `finished_at`, `duration_ms`), tokens, `model_loaded`, `memory_pressure`, `endpoint`, `host`, `extra`, and `hits`/`last_hit_at` for the times the cache answered with it |
+
+The texts are not in the database. They are files named by their sha256:
+`<home>/inference/inputs/ab/<sha>.txt` (the data asked about, e.g. a
+document's first pages) and `<home>/inference/outputs/ab/<sha>.json` (the
+answer). The cache answers `(model, query, input)` with the newest `ok` call
+whose output file exists, so deleting files never breaks anything; it only
+means asking again. `papyrus inference prune` deletes old texts, and purging a
+document deletes the texts of every call whose `subject` is its sha256.
+
+```sql
+-- how long triage's extraction takes per model, cache hits aside
+SELECT m.model, count(*), avg(c.duration_ms) / 1000.0 AS seconds
+FROM calls c JOIN models m ON m.id = c.model_id JOIN queries q ON q.id = c.query_id
+WHERE q.kind = 'extract' AND c.status = 'ok' AND c.model_loaded IS NOT 0
+GROUP BY m.id;
+```

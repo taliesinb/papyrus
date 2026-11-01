@@ -17,9 +17,10 @@ scan`), then works through pending steps, one item each, new files first:
 4. **triage** a pending file, then **promote** it (which purges sure personal paperwork).
 
 A batch ends when nothing is left, after BATCH_STEPS steps (so runs stay short and new files
-don't wait), or with the model steps backing off. Model work (triage, OCR) is gated: before
-every model call the memory pressure is read, and for LM Studio the `ModelLedger` checks what is
-loaded (see models.py). Under pressure, with LM Studio off or busy with another model, or when
+don't wait), or with the model steps backing off. Triage's models sit behind the inference
+cache (inference.py), with the gate inside it: an answer the cache has costs no model call and
+no check. Otherwise model work (triage, OCR) is gated: before every model call the memory
+pressure is read, and for LM Studio the `ModelLedger` checks what is loaded (see models.py). Under pressure, with LM Studio off or busy with another model, or when
 Apple's model refuses (error 1013, `ModelBusy`), the step is left pending and model work waits
 (`Backoff`); extract and enrich go on. A step that fails for another reason is retried after
 RETRY_S (triage marks the file `error`, as `papyrus triage` does).
@@ -42,7 +43,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import db, fulltext, purge, scan
+from .. import db, fulltext, inference, purge, scan
 from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
 from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, STARTING,
@@ -90,30 +91,12 @@ def resolve_models() -> tuple[Any, Any]:
     return be, dec
 
 
-class _Gated:
-    """A Backend or Decider whose every model call passes the watcher's gate first."""
-
-    def __init__(self, inner: Any, gate: Callable[[str, str | None], None]):
-        info = inner.info()
-        self.inner, self._gate = inner, gate
-        # lmstudio: the ledger decides; remote (a Jev or OpenAI endpoint): no local memory at stake
-        self.kind = ("lmstudio" if info.backend == "lmstudio" else
-                     "remote" if info.backend in ("jev", "openai") else "local")
-        self.model = getattr(inner, "model", None) or info.model
-
-    def info(self):
-        return self.inner.info()
-
-    def available(self) -> bool:
-        return self.inner.available()
-
-    def extract(self, **kw: Any) -> dict[str, Any]:
-        self._gate(self.kind, self.model)
-        return self.inner.extract(**kw)
-
-    def decide(self, state: str, questions: list) -> dict:
-        self._gate(self.kind, self.model)
-        return self.inner.decide(state, questions)
+def model_kind(m: Any) -> tuple[str, str | None]:
+    """How the gate treats a model: lmstudio (the ledger decides), remote (a Jev or OpenAI endpoint:
+    no local memory at stake) or local (Apple FM and the like); and its model name."""
+    info = m.info()
+    kind = "lmstudio" if info.backend == "lmstudio" else "remote" if info.backend in ("jev", "openai") else "local"
+    return kind, getattr(m, "model", None) or info.model
 
 
 class Watch:
@@ -146,7 +129,8 @@ class Watch:
         self.backoff_until = 0.0
         self.memory_delay = MEMORY_DELAY
         self.retry_at: dict[tuple[str, int], float] = {}
-        self.models: tuple[_Gated, _Gated | None] | None = None
+        self.models: tuple[Any, Any] | None = None
+        self.last_level: str | None = None  # memory pressure at the last gate, recorded with the call
         self.ocr_ok: bool | None = None
         self.dirty = True  # there may be pending work: look
         self.last_check = clock()
@@ -449,7 +433,7 @@ class Watch:
 
     # --- models, memory, back-off -------------------------------------------------------------
 
-    def _models(self, run_id: int) -> tuple[_Gated, _Gated | None]:
+    def _models(self, run_id: int) -> tuple[Any, Any]:
         if self.models is None:
             if self.clock() - self.last_autostart >= AUTOSTART_EVERY_S:
                 from ..llm import lmstudio
@@ -457,17 +441,25 @@ class Watch:
                 lmstudio.forget_start_attempt()  # ensure_server may try `lms server start` again
                 self.last_autostart = self.clock()
             be, dec = self.resolve_models()
-            self.models = (_Gated(be, self._gate), _Gated(dec, self._gate) if dec is not None else None)
+            self.models = (self._cached(be, inference.cached_backend),
+                           self._cached(dec, inference.cached_decider) if dec is not None else None)
             tag = be.info().tag
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
             self.log(f"triage with {tag}" + (f" + {dec.info().tag}" if dec is not None else " (no decider)"))
         return self.models
 
+    def _cached(self, m: Any, wrap: Callable) -> Any:
+        """The model behind the inference cache, with the gate inside it: a cached answer costs no
+        model call, so it needs no memory and no LM Studio."""
+        kind, model = model_kind(m)
+        return wrap(m, before_call=lambda: self._gate(kind, model), pressure=lambda: self.last_level)
+
     def _gate(self, kind: str, model: str | None) -> None:
         """Before every model call: may we ask now? Raises Backoff if not."""
         if kind == "remote":
+            self.last_level = None
             return
-        level = self.memory()
+        level = self.last_level = self.memory()
         if level == CRITICAL:
             raise Backoff(WAITING_MEMORY, "memory pressure is critical")
         if kind == "lmstudio" and model:

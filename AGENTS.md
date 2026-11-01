@@ -17,8 +17,9 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | watch | works | work | files | show | search | stats | config | mcp | slack | resolve
+uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | watch | inference | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/decider in effect
+uv run papyrus inference stats         # every model call so far: hits, failures, timings (also: show CALL_ID, prune)
 PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl   # the ingestion daemon in the foreground (--once: catch up and exit; --status)
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
@@ -85,6 +86,12 @@ unit (Linux) keeps it running.
   payslips, tax certificates, CVs, exam papers. Don't paste their text into
   commits, tests, fixtures or logs. Triage deliberately stores no abstract or
   topics for non-library documents.
+* **The inference cache holds that text too** (`<home>/inference/inputs/`:
+  every model prompt, i.e. documents' first pages and paths;
+  `inference/outputs/`: the answers). `inference.sqlite` itself holds only
+  hashes and timings. Treat the files like the API log: private, never in
+  commits or fixtures. Model calls about a document must run inside
+  `with inference.subject(files.sha256):`, or purge can't find their texts.
 * **Personal paperwork is purged, or held out of sight** (`purge.py`):
   * when the decider gives P(kind=personal) ≥ 0.9, promote purges the file down
     to a tombstone: sha256, size, `purged_at`, the download URL, and one
@@ -148,6 +155,11 @@ unit (Linux) keeps it running.
 8. **The `Backend` / `Decider` contracts** in `llm/base.py` and the
    `WorkRecord` / `AuthorRecord` types in `models.py` are shared by several
    modules. Change them deliberately, and update every implementation.
+   The optional hooks the inference cache uses (`seed`, `cache_params`,
+   `model_build`, `seed_honoured`, `model_loaded`, `last_usage`) are listed
+   there too. **Changing a backend's prompt layout** (message order, the
+   prefill, how the schema is sent) means bumping its `cache_params()["impl"]`,
+   or old cached answers are served for the new layout.
 9. **Never throw away an API response.** Every request through
    `enrich/http.HttpClient` (enrichment, `papyrus download`, Slack) is
    appended, with its raw response, to `<library home>/api-log/<UTC date>.jsonl`
@@ -162,6 +174,10 @@ unit (Linux) keeps it running.
      tests or fixtures;
    * LM Studio and decider calls are *not* logged (`llm/*` uses its own httpx
      clients): their prompts hold the first pages of personal documents.
+     They are recorded by the inference cache instead (next).
+10. **Model calls go through the inference cache** (`inference.cached_backend`
+    / `cached_decider`) so they are recorded, timed and reusable, and claims
+    carry `call_id`. New callers wrap their models the same way.
 
 ## Gotchas (all learned the hard way)
 
@@ -202,6 +218,11 @@ unit (Linux) keeps it running.
 
   The 4B is the default for both extraction and decisions. Prompt caching is
   automatic (prefix-based), with no markers to set.
+
+**Seeds:** LM Studio accepts `seed` but its MLX engine ignores it (same seed,
+different answers at temperature 1). The Apple bridge honours it (same seed,
+same answer). Rebuild the bridge after pulling, or an old binary ignores it.
+The seed is part of the inference cache's key either way.
 
 **Apple Foundation Models** (`tools/afm-bridge`, `llm/apple.py`):
 
@@ -329,6 +350,9 @@ with the same decorators.
 * **Downloads:** `tests/test_download.py::_web` serves PDFs, redirects and
   landing pages through `httpx.MockTransport`; pass the client to
   `download.download` (or `http.set_default_client` for CLI tests).
+* **The inference cache:** `tests/test_inference.py`. Wrap `FakeBackend` /
+  `FakeDecider` with `inference.cached_backend` / `cached_decider`; the store
+  follows `PAPYRUS_HOME`, so each test has its own.
 * **The watcher:** `tests/test_watch.py` drives `Watch` with a fake watcher
   (`inject` paths), a fake clock, a fake memory probe, a fake LM Studio
   (`LMStudio`: what is loaded, what was unloaded) and `FakeBackend` /

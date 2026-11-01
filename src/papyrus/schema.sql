@@ -287,6 +287,8 @@ CREATE TABLE IF NOT EXISTS assertions (
     source       TEXT NOT NULL,
     run_id       INTEGER REFERENCES runs(id),
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    superseded_at TEXT
+    superseded_at TEXT,
+    call_id      TEXT     -- the model call this claim came from: calls.id in inference.sqlite
+                          -- (inference.py); on a cache hit, the original call's. NULL otherwise.
 );
 CREATE INDEX IF NOT EXISTS assertions_subject ON assertions(subject_type, subject_id, field);

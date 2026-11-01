@@ -189,19 +189,23 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
               help="Jev-style decider for kind/is-library: auto | none | lmstudio[:model] | jev:<url>  "
                    "[default: from config, else auto]")
 @click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
+@click.option("--fresh", is_flag=True, help="Ask the models even where the inference cache has the answer.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
 def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
-           redo_all: bool, limit: int | None) -> None:
+           redo_all: bool, fresh: bool, limit: int | None) -> None:
     """Ask a local model what each file is (kind, title, authors, abstract, topics...).
 
     The backend and decider come from --backend/--decider, else PAPYRUS_BACKEND/PAPYRUS_DECIDER,
     else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
-    if it is off. Triage stops if no decider is available, unless the decider is 'none'."""
-    from . import config
+    if it is off. Triage stops if no decider is available, unless the decider is 'none'.
+    Answers go through the inference cache (<home>/inference.sqlite): a question already asked
+    about the same text is answered from it (marked 'cached')."""
+    from . import config, inference
     from .llm import get_backend
     from .llm.base import BackendUnavailable
     from .triage import PROMPT_VERSION, triage_file
+    from .watch.system import memory_pressure
 
     conn = _conn(ctx)
     try:
@@ -234,6 +238,8 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
                  + ("" if redo_all else " AND triage_status<>'done'"))
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
     ids = ids[:limit] if limit else ids
+    be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
+    dec = inference.cached_decider(dec, fresh=fresh, pressure=memory_pressure) if dec else None
     click.echo(f"triaging {len(ids)} files with {be.info().tag}" + (f" + {dec.info().tag}" if dec else ""))
     with db.recorded_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag,
                          prompt_version=PROMPT_VERSION) as (run_id, stats):
@@ -250,7 +256,8 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
             e = r["extracted"]
             mark = "+" if e.get("is_library_material") else "-"
             kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
-            click.echo(f"{fid:5} {mark} {kind or '?':13} {r['extract_s'] + r.get('decide_s', 0):5.1f}s "
+            took = "cached" if r.get("cached") else f"{r['extract_s'] + r.get('decide_s', 0):5.1f}s"
+            click.echo(f"{fid:5} {mark} {kind or '?':13} {took:>6} "
                        f"{r.get('abstract_method', '-'):17} {(e.get('title') or '')[:60]}")
     click.echo(" ".join(f"{k}={v}" for k, v in stats.items()))
 
@@ -499,6 +506,63 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
             click.echo("watch: stopped", err=True)
     finally:
         lock.release()
+
+
+@main.group("inference")
+def inference_cmd() -> None:
+    """The inference cache (<home>/inference.sqlite): every question asked of a model, with
+    hashes and timings; the texts are files in <home>/inference/."""
+
+
+@inference_cmd.command("stats")
+@click.option("--json", "as_json", is_flag=True)
+def inference_stats(as_json: bool) -> None:
+    """Per model and question: calls, cache hits, failures, and how long calls took (median, 90th
+    percentile, seconds per 1,000 input characters; with the model already loaded)."""
+    from . import inference
+
+    rows = inference.store().stats()
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    click.echo(f"{'model':32} {'kind':7} {'query':12} {'calls':>5} {'hits':>5} {'failed':>6} "
+               f"{'median':>7} {'p90':>7} {'s/kchar':>7}")
+    for r in rows:
+        fmt = lambda v: "-" if v is None else f"{v:.2f}"  # noqa: E731
+        click.echo(f"{r['model'][:32]:32} {r['kind']:7} {r['query_id']:12} {r['calls']:5} {r['hits']:5} "
+                   f"{r['failed']:6} {fmt(r['median_s']):>7} {fmt(r['p90_s']):>7} {fmt(r['s_per_kchar']):>7}")
+
+
+@inference_cmd.command("show")
+@click.argument("call_id")
+def inference_show(call_id: str) -> None:
+    """One call (id or a prefix, e.g. from assertions.call_id): model, question, timings, and the
+    input and output texts if their files are still there."""
+    from . import inference
+
+    c = inference.store().show(call_id)
+    if c is None:
+        raise click.ClickException(f"no call {call_id}")
+    text = {k: c.pop(k) for k in ("input", "output", "instructions")}
+    click.echo(json.dumps(c, indent=2))
+    for k, v in text.items():
+        click.echo(f"--- {k}" + (" (deleted)" if v is None else ""))
+        if v is not None:
+            click.echo(v)
+
+
+@inference_cmd.command("prune")
+@click.option("--inputs/--no-inputs", default=True, show_default=True, help="Delete the input files.")
+@click.option("--outputs/--no-outputs", default=False, show_default=True,
+              help="Delete the output files too (the cache then asks the models again).")
+@click.option("--older-than", "days", type=float, default=30, show_default=True, metavar="DAYS")
+def inference_prune(inputs: bool, outputs: bool, days: float) -> None:
+    """Delete the texts of old calls; the rows (hashes, timings) stay. Inputs hold documents'
+    first pages; outputs are what the cache answers from."""
+    from . import inference
+
+    n = inference.store().prune(inputs=inputs, outputs=outputs, older_than_days=days)
+    click.echo(f"deleted {n} files")
 
 
 @main.command("works")

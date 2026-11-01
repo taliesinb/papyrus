@@ -113,6 +113,7 @@ Papyrus Server.app runs it on macOS; a systemd user unit on Linux.
 | `llm/apple.py` + `tools/afm-bridge` | extraction through Apple Foundation Models (a Swift CLI speaking NDJSON; guided generation via `DynamicGenerationSchema`); the same bridge does OCR (`OCR.swift`) |
 | `llm/decide.py` | `JevHTTPDecider` (`/v1/systemone`: TypeSafe, Ollama `tev1`, …) and `OpenAICompatDecider` (logprobs over lettered options) |
 | `llm/schema_lite.py` | JSON extraction and coercion for a JSON Schema subset; all model output passes through it |
+| `inference.py`, `inference.sql` | the inference cache: `Store` (`<home>/inference.sqlite` + text files by sha256; `lookup`, `start`/`finish`/`fail`, `forget_subject`, `prune`, `stats`, `estimate_s`), `cached_backend` / `cached_decider`, `subject()` |
 | `enrich/http.py` | polite shared HTTP client: per-host rate limits, retries, disk cache |
 | `enrich/ids.py` | arXiv / DOI / ISBN detection and normalisation (with checks against false positives) |
 | `enrich/{arxiv,openalex,semanticscholar,crossref}.py` | source clients → `models.WorkRecord` |
@@ -152,6 +153,31 @@ explicitly `none`: when LM Studio was off, `auto` used to fall back silently
 to Apple FM with no decider, the combination that once promoted exam papers
 and a CV to works.
 
+**The inference cache** (`inference.py`, `<home>/inference.sqlite`; tables in
+[schema.md](schema.md#the-inference-cache-homeinferencesqlite)). Triage
+(CLI and `watch`) wraps its backend and decider in `cached_backend` /
+`cached_decider`, which implement the same contracts:
+
+* **Key:** model (backend, model, build: not the endpoint) × query
+  (instructions, output schema, examples, params including the **seed**,
+  default 0, and the backend's `cache_params()`) × sha256 of the input. A
+  decider is cached per question.
+* **Hit:** the newest `ok` call whose output file still exists answers. The
+  claims written point at that call (`assertions.call_id`). `--fresh` asks
+  anyway.
+* **Miss:** `before_call` runs first (`watch`'s memory and LM Studio gate),
+  then the call is timed and recorded, failures included (type only).
+* **Texts** live in files beside the database (`inference/inputs`,
+  `inference/outputs`, by sha256); the database holds hashes. Each call
+  carries its document's sha256 (`subject`), which `purge` follows to delete
+  the texts.
+* **Seeds:** passed where the backend takes one. Apple FM honours it (the
+  bridge samples with `SamplingMode.random(probabilityThreshold: 1, seed:)`);
+  LM Studio's MLX engine accepts and ignores it. `models.seed_honoured` says
+  which, so a cached seed-7 answer isn't mistaken for a reproducible one.
+* **Timings** (`duration_ms`, tokens, whether the model was loaded, memory
+  pressure) feed `papyrus inference stats` and `Store.estimate_s`.
+
 ## Resolving conflicting claims
 
 * **File → work:** `works.best()` ranks claims by
@@ -175,6 +201,7 @@ and a CV to works.
 
 | decision | why |
 |---|---|
+| Model calls in an inference cache of their own (`inference.sqlite`), texts as files named by hash | The API log leaves model calls out because their prompts hold personal documents' first pages. Keeping hashes in the database and texts in files means the record (what was asked, how long it took) can outlive the texts, and a purge or `prune` deletes text without touching the statistics. A separate database: different lifecycle (deletable wholesale), and out of MCP's `sql` reach. The endpoint is not part of the model key (the same weights answer the same on another port); the seed is part of the query (another seed, another answer). |
 | Every API exchange appended to `api-log/<date>.jsonl`, separately from the 30-day cache | Responses hold more than we extract at the time. Re-reading the log costs nothing; re-calling an API costs rate limit (a 180-day Slack scan is ~1,000 calls and 15 min) and may return something different. JSONL files, not a table: append-only, written by several processes, and kept out of the documented schema. |
 | SQLite + FTS5 as the source of truth, with a JSON-in-TEXT `extra` | Single user, one file, zero ops, readable by any tool. Vectors will go in a sidecar table (`sqlite-vec`) or file, so the core stays extension-free. |
 | `assertions` table instead of overwriting fields | Several noisy sources (LLMs, APIs, heuristics) disagree. Keeping every claim lets us re-resolve, audit and undo (`reset_enrichment`). |

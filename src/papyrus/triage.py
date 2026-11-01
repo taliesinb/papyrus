@@ -202,12 +202,22 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
 
 def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decider: Decider | None,
                 run_id: int | None = None, max_chars: int = STATE_CHARS) -> dict[str, Any]:
+    """Ask the models about one file and record their claims. With cached models
+    (inference.cached_backend / cached_decider), each claim carries the call it came from, and
+    the calls carry the file's sha256, so a purge can find them."""
+    from . import inference
+
     state = build_state(conn, file_id, max_chars=max_chars)
+    sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
     result: dict[str, Any] = {"file_id": file_id}
     t0 = time.monotonic()
     btag = "llm:" + backend.info().tag
-    extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state, schema=EXTRACT_SCHEMA, max_tokens=1500)
+    with inference.subject(sha):
+        extracted = backend.extract(instructions=INSTRUCTIONS, prompt=state, schema=EXTRACT_SCHEMA,
+                                    max_tokens=1500)
+    ecall = inference.call_of(backend)
     result["extract_s"] = round(time.monotonic() - t0, 2)
+    result["cached"] = bool(getattr(backend, "last_hit", False))
     # Abstract: cut the exact span out of the page text using the model's anchors, falling back
     # to an 'Abstract ... Introduction' heuristic. Only for library material, so that personal
     # paperwork never gets copied into the database as an "abstract".
@@ -222,27 +232,30 @@ def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decide
         result["abstract_method"] = method
     if extracted.get("is_library_material") is False:
         extracted["topics"] = []  # don't index personal paperwork by topic
-    answers = {}
+    answers, dcalls = {}, {}
     if decider is not None:  # outside the write transaction: model calls can take seconds
         t1 = time.monotonic()
-        answers = decider.decide(state, DECISIONS)
+        with inference.subject(sha):
+            answers = decider.decide(state, DECISIONS)
+        dcalls = inference.calls_of(decider)
         result["decide_s"] = round(time.monotonic() - t1, 2)
     with db.tx(conn):
         for field in ["title", "authors", "year", "venue", "summary", "topics", "language",
                       "kind", "is_library_material"]:
             v = extracted.get(field)
             if v not in (None, "", []):
-                db.assert_(conn, "file", file_id, field, v, source=btag, run_id=run_id)
+                db.assert_(conn, "file", file_id, field, v, source=btag, run_id=run_id, call_id=ecall)
         if extracted["abstract"]:
             db.assert_(conn, "file", file_id, "abstract", extracted["abstract"], source=abstract_source,
-                       run_id=run_id)
+                       run_id=run_id, call_id=ecall)
         if answers:
             dtag = "decide:" + decider.info().tag
             for key, ans in answers.items():
                 value = ans.best if key == "kind" else ans.best == "yes"
                 db.assert_(conn, "file", file_id, key, value, source=dtag, confidence=ans.confidence,
-                           run_id=run_id)
-                db.assert_(conn, "file", file_id, key + "_probs", ans.probabilities, source=dtag, run_id=run_id)
+                           run_id=run_id, call_id=dcalls.get(key))
+                db.assert_(conn, "file", file_id, key + "_probs", ans.probabilities, source=dtag, run_id=run_id,
+                           call_id=dcalls.get(key))
                 result[key] = (value, round(ans.confidence, 3))
         ids = detect_ids(conn, file_id)
         if ids:

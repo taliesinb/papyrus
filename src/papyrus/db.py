@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 # A variant id: lowercase letters, digits and single dashes (as DeepSea's). No dots, so the
@@ -140,8 +140,9 @@ def recorded_run(conn: sqlite3.Connection, command: str, args: dict | None = Non
 
 def assert_(conn: sqlite3.Connection, subject_type: str, subject_id: int, field: str, value: Any,
             source: str, confidence: float | None = None, run_id: int | None = None,
-            supersede: bool = True) -> int:
-    """Record a claim. By default supersedes earlier claims from the same source."""
+            supersede: bool = True, call_id: str | None = None) -> int:
+    """Record a claim. By default supersedes earlier claims from the same source. `call_id`: the
+    model call it came from (inference.py)."""
     if supersede:
         conn.execute(
             "UPDATE assertions SET superseded_at=? WHERE subject_type=? AND subject_id=? AND field=?"
@@ -149,9 +150,9 @@ def assert_(conn: sqlite3.Connection, subject_type: str, subject_id: int, field:
             (now_iso(), subject_type, subject_id, field, source),
         )
     cur = conn.execute(
-        "INSERT INTO assertions(subject_type, subject_id, field, value, confidence, source, run_id)"
-        " VALUES (?,?,?,?,?,?,?)",
-        (subject_type, subject_id, field, dumps(value), confidence, source, run_id),
+        "INSERT INTO assertions(subject_type, subject_id, field, value, confidence, source, run_id, call_id)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (subject_type, subject_id, field, dumps(value), confidence, source, run_id, call_id),
     )
     return cur.lastrowid
 

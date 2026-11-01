@@ -11,8 +11,10 @@ a CV none of that belongs in the library, so once triage is sure a file is perso
   their URL (the link given to `papyrus download`, and `where_froms`); the API log is untouched.
 * **erased**: page text and its full-text index entries, the outline, PDF metadata, page
   count, every claim about the file, filesystem contexts (path, filename, dates), download
-  contexts' titles and filenames, the stored copy, and cached page thumbnails. A work whose
-  files are all purged is rejected and stripped to its released ids.
+  contexts' titles and filenames, the stored copy, cached page thumbnails, and the inference
+  cache's input and output files of every model call about it (`inference.Store.forget_subject`;
+  the call rows, hashes and timings, stay). A work whose files are all purged is rejected and
+  stripped to its released ids.
 
 Deleted rows are erased, not just unlinked: the purging connection turns on
 `PRAGMA secure_delete` (freed pages are zeroed), the full-text index's `secure-delete` option
@@ -37,7 +39,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import db, store
+from . import db, inference, store
 from .search import LIVE_FILE
 
 PURGE_THRESHOLD = 0.9
@@ -142,6 +144,9 @@ def purge_file(conn: sqlite3.Connection, file_id: int, why: dict[str, Any], run_
     # the bytes, once the database no longer points at them
     rel = f["stored_path"] or store.rel_path(f["sha256"])
     store.abs_path(rel).unlink(missing_ok=True)
+    # what the models were asked about it and answered (inference.py): the files go, the rows
+    # (hashes, timings) stay
+    inference.store().forget_subject(f["sha256"])
     for p in thumbs_dir().glob(f"{f['sha256'][:32]}-p*-w*.png"):
         p.unlink(missing_ok=True)
     return True
