@@ -62,7 +62,7 @@ def coerce(value: Any, schema: dict[str, Any], path: str = "$") -> Any:
 
     Unknown object keys are dropped; missing required keys raise SchemaError;
     enum strings are matched case-insensitively; numbers-as-strings are parsed;
-    'null'/'' for optional scalars become None.
+    'null'/'' for optional scalars become None; null items of arrays are dropped.
     """
     t = schema.get("type")
     if isinstance(t, list):  # e.g. ["string", "null"]
@@ -87,7 +87,9 @@ def coerce(value: Any, schema: dict[str, Any], path: str = "$") -> Any:
         if not isinstance(value, list):
             value = [value]
         items = schema.get("items", {})
-        return [coerce(v, items, f"{path}[{i}]") for i, v in enumerate(value)]
+        # a null item ([null], ["", "Jane Doe"]) is never meant: small models write it for "none"
+        out = [coerce(v, items, f"{path}[{i}]") for i, v in enumerate(value) if v is not None]
+        return [v for v in out if v is not None]
     if value is None or (isinstance(value, str) and value.strip().lower() in {"", "null", "none", "n/a", "unknown"}):
         if t == "string" and "enum" not in schema:
             return None

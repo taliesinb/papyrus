@@ -154,7 +154,8 @@ def promote_file(conn: sqlite3.Connection, file_id: int, run_id: int | None = No
                 "INSERT INTO works(kind, title, abstract, year, venue, language) VALUES (?,?,?,?,?,?)",
                 (kind, title, best(claims, "abstract"), year, best(claims, "venue"), best(claims, "language")),
             ).lastrowid
-            for pos, name in enumerate(best(claims, "authors") or []):
+            names = [n.strip() for n in best(claims, "authors") or [] if isinstance(n, str) and n.strip()]
+            for pos, name in enumerate(names):  # (claims stored before schema_lite dropped null items)
                 conn.execute("INSERT INTO work_authors(work_id, position, raw_name, source) VALUES (?,?,?,?)",
                              (work_id, pos, name, "triage"))
             for t in best(claims, "topics") or []:

@@ -491,7 +491,11 @@ class Watch:
         for (fid,) in self.conn.execute(
                 "SELECT f.id FROM files f WHERE f.triage_status='done' AND f.purged_at IS NULL"
                 " AND NOT EXISTS (SELECT 1 FROM file_works fw WHERE fw.file_id=f.id) ORDER BY f.id").fetchall():
-            self._promote(fid, run_id, c, quiet=True)
+            try:
+                self._promote(fid, run_id, c, quiet=True)
+            except Exception as e:  # noqa: BLE001  one bad file must not stop the watcher at every start
+                c["promote_error"] += 1
+                self.log(f"file {fid} promote failed ({type(e).__name__})")
 
     def _promote(self, fid: int, run_id: int, c: Counter, quiet: bool = False) -> None:
         from ..works import promote_file

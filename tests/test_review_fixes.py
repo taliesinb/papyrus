@@ -188,3 +188,26 @@ def test_without_a_classifier_the_extraction_model_still_judges(tmp_path):
     be = _SchemaBackend(dict(PAPER, is_library_material=False))
     triage_file(conn, 1, be, None)
     assert "is_library_material" in be.schemas[0]["properties"] and not _claims(conn, "topics")
+
+
+def test_a_null_author_from_the_model_is_dropped():
+    """2026-11-01: Qwen3.5-2B answered "authors": [null]; promote then failed on work_authors'
+    NOT NULL, at every watcher start (the catch-up promotes outside the per-step error handling)."""
+    from papyrus.llm.schema_lite import coerce
+
+    schema = {"type": "object", "properties": {"authors": {"type": "array", "items": {"type": "string"}},
+                                               "topics": {"type": "array", "items": {"type": "object", "properties": {
+                                                   "name": {"type": "string"}}, "required": ["name"]}}},
+              "required": ["authors"]}
+    assert coerce({"authors": [None, "", "Jane Doe"], "topics": [None]}, schema) == {"authors": ["Jane Doe"], "topics": []}
+
+
+def test_promote_ignores_null_author_claims_already_stored(tmp_path):
+    from papyrus import db
+
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe.")
+    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
+    db.assert_(conn, "file", 1, "authors", [None, "Jane Doe"], source="llm:fake:m")
+    action, wid = promote_file(conn, 1)
+    assert action == "created"
+    assert [r[0] for r in conn.execute("SELECT raw_name FROM work_authors WHERE work_id=?", (wid,))] == ["Jane Doe"]
