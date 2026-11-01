@@ -84,3 +84,24 @@ def test_recorded_run_closes_on_interrupt_and_crash(tmp_path):
     assert all(r[0] for r in rows)
     assert ['"interrupted"' in rows[0][1], "crashed: ValueError: boom" in rows[1][1], '"completed"' in rows[2][1]] \
         == [True, True, True]
+
+
+def test_live_only_extraction_when_file_and_work_ids_differ(tmp_path):
+    """fulltext.pending_files(live_only=True) formatted LIVE_FILE with a bare `id`, which inside its
+    subquery meant works.id: a file was extracted only if its id equalled its work's. Found on the
+    first real catch-up (file 6 = work 1: every extraction failed)."""
+    from papyrus import db, fulltext
+    from papyrus.scan import ScanOptions, scan
+    from test_core import _make_pdf
+
+    d = tmp_path / "lib"
+    d.mkdir()
+    for name in ("a.pdf", "b.pdf"):
+        _make_pdf(d / name, f"Lecture notes {name}, on things, with exercises and solutions.")
+    conn = db.connect(tmp_path / "t.sqlite")
+    scan(conn, [d], ScanOptions())
+    wid = conn.execute("INSERT INTO works(kind, title) VALUES ('lecture_notes', 'Notes')").lastrowid
+    conn.execute("INSERT INTO file_works(file_id, work_id, relation, source) VALUES (2, ?, 'full', 'test')", (wid,))
+    assert wid == 1
+    assert fulltext.pending_files(conn, (2,), live_only=True) == [2]
+    assert fulltext.pending_files(conn, (1,), live_only=True) == []  # file 1 is no live work's

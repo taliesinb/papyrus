@@ -107,7 +107,8 @@ def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo
     if file_ids:
         q = (f"SELECT id FROM files WHERE id IN ({','.join('?' * len(file_ids))}) AND purged_at IS NULL"
              + ("" if redo else " AND fulltext_status <> 'done'")
-             + (f" AND {LIVE_FILE.format(f='id')}" if live_only else ""))
+             # qualified: a bare `id` inside LIVE_FILE's subquery would be works.id
+             + (f" AND {LIVE_FILE.format(f='files.id')}" if live_only else ""))
         return [r[0] for r in conn.execute(q + " ORDER BY id", file_ids)]
     q = ("SELECT f.id FROM files f WHERE f.text_status IN ('ok', 'no_text') AND " + LIVE_FILE.format(f="f.id")
          + ("" if redo else " AND f.fulltext_status = 'pending'") + " ORDER BY f.id")
