@@ -92,7 +92,7 @@ struct LibraryStatus: Decodable {
     /// its queue (items per stage, given up on) and the seconds of work left, when it can tell.
     struct Watch: Decodable {
         var state: String; var detail: String; var retryAt: String?; var pending: Pending?
-        var failed: Int?; var etaS: Double?
+        var failed: Int?; var etaS: Double?; var paused: Bool?
     }
     var counts: Counts
     var running: [Run]

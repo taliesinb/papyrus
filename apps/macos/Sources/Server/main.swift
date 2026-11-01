@@ -389,6 +389,33 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watchLog.line("stopped the watcher")
     }
 
+    /// The library's home, as the CLI finds it: PAPYRUS_HOME, else $PAPYRUS_ROOT (~/.papyrus)/<variant>.
+    var libraryHome: URL {
+        let env = ProcessInfo.processInfo.environment.merging(config.env ?? [:]) { _, configured in configured }
+        if let home = env["PAPYRUS_HOME"], !home.isEmpty {
+            return URL(fileURLWithPath: (home as NSString).expandingTildeInPath)
+        }
+        let root = env["PAPYRUS_ROOT"].map { ($0 as NSString).expandingTildeInPath }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".papyrus").path
+        return URL(fileURLWithPath: root).appendingPathComponent(config.variant)
+    }
+
+    /// `<home>/watch.pause`: while it exists, the watcher (ours or one in a terminal) adds files but
+    /// asks no model (`papyrus watch --pause` / `--resume`). For LM Studio experiments.
+    var pauseFile: URL { libraryHome.appendingPathComponent("watch.pause") }
+    var modelWorkPaused: Bool { FileManager.default.fileExists(atPath: pauseFile.path) }
+
+    @objc func togglePause() {
+        if modelWorkPaused {
+            try? FileManager.default.removeItem(at: pauseFile)
+            watchLog.line("model work resumed from the menu")
+        } else {
+            FileManager.default.createFile(atPath: pauseFile.path, contents: nil)
+            watchLog.line("model work paused from the menu")
+        }
+        poll()
+    }
+
     @objc func toggleWatch() {
         watchEnabled.toggle()
         watcherFailures = []
@@ -411,6 +438,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "idle": return "Watching: idle" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
         case "ingesting": return "Watching: adding new PDFs" + left
         case "waiting-memory": return "Watching: waiting for memory" + left
+        case "paused": return "Watching: model work paused" + left
         case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
         default: return "Watching: \(w.state)" + left
         }
@@ -580,6 +608,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Publish on Tailnet", #selector(togglePublish), "").state = publishEnabled ? .on : .off
         if config.watch != nil {
             add(menu, "Watch for New PDFs", #selector(toggleWatch), "").state = watchEnabled ? .on : .off
+            add(menu, "Pause Model Work", #selector(togglePause), "").state = modelWorkPaused ? .on : .off
         }
         add(menu, "Restart Server", #selector(restartServer), "r")
         add(menu, "Show Server Log", #selector(showLog), "l")

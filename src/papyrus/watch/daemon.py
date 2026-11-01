@@ -49,7 +49,8 @@ from typing import Any, Callable
 from .. import db, fulltext, inference, purge, scan
 from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
-from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, STARTING,
+from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, PAUSED,
+                     STARTING,
                      STOPPED, WAITING_MEMORY, Backoff)
 from .models import ModelLedger
 from .queue import STAGES, Queue
@@ -143,6 +144,8 @@ class Watch:
         self.last_autostart = -AUTOSTART_EVERY_S
         self.last_refresh = clock()
         self.inodes: dict[Path, int] = {}  # the database files as first seen (see _guard)
+        self.pause_path = self.status_path.with_name("watch.pause")
+        self.was_paused = self.pause_path.exists()  # pump() acts when this changes
         self.unreadable: list[Path] = []  # watched directories macOS won't let us read
         self.last_access_check = clock()
         self.totals: Counter = Counter()
@@ -197,6 +200,11 @@ class Watch:
                 self.debouncer.touch(p)
         ready, gone = self._due()
         now = self.clock()
+        if self.paused != self.was_paused:
+            self.was_paused = not self.was_paused
+            self.log("model work paused" if self.was_paused else "model work resumed")
+            self.dirty = True
+            self._settle()
         if self.backoff_state and now >= self.backoff_until:
             self.backoff_state = None
             self.dirty = True
@@ -242,6 +250,8 @@ class Watch:
             waits.append(self.backoff_until - now)
         if (d := self.ledger.idle_due()) is not None:
             waits.append(d + 1)
+        if self.paused:
+            waits.append(5.0)  # notice a resume soon
         return max(0.2, min(waits))
 
     # --- a batch ------------------------------------------------------------------------------
@@ -450,9 +460,19 @@ class Watch:
             "triage": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {TRIAGE_PENDING} ORDER BY id")],
         }
 
+    @property
+    def paused(self) -> bool:
+        """Model work (triage, OCR) is paused: `<home>/watch.pause` exists (the menu bar's Pause
+        Model Work, `papyrus watch --pause`). Files are still added, extracted and enriched."""
+        return self.pause_path.exists()
+
     def _next_task(self) -> tuple[str, int] | None:
         self.queue.sync(self._library_pending())
-        models_ok = self.backoff_state is None or self.clock() >= self.backoff_until
+        paused = self.paused
+        if paused and not self.was_paused:  # noticed mid-batch: pump() then sees the resume
+            self.was_paused = True
+            self.log("model work paused")
+        models_ok = (self.backoff_state is None or self.clock() >= self.backoff_until) and not paused
         return self.queue.next([s for s in STAGES if models_ok or s not in ("ocr", "triage")])
 
     def _still_pending(self, stage: str, i: int) -> bool:
@@ -591,8 +611,11 @@ class Watch:
         return self.queue.eta_s({"triage": per_doc})
 
     def _settle(self) -> None:
-        """The state between batches: waiting (if model work is pending and backing off) or idle."""
-        if self.backoff_state and self.clock() < self.backoff_until and self.pending()["triage"]:
+        """The state between batches: paused or waiting (if model work is pending), or idle."""
+        counts = self.pending()
+        if self.paused and (counts["triage"] or counts["ocr"]):
+            self._status(PAUSED, "model work paused (papyrus watch --resume)")
+        elif self.backoff_state and self.clock() < self.backoff_until and self.pending()["triage"]:
             self._status(self.backoff_state, self.backoff_reason)
         elif self.unreadable:
             n = len(self.unreadable)
@@ -604,7 +627,7 @@ class Watch:
         self.state, self.detail = state, detail
         data: dict[str, Any] = {
             "state": state, "detail": detail, "pid": os.getpid(), "since": self.started, "updated": db.now_iso(),
-            "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs),
+            "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs), "paused": self.paused,
             "loaded_by_watch": sorted(self.ledger.ours),
             "totals": {k: self.totals[k] for k in ("new_files", "triaged", "promote_created", "promote_linked",
                                                    "promote_purged", "extracted", "enrich_enriched") if self.totals[k]},

@@ -200,6 +200,7 @@ export function watchStatus(): WatchStatus | null {
 		pending?: WatchStatus['pending'];
 		failed?: number;
 		eta_s?: number | null;
+		paused?: boolean;
 	};
 	try {
 		s = JSON.parse(readFileSync(join(libraryHome(), 'watch.json'), 'utf8'));
@@ -218,6 +219,7 @@ export function watchStatus(): WatchStatus | null {
 		retryAt: s.retry_at ?? null,
 		pending: s.pending ?? null,
 		failed: s.failed ?? 0,
-		etaS: s.eta_s ?? null
+		etaS: s.eta_s ?? null,
+		paused: s.paused ?? false
 	};
 }

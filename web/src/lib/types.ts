@@ -143,7 +143,9 @@ export interface PipelineStatus {
 }
 
 export interface WatchStatus {
-	state: 'starting' | 'idle' | 'ingesting' | 'waiting-memory' | 'lmstudio-unavailable';
+	state: 'starting' | 'idle' | 'ingesting' | 'waiting-memory' | 'lmstudio-unavailable' | 'paused';
+	/** Model work (triage, OCR) paused by the user (<home>/watch.pause); files are still added. */
+	paused: boolean;
 	detail: string;
 	retryAt: string | null;
 	/** The watcher's queue: items per stage, due or waiting for a retry. */

@@ -353,6 +353,11 @@ The seed is part of the inference cache's key either way.
   * A process without the guard can still be rescued: `lldb -p PID` and
     `expr (int)fcopyfile(FD, open("/tmp/x", 0x601, 420), 0, 8)` for each
     database fd that `lsof -p PID` lists, then `kill -9` it (not SIGTERM).
+* **Pause it for LM Studio experiments:** `papyrus watch --pause` (or the
+  menu bar's Pause Model Work) creates `<home>/watch.pause`. While it exists,
+  the watcher, whoever runs it, asks no model (triage and OCR wait; state
+  `paused`) but still adds, extracts and enriches files. The file in progress
+  finishes first (up to ~20 s). It lasts across restarts until `--resume`.
 * **Its runs are `command='watch'`**, one per batch. `scan`'s own runs are
   not involved; `scan.ingest_path` is the shared per-file body.
 * **Background priority throttles I/O too** (`PRIO_DARWIN_BG`): hashing and

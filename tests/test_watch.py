@@ -385,6 +385,24 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     assert json.loads(w.status_path.read_text())["state"] == IDLE
 
 
+def test_pausing_model_work_keeps_adding_files(tmp_path):
+    be = FakeBackend(PAPER)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be)
+    r = CliRunner().invoke(main, ["watch", "--pause"])
+    assert r.exit_code == 0 and w.paused
+    _pdf(dl / "a.pdf", "Lecture notes on things")
+    w.catch_up()
+    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1  # added
+    assert be.prompts == [] and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "pending"
+    status = json.loads(w.status_path.read_text())
+    assert status["state"] == "paused" and status["paused"] is True and status["pending"]["triage"] == 1
+    CliRunner().invoke(main, ["watch", "--resume"])
+    w.pump()  # notices the resume, triages
+    assert len(be.prompts) == 1 and conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
+    assert json.loads(w.status_path.read_text())["state"] == IDLE
+    assert any(m == "model work resumed" for m in logs)
+
+
 def test_apple_refusal_under_memory_pressure_is_a_back_off(tmp_path):
     class Busy(FakeBackend):
         def extract(self, **kw):

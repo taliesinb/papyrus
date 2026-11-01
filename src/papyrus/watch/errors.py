@@ -7,6 +7,7 @@ IDLE = "idle"
 INGESTING = "ingesting"  # adding new files, or triaging / extracting / enriching
 WAITING_MEMORY = "waiting-memory"
 LMSTUDIO_UNAVAILABLE = "lmstudio-unavailable"  # off, not serving the model, or busy with another
+PAUSED = "paused"  # model work paused by the user (<home>/watch.pause); files are still added
 STOPPED = "stopped"
 
 # How long to wait before trying model work again (seconds). Memory doubles up to the cap.

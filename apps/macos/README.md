@@ -168,7 +168,7 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
   * the tailnet address.
 
   Its items are Open Papyrus (⌘O), Open in Browser, Open / Copy Tailnet
-  Address, Publish on Tailnet, Watch for New PDFs, Restart Server (⌘R), Show
+  Address, Publish on Tailnet, Watch for New PDFs, Pause Model Work, Restart Server (⌘R), Show
   Server Log (⌘L), Show Watcher Log, Open at Login (`SMAppService`) and Quit
   (⌘Q).
 * **Runs the watcher** (`papyrus watch`, the `watch` command in
@@ -183,6 +183,10 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
   * Quit sends it SIGTERM first (its run closes as `interrupted`, and it
     unloads any model it loaded), waiting up to 10 s.
   * Watch for New PDFs (on by default) stops and starts it.
+  * Pause Model Work creates `<home>/watch.pause` (`papyrus watch --pause`):
+    the watcher, whoever runs it, then asks no model but keeps adding files,
+    until the item is unticked (`--resume`). For LM Studio experiments
+    without stopping the run.
 * **The menu's watcher line** comes from `/api/version`'s `watch` (the
   library's `watch.json`): Watching: idle, adding new PDFs, waiting for
   memory, or LM Studio unavailable (with the reason, such as "another model

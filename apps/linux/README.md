@@ -95,7 +95,8 @@ release by default, others with `--watch`, recorded as `watch:` in
   and an estimate of the time left), and `papyrus watch --status` prints it.
   Failed steps are retried after 1 h, 4 h and 16 h from
   `~/.papyrus/<variant>/queue.sqlite`; `papyrus watch --retry-failed` revives
-  the ones it gave up on.
+  the ones it gave up on. `papyrus watch --pause` / `--resume` holds model
+  work (triage, OCR) while new files are still added.
 
 `--uninstall` stops, disables and deletes the units, deletes the installed web
 build and withdraws the tailnet path. The library and the logs stay.
