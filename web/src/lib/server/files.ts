@@ -4,6 +4,10 @@
 // papyrus's managed copy (files.stored_path) or to a live filesystem
 // context. We check the size matches so a different file that has since
 // taken the same path is not served by mistake.
+//
+// Only files of live works (candidate or confirmed) are served at all: the
+// library also knows personal paperwork that triage kept out (payslips, CVs;
+// waiting for review, or purged down to a hash), and file ids are easy to guess.
 
 import { execFile, spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
@@ -24,9 +28,14 @@ export interface ResolvedFile {
 	pageCount: number | null;
 }
 
+/** SQL: the file whose id is the expression `col` belongs to a live work (as search.LIVE_FILE in Python). */
+export const LIVE_FILE = (col: string) =>
+	`EXISTS (SELECT 1 FROM file_works fw JOIN works w ON w.id = fw.work_id
+	         WHERE fw.file_id = ${col} AND w.status IN ('candidate', 'confirmed'))`;
+
 export function resolveFile(id: number): ResolvedFile | null {
 	const f = get<{ sha256: string; size: number; stored_path: string | null; page_count: number | null }>(
-		`SELECT sha256, size, stored_path, page_count FROM files WHERE id = ?`,
+		`SELECT sha256, size, stored_path, page_count FROM files f WHERE id = ? AND ${LIVE_FILE('f.id')}`,
 		id
 	);
 	if (!f) return null;

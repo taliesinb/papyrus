@@ -9,7 +9,7 @@ import { basename, dirname } from 'node:path';
 import type { Author, FileRef, Ident, Topic, WorkSource, WorkSummary } from '#lib/types.ts';
 import { all, dataVersion, parseJson } from './db.ts';
 import { buildTfidf, type TfidfIndex } from './similar.ts';
-import { fileAvailable } from './files.ts';
+import { fileAvailable, LIVE_FILE } from './files.ts';
 
 export interface TopicNode {
 	id: number;
@@ -181,7 +181,7 @@ function build(version: number): Library {
 	}>(
 		`SELECT r.file_id, c.kind, c.locator, c.occurred_at, c.missing_at, c.extra
 		 FROM context_refs r JOIN contexts c ON c.id = r.context_id
-		 WHERE r.file_id IS NOT NULL ORDER BY c.occurred_at`
+		 WHERE r.file_id IS NOT NULL AND ${LIVE_FILE('r.file_id')} ORDER BY c.occurred_at`
 	)) {
 		const extra = parseJson<{ where_froms?: string[] }>(r.extra, {});
 		const list = fileCtx.get(r.file_id) ?? [];
@@ -207,8 +207,10 @@ function build(version: number): Library {
 		size: number;
 		text_status: string;
 	}>(
+		// Files of live works only: a rejected work (not library material) lists no files, paths or URLs.
 		`SELECT fw.work_id, fw.file_id, fw.relation, fw.version, f.page_count, f.size, f.text_status
-		 FROM file_works fw JOIN files f ON f.id = fw.file_id`
+		 FROM file_works fw JOIN files f ON f.id = fw.file_id JOIN works w ON w.id = fw.work_id
+		 WHERE w.status IN ('candidate', 'confirmed')`
 	)) {
 		const ctx = fileCtx.get(r.file_id) ?? [];
 		const live = ctx.find((c) => c.locator && !c.missing);

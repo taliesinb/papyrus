@@ -13,6 +13,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from . import db
+from .search import LIVE_FILE
 from .works import work_json
 
 server = MCPServer(
@@ -84,7 +85,11 @@ def fulltext_search(query: str, limit: int = 20, pages_per_work: int = 3) -> lis
 def get_work(work_id: int) -> dict[str, Any]:
     """Full record of a work: identifiers, authors (with ORCID/OpenAlex ids when known), topics,
     files, and every context in which it was discovered (paths, download URLs, messages...)."""
-    return work_json(_conn(), work_id)
+    conn = _conn()
+    w = conn.execute("SELECT status FROM works WHERE id=?", (work_id,)).fetchone()
+    if not w or w["status"] == "rejected":  # rejected = not library material (e.g. a CV)
+        raise ValueError(f"no work {work_id}")
+    return work_json(conn, work_id)
 
 
 @server.tool()
@@ -93,7 +98,8 @@ def get_file(file_id: int, include_text: bool = False, page_from: int = 1, page_
     """A PDF file: PDF metadata, locations on disk, model/heuristic assertions, linked works;
     with include_text, the text of pages page_from..page_to (default: the first 2; at most 30)."""
     conn = _conn()
-    f = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    # Only files of live works: the others are personal paperwork that triage kept out of the library.
+    f = conn.execute(f"SELECT * FROM files WHERE id=? AND {LIVE_FILE.format(f='files.id')}", (file_id,)).fetchone()
     if not f:
         raise ValueError(f"no file {file_id}")
     out: dict[str, Any] = {k: f[k] for k in f.keys() if f[k] is not None}
@@ -116,11 +122,15 @@ def get_file(file_id: int, include_text: bool = False, page_from: int = 1, page_
 def recent_discoveries(limit: int = 20, kind: str | None = None) -> list[dict[str, Any]]:
     """Most recently encountered documents (by context time: download time, message time...)."""
     conn = _conn()
+    # Only refs to live works and their files (or to nothing yet, e.g. a Slack link being resolved):
+    # paths and URLs of personal paperwork stay out.
+    live = (f"(r.file_id IS NULL OR {LIVE_FILE.format(f='r.file_id')})"
+            " AND (r.work_id IS NULL OR r.work_id IN (SELECT id FROM works WHERE status IN ('candidate', 'confirmed')))")
     rows = conn.execute(
-        """SELECT c.kind, c.occurred_at, c.locator, c.actor, c.url, r.file_id, r.work_id,
+        f"""SELECT c.kind, c.occurred_at, c.locator, c.actor, c.url, r.file_id, r.work_id,
                   (SELECT title FROM works WHERE id=r.work_id) AS title
            FROM contexts c JOIN context_refs r ON r.context_id=c.id
-           WHERE c.missing_at IS NULL""" + (" AND c.kind=?" if kind else "") +
+           WHERE c.missing_at IS NULL AND {live}""" + (" AND c.kind=?" if kind else "") +
         " ORDER BY c.occurred_at DESC LIMIT ?", ((kind, limit) if kind else (limit,)))
     return [dict(r) for r in rows]
 
