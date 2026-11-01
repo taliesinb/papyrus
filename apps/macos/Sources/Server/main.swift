@@ -456,7 +456,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else {
                     line += " · timing…"
                 }
-            case "waiting": line += " · waiting" + (s.reason.map { " (\($0))" } ?? "")
+            case "waiting": line += " · waiting" + (s.reason.map { ": \($0)" } ?? "")
             case "paused": line += " · paused"
             default: line += " · pending"
             }
@@ -616,11 +616,15 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 info("\(run.command) running\(run.backend.map { " (\($0))" } ?? "")")
             }
         }
-        for line in watchLines { info(line) }
         if published, let host = tailnetHost {
             info("Published at \(host)\(config.base)")
         } else if publishEnabled, let note = tailscaleNote {
             info("Not on the tailnet: \(note)")
+        }
+        let watch = watchLines
+        if !watch.isEmpty {  // the watcher's own section
+            menu.addItem(.separator())
+            for line in watch { info(line) }
         }
 
         menu.addItem(.separator())
