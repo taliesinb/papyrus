@@ -394,7 +394,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
         held = [fid for fid, why in found if not why]
     for fid in held:
         claims = db.current_assertions(conn, "file", fid)
-        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("classify:")), {})
+        probs = (kind_probs(claims) or ({}, None))[0]
         title = next((c["value"] for c in claims.get("title", [])), "") or _filename(conn, fid)
         by = ""
         if not probs and (p := screen_rejected(claims)) is not None:
@@ -480,9 +480,13 @@ def index(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_ocr:
 @click.argument("work_ids", nargs=-1, type=int)
 @click.option("--all", "redo_all", is_flag=True, help="Also match works that already have API data.")
 @click.option("--reset", is_flag=True, help="Undo previous matches of the given works first (keeps them as history).")
+@click.option("--force/--no-force", default=None,
+              help="Look works up by title whatever their kind (default: only when WORK_IDS are given). Without it, "
+                   "manuals, tutorials, lecture notes, slides and other kinds without an identifier are skipped.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
-def match(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
+def match(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, force: bool | None,
+          limit: int | None) -> None:
     """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
     identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
     from .match.pipeline import match_work, reset_match
@@ -503,7 +507,7 @@ def match(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: 
             try:
                 if reset:
                     reset_match(conn, wid)
-                r = match_work(conn, wid, run_id=run_id)
+                r = match_work(conn, wid, run_id=run_id, force=bool(work_ids) if force is None else force)
             except Exception as e:
                 r = {"status": "error", "error": f"{type(e).__name__}: {e}"}
             stats[r["status"]] = stats.get(r["status"], 0) + 1
@@ -547,7 +551,7 @@ def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
     pending = _unmatched_works(_conn(ctx), file_ids)
     click.echo(f"== match ({len(pending)} works)")
     if pending:
-        ctx.invoke(match, work_ids=tuple(pending))
+        ctx.invoke(match, work_ids=tuple(pending), force=False)
 
 
 @main.command()

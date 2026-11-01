@@ -15,7 +15,7 @@ def test_ingest_runs_every_stage_and_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")
     enriched = []
 
-    def fake_match(conn, wid, run_id=None):
+    def fake_match(conn, wid, run_id=None, **kw):
         enriched.append(wid)
         conn.execute("INSERT INTO assertions(subject_type, subject_id, field, value, source)"
                      " VALUES ('work', ?, 'title', '\"x\"', 'api:test')", (wid,))

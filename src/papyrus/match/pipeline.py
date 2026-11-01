@@ -348,18 +348,35 @@ def unmatched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) ->
     return [r[0] for r in conn.execute(q, file_ids)]
 
 
+# Kinds the scholarly databases (arXiv, OpenAlex, Crossref, S2) don't cover: without an identifier
+# a title search finds nothing (0 of 7 manuals, tutorials and lecture notes, 2026-11-01), costs
+# requests and rate-limit budget, and for slides finds the talk's paper, whose identity it isn't.
+NO_TITLE_SEARCH = frozenset({"manual", "tutorial", "lecture_notes", "slides", "other", "personal"})
+
+
 def match_work(
     conn: sqlite3.Connection,
     work_id: int,
     *,
     threshold: float = THRESHOLD,
     run_id: int | None = None,
+    force: bool = False,
     **resolve_kw: Any,
 ) -> dict[str, Any]:
-    """Resolve work `work_id` against external APIs and write the results back."""
+    """Resolve work `work_id` against external APIs and write the results back.
+
+    A work of a kind in NO_TITLE_SEARCH without an identifier is not looked up (status
+    `skipped`, recorded so it isn't pending), unless `force` (`papyrus match WORK_ID`)."""
     hint = build_hint(conn, work_id)
     if not (hint.arxiv_id or hint.doi or hint.isbn or hint.title):
         return {"status": "not_found", "work_id": work_id, "reason": "no identifiers or title"}
+    kind = conn.execute("SELECT kind FROM works WHERE id=?", (work_id,)).fetchone()[0]
+    if not force and kind in NO_TITLE_SEARCH and not (hint.arxiv_id or hint.doi or hint.isbn):
+        with db.tx(conn):
+            db.assert_(conn, "work", work_id, "match_candidates", [], source=MATCH_SOURCE, run_id=run_id)
+            db.assert_(conn, "work", work_id, "match_skipped", {"reason": "kind", "kind": kind},
+                       source=MATCH_SOURCE, run_id=run_id)
+        return {"status": "skipped", "work_id": work_id, "kind": kind}
     report: dict[str, Any] = {}
     records = candidates.resolve(hint, report=report, **resolve_kw)
     good = [r for r in records if (r.match_score or 0) >= threshold]

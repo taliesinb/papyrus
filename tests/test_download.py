@@ -258,7 +258,7 @@ def test_cli_process_triages_promotes_and_enriches_new_files(tmp_path, monkeypat
     monkeypatch.setattr(llm, "get_backend", lambda spec: FakeBackend(dict(PAPER, title="Polygraphs")))
     monkeypatch.setenv("PAPYRUS_CLASSIFIER", "none")  # classify refuses to run without a classifier otherwise
     enriched = []
-    monkeypatch.setattr(pipeline, "match_work", lambda conn, wid, run_id=None: enriched.append(wid) or
+    monkeypatch.setattr(pipeline, "match_work", lambda conn, wid, run_id=None, **kw: enriched.append(wid) or
                         {"status": "nomatch"})
     try:
         r = CliRunner().invoke(main, ["--db", str(tmp_path / "t.sqlite"), "download", "--ingest",

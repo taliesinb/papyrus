@@ -239,3 +239,18 @@ def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
 
     monkeypatch.setattr(candidates, "resolve", resolve_s2_only)
     assert pipeline.match_work(conn, wid)["status"] == "not_found"
+
+
+def test_kinds_the_databases_lack_are_not_looked_up_by_title(tmp_path, monkeypatch):
+    """2026-11-01: title searches for manuals, tutorials and lecture notes found nothing (0 of 7),
+    cost rate-limit budget, and slides risk taking the talk's paper's identity."""
+    from papyrus.match import candidates, pipeline
+
+    asked = []
+    monkeypatch.setattr(candidates, "resolve", lambda hint, report=None, **kw: asked.append(hint.title) or [])
+    conn = _lib(tmp_path, "x.pdf", "Typst Documentation. Version 0.15.1. Getting started.")
+    classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Typst Documentation")), FakeClassifier("manual", True))
+    _, wid = promote_file(conn, 1)
+    r = pipeline.match_work(conn, wid)
+    assert r["status"] == "skipped" and asked == [] and wid not in pipeline.unmatched_works(conn)
+    assert pipeline.match_work(conn, wid, force=True)["status"] == "not_found" and asked == ["Typst Documentation"]
