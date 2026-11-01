@@ -216,7 +216,7 @@ def test_purge_leaves_no_inference_text(tmp_path):
     assert promote_file(conn, 1) == ("purged", None)
     assert [p for p in root.rglob("*") if p.is_file()] == []
     s = inference.store()
-    assert len(_calls()) == 3  # the rows stay: hashes and timings
+    assert len(_calls()) == 2  # the decider's two questions (sure: no extraction); the rows stay
     on_disk = b"".join(p.read_bytes() for p in s.path.parent.glob("inference.sqlite*"))
     assert MARK.encode() not in on_disk and b"Payslip" not in on_disk
 

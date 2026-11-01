@@ -128,3 +128,47 @@ def test_state_gives_size_and_caps_long_metadata(tmp_path):
     assert "\nSize: 2.5 MB\n" in state and "We study things in great detail" in state
     meta = next(line for line in state.splitlines() if line.startswith("PDF metadata:"))
     assert len(meta) < META_CHARS + 40 and meta.endswith("…")
+
+
+class _SchemaBackend(FakeBackend):
+    def extract(self, *, schema=None, **kw):
+        self.schemas = getattr(self, "schemas", []) + [schema]
+        return super().extract(schema=schema, **kw)
+
+
+def _claims(conn, field):
+    return [r[0] for r in conn.execute("SELECT source FROM assertions WHERE subject_id=1 AND field=? AND"
+                                       " superseded_at IS NULL", (field,))]
+
+
+def test_the_decider_settles_library_ness_not_the_extraction_model(tmp_path):
+    """triage-4. A small extraction model called slides and manuals 'not library material', which
+    dropped their topics and abstract though the decider kept them (2026-11-01, Qwen3.5-2B)."""
+    conn = _lib(tmp_path, "slides.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
+    be = _SchemaBackend(dict(PAPER, is_library_material=False, kind="other"))
+    triage_file(conn, 1, be, FakeDecider("slides", True))
+    assert "kind" not in be.schemas[0]["properties"] and "is_library_material" not in be.schemas[0]["properties"]
+    assert _claims(conn, "topics") and _claims(conn, "abstract")  # kept: the decider says library
+    assert all(s.startswith("decide:") for s in _claims(conn, "kind") + _claims(conn, "is_library_material"))
+
+
+def test_extraction_is_skipped_when_the_decider_is_sure_it_is_personal(tmp_path):
+    conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
+    be = FakeBackend(PAPER)
+    r = triage_file(conn, 1, be, FakeDecider("personal", False, p=0.98))
+    assert r["extract_skipped"] and be.prompts == [] and _claims(conn, "title") == []
+    assert promote_file(conn, 1) == ("purged", None)
+
+
+def test_held_files_get_a_title_but_no_topics_or_abstract(tmp_path):
+    conn = _lib(tmp_path, "letter.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
+    triage_file(conn, 1, FakeBackend(PAPER), FakeDecider("personal", False, p=0.7))  # 0.5-0.9: held
+    assert _claims(conn, "title") and not _claims(conn, "topics") and not _claims(conn, "abstract")
+    assert promote_file(conn, 1)[0] == "held"
+
+
+def test_without_a_decider_the_extraction_model_still_judges(tmp_path):
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
+    be = _SchemaBackend(dict(PAPER, is_library_material=False))
+    triage_file(conn, 1, be, None)
+    assert "is_library_material" in be.schemas[0]["properties"] and not _claims(conn, "topics")

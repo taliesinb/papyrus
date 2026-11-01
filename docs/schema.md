@@ -245,6 +245,10 @@ The fields triage writes for a file:
   the user or a decider says otherwise.
 * `kind`, plus `kind_probs` (`{option: p}`) when a decider is used
 * `is_library_material`, plus `is_library_material_probs`
+
+  With a decider (prompt `triage-4`), both come from it alone (`decide:`); the extraction model
+  is asked for them only without one. A file the decider is sure is personal (P ≥ 0.9) gets no
+  extraction claims at all: promote purges it.
 * `title`, `authors` (list of names), `year`, `venue`
 * `abstract`: an exact span of the page text, located from start/end
   anchors that the model gives (see the source suffix), or found by

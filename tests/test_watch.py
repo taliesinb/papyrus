@@ -299,7 +299,7 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
     assert _runs(conn)[-1][1]["purged_skipped"] == 1
-    assert len(be.prompts) == 1  # never triaged again
+    assert be.prompts == []  # the decider was sure: no extraction (triage-4), and never triaged again
     # the log holds ids and counts, never names, paths or text
     assert logs and not any(MARK in m or str(dl) in m or "Zebedee" in m or "Payslip" in m for m in logs)
 
