@@ -90,9 +90,16 @@ struct LibraryStatus: Decodable {
     }
     /// `papyrus watch`'s state: idle | ingesting | waiting-memory | lmstudio-unavailable | starting;
     /// its queue (items per stage, given up on) and the seconds of work left, when it can tell.
+    /// One pipeline stage with work left (watch/daemon.py `Watch.stages`): active (worked now),
+    /// pending (waiting its turn), waiting (backed off, `reason`) or paused; a moving average of
+    /// seconds per item and the seconds left.
+    struct Stage: Decodable {
+        var stage: String; var label: String; var unit: String; var pending: Int; var state: String
+        var reason: String?; var perItemS: Double?; var etaS: Double?
+    }
     struct Watch: Decodable {
         var state: String; var detail: String; var retryAt: String?; var pending: Pending?
-        var failed: Int?; var etaS: Double?; var paused: Bool?
+        var failed: Int?; var etaS: Double?; var paused: Bool?; var stages: [Stage]?
     }
     var counts: Counts
     var running: [Run]

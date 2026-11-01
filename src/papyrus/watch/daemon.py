@@ -70,6 +70,11 @@ EXIT_RESCUED = 78  # a rescued-* copy waits to be restored: refuse to start (EX_
 
 TRIAGE_PENDING = ("text_status IN ('ok', 'no_text') AND purged_at IS NULL AND triage_status IN ('pending', 'error')")
 METADATA_PENDING = "purged_at IS NULL AND triage_status = 'classified'"
+# the menu's lines (Watch.stages), in pipeline order
+STAGE_ORDER = ("ocr", "classify", "metadata", "extract", "enrich")
+STAGE_LABELS = {"ocr": "Reading scans", "classify": "Classifying", "metadata": "Extracting",
+                "extract": "Indexing full text", "enrich": "Enriching"}
+EMA_ALPHA = 0.2  # weight of the newest step in a stage's seconds-per-item average
 
 
 def default_log(msg: str) -> None:
@@ -172,6 +177,10 @@ class Watch:
         self.ledger.log = lambda msg: (ledger_log(msg), self.events.emit("model", msg=msg))
         self.busy: dict[str, Any] | None = None  # since the queue was last empty: start time, counts
         self.step_detail: dict[str, Any] = {}  # what the last step found, for its event
+        # seconds per item, per stage: an exponential moving average of finished steps, started from
+        # the stage's history (the queue's, else the performance log's); and the stage worked last
+        self.ema: dict[str, float | None] = {}
+        self.current_stage: str | None = None
 
     # --- running ------------------------------------------------------------------------------
 
@@ -572,6 +581,9 @@ class Watch:
         finally:
             if outcome != "backoff":
                 self._busy()["steps"][stage] += 1
+                self.current_stage = stage
+            if outcome == "done":
+                self._average(stage, time.monotonic() - t0)
             self.events.emit("step", stage=stage, id=i, ms=round((time.monotonic() - t0) * 1000), outcome=outcome,
                              phase=self.phase, **self.step_detail)
 
@@ -721,6 +733,54 @@ class Watch:
 
     # --- status -------------------------------------------------------------------------------
 
+    def _history_s(self, stage: str) -> float | None:
+        """Mean seconds per item of the stage's last 50 finished steps: from the queue, else from
+        the performance log (which outlives a reset library)."""
+        ms = [r[0] for r in self.queue.conn.execute(
+            "SELECT duration_ms FROM items WHERE stage=? AND duration_ms IS NOT NULL ORDER BY done_at DESC LIMIT 50",
+            (stage,))]
+        if not ms:
+            from .events import read
+
+            ms = [e["ms"] for e in read(self.events.path)
+                  if e.get("event") == "step" and e.get("stage") == stage and e.get("outcome") == "done"][-50:]
+        return sum(ms) / len(ms) / 1000 if ms else None
+
+    def per_item_s(self, stage: str) -> float | None:
+        if stage not in self.ema:
+            self.ema[stage] = self._history_s(stage)
+        return self.ema[stage]
+
+    def _average(self, stage: str, seconds: float) -> None:
+        prev = self.per_item_s(stage)
+        self.ema[stage] = seconds if prev is None else EMA_ALPHA * seconds + (1 - EMA_ALPHA) * prev
+
+    def stages(self, counts: dict[str, int]) -> list[dict[str, Any]]:
+        """One entry per stage with work left, in pipeline order, for the menu: what it is doing
+        (`active`: the stage worked last; `pending`: waiting for its turn, since the stages share
+        one loop and the local models; `waiting`: backed off; `paused`), how many items, seconds per
+        item (moving average) and seconds left."""
+        out, now = [], self.clock()
+        for stage in STAGE_ORDER:
+            n = counts.get(stage, 0)
+            if not n:
+                continue
+            per = self.per_item_s(stage)
+            b = self.backoffs.get(stage)
+            if self.paused and stage in MODEL_STAGES:
+                state, reason = "paused", "model work paused"
+            elif b and now < b[0]:
+                state, reason = "waiting", b[2]
+            else:
+                state, reason = ("active" if stage == self.current_stage else "pending"), None
+            entry = {"stage": stage, "label": STAGE_LABELS[stage], "unit": "works" if stage == "enrich" else "docs",
+                     "pending": n, "state": state, "per_item_s": round(per, 2) if per is not None else None,
+                     "eta_s": round(n * per) if per is not None else None}
+            if reason:
+                entry["reason"] = reason
+            out.append(entry)
+        return out
+
     def pending(self) -> dict[str, int]:
         """Items in the queue per stage (due, or waiting for a retry), and `failed`; `triage` is
         classify + metadata (what the menu bar showed before the two were split)."""
@@ -769,6 +829,7 @@ class Watch:
                 data["failed"] = counts.pop("failed")
                 data["pending"] = counts
                 data["phase"] = self.phase
+                data["stages"] = self.stages(counts)
                 data["eta_s"] = self.eta_s() if any(v for k, v in counts.items() if k != "triage") else 0.0
             except Exception:  # noqa: BLE001  a status write must never stop the watcher
                 pass

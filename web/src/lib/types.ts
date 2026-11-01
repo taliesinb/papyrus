@@ -157,4 +157,19 @@ export interface WatchStatus {
 	failed: number;
 	/** Seconds of work left, from past timings; null while there is no history. */
 	etaS: number | null;
+	/** One entry per stage with work left, in pipeline order (watch/daemon.py `Watch.stages`). */
+	stages: WatchStage[];
+}
+
+export interface WatchStage {
+	stage: string;
+	label: string;
+	unit: string;
+	pending: number;
+	/** active: being worked now; pending: waiting its turn; waiting: backed off; paused. */
+	state: 'active' | 'pending' | 'waiting' | 'paused';
+	reason?: string;
+	/** Moving average of seconds per item; null before the first one. */
+	perItemS: number | null;
+	etaS: number | null;
 }

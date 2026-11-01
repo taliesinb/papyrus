@@ -21,6 +21,7 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     dirs = ["~/Downloads", "~/Desktop"]
     settle = 3            # seconds a new file must stay unchanged before it is added
     unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
+    background = true     # run at background priority (false: normal, e.g. to benchmark ingestion)
 
     [slack]               # `papyrus slack links` defaults (contexts/slack.py)
     workspace = "symbolica"
@@ -214,6 +215,7 @@ class WatchSettings:
     dirs: tuple[Path, ...]
     settle_s: float = 3.0
     unload_after_s: float = 600.0
+    background: bool = True  # background priority (PRIO_DARWIN_BG / nice + idle I/O): yield to everything else
 
 
 def watch() -> WatchSettings:
@@ -232,7 +234,10 @@ def watch() -> WatchSettings:
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
             raise ConfigError(f"{path()}: watch.{key} must be a number of seconds, got {v!r}")
         out[name] = float(v)
-    return WatchSettings(dirs=tuple(Path(d).expanduser() for d in dirs), **out)
+    background = section.get("background", True)
+    if not isinstance(background, bool):
+        raise ConfigError(f"{path()}: watch.background must be true or false, got {background!r}")
+    return WatchSettings(dirs=tuple(Path(d).expanduser() for d in dirs), background=background, **out)
 
 
 def init() -> tuple[Path, bool]:

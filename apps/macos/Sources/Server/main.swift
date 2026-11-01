@@ -422,26 +422,57 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if watchEnabled { startWatcher() } else { stopWatcher(); watcherNote = nil }
     }
 
-    /// One line for the menu: what the watcher is doing.
-    var watchLine: String? {
-        guard config.watch != nil else { return nil }
+    /// The menu's lines about the watcher: "Watching for new docs" when there is nothing to do, else
+    /// one line per pipeline stage with work left. The stages take turns (one loop, local models),
+    /// so one is active and the others say "pending".
+    var watchLines: [String] {
+        guard config.watch != nil else { return [] }
         // A live watcher's status first, whoever runs it (e.g. `papyrus watch --once` in a terminal).
         guard let w = library?.watch else {
-            if !watchEnabled { return "Not watching for new PDFs" }
-            if let note = watcherNote, watcher == nil { return "Watcher: \(note)" }
-            return watcher == nil ? "Watcher: not running" : "Watcher: starting…"
+            if !watchEnabled { return ["Not watching for new PDFs"] }
+            if let note = watcherNote, watcher == nil { return ["Watcher: \(note)"] }
+            return [watcher == nil ? "Watcher: not running" : "Watcher: starting…"]
         }
-        let todo = w.pending?.total ?? 0
-        var left = todo > 0 ? " (\(todo) left" + (w.etaS.map { ", \(duration($0))" } ?? "") + ")" : ""
-        if let failed = w.failed, failed > 0 { left += " · \(failed) failed" }
+        var lines: [String] = []
         switch w.state {
-        case "idle": return "Watching: idle" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
-        case "ingesting": return "Watching: adding new PDFs" + left
-        case "waiting-memory": return "Watching: waiting for memory" + left
-        case "paused": return "Watching: model work paused" + left
-        case "lmstudio-unavailable": return "Watching: LM Studio unavailable" + (w.detail.isEmpty ? "" : " (\(w.detail))") + left
-        default: return "Watching: \(w.state)" + left
+        case "waiting-memory": lines.append("Waiting for memory")
+        case "lmstudio-unavailable": lines.append("LM Studio unavailable" + (w.detail.isEmpty ? "" : ": \(w.detail)"))
+        case "paused": lines.append("Model work paused")
+        case "idle" where !w.detail.isEmpty: lines.append(w.detail)
+        default: break
         }
+        let stages = w.stages ?? []
+        if stages.isEmpty {
+            lines.append("Watching for new docs")
+        }
+        for s in stages {
+            let one = s.unit.hasSuffix("s") ? String(s.unit.dropLast()) : s.unit
+            var line = "\(s.label): \(s.pending) \(s.pending == 1 ? one : s.unit)"
+            switch s.state {
+            case "active":
+                if let per = s.perItemS {
+                    line += " · ~\(clock(per))/\(one)"
+                    if let eta = s.etaS { line += " · ~\(clock(eta)) left" }
+                } else {
+                    line += " · timing…"
+                }
+            case "waiting": line += " · waiting" + (s.reason.map { " (\($0))" } ?? "")
+            case "paused": line += " · paused"
+            default: line += " · pending"
+            }
+            lines.append(line)
+        }
+        if let failed = w.failed, failed > 0 { lines.append("\(failed) failed (papyrus watch --retry-failed)") }
+        return lines
+    }
+
+    /// 3.2s, 45s, 5m30s, 1h05m.
+    func clock(_ seconds: Double) -> String {
+        if seconds < 10 { return String(format: "%.1fs", seconds) }
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return String(format: "%dm%02ds", s / 60, s % 60) }
+        return String(format: "%dh%02dm", s / 3600, (s % 3600) / 60)
     }
 
     // MARK: tailscale
@@ -562,12 +593,6 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// `~12 min`, `~1 h 20 min`, `under a minute`.
-    func duration(_ seconds: Double) -> String {
-        if seconds < 60 { return "under a minute" }
-        let minutes = Int((seconds / 60).rounded())
-        return minutes < 60 ? "~\(minutes) min" : "~\(minutes / 60) h" + (minutes % 60 > 0 ? " \(minutes % 60) min" : "")
-    }
-
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let header = menu.addItem(withTitle: config.serverName, action: nil, keyEquivalent: "")
@@ -591,7 +616,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 info("\(run.command) running\(run.backend.map { " (\($0))" } ?? "")")
             }
         }
-        if let line = watchLine { info(line) }
+        for line in watchLines { info(line) }
         if published, let host = tailnetHost {
             info("Published at \(host)\(config.base)")
         } else if publishEnabled, let note = tailscaleNote {

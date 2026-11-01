@@ -41,6 +41,7 @@ class EventLog:
     def emit(self, event: str, **fields: Any) -> None:
         line = json.dumps({"t": _iso(self.wall()), "event": event, **fields}, separators=(",", ":"))
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a") as f:
                 f.write(line + "\n")
         except OSError:  # a performance log must never stop the watcher

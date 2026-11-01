@@ -144,3 +144,17 @@ def test_the_old_decider_names_still_set_the_classifier(tmp_path, monkeypatch):
     assert config.classifier() == "lmstudio:x"
     monkeypatch.setenv("PAPYRUS_CLASSIFIER", "lmstudio:y")
     assert config.classifier() == "lmstudio:y"
+
+
+def test_watch_background_priority_can_be_turned_off(tmp_path, monkeypatch):
+    from papyrus import config
+
+    cfg = tmp_path / "c.toml"
+    monkeypatch.setenv("PAPYRUS_CONFIG", str(cfg))
+    cfg.write_text("[watch]\ndirs = ['/tmp']\n")
+    assert config.watch().background is True
+    cfg.write_text("[watch]\nbackground = false\n")
+    assert config.watch().background is False
+    cfg.write_text("[watch]\nbackground = 'no'\n")
+    with pytest.raises(config.ConfigError):
+        config.watch()

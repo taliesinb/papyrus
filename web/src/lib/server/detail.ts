@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AssertionRow, ContextInfo, PipelineStatus, WatchStatus, WorkSummary } from '#lib/types.ts';
+import type { AssertionRow, ContextInfo, PipelineStatus, WatchStage, WatchStatus, WorkSummary } from '#lib/types.ts';
 import { all, dataVersion, get, libraryHome, parseJson } from './db.ts';
 import type { Library } from './library.ts';
 import { sharedTerms, similarity, topTerms } from './similar.ts';
@@ -201,6 +201,16 @@ export function watchStatus(): WatchStatus | null {
 		failed?: number;
 		eta_s?: number | null;
 		paused?: boolean;
+		stages?: {
+			stage: string;
+			label: string;
+			unit: string;
+			pending: number;
+			state: WatchStage['state'];
+			reason?: string;
+			per_item_s: number | null;
+			eta_s: number | null;
+		}[];
 	};
 	try {
 		s = JSON.parse(readFileSync(join(libraryHome(), 'watch.json'), 'utf8'));
@@ -220,6 +230,16 @@ export function watchStatus(): WatchStatus | null {
 		pending: s.pending ?? null,
 		failed: s.failed ?? 0,
 		etaS: s.eta_s ?? null,
-		paused: s.paused ?? false
+		paused: s.paused ?? false,
+		stages: (s.stages ?? []).map((g) => ({
+			stage: g.stage,
+			label: g.label,
+			unit: g.unit,
+			pending: g.pending,
+			state: g.state,
+			reason: g.reason,
+			perItemS: g.per_item_s,
+			etaS: g.eta_s
+		}))
 	};
 }

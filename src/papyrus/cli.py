@@ -588,8 +588,8 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
                    err=True)
         ctx.exit(EXIT_LOCKED)
     try:
-        prio = lower_priority()
-        click.echo(f"watch: {home}, {len(roots)} directories, priority {'+'.join(prio) or 'unchanged'}", err=True)
+        prio = lower_priority() if settings.background else []
+        click.echo(f"watch: {home}, {len(roots)} directories, priority {'+'.join(prio) or 'normal'}", err=True)
         w = Watch(_conn(ctx), roots, watcher=PollingWatcher(roots) if poll else None, settle_s=settings.settle_s,
                   unload_after_s=settings.unload_after_s)
         try:

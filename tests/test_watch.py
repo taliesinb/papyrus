@@ -833,3 +833,26 @@ def test_the_performance_log_times_every_file_and_step(tmp_path):
     assert "classify" in text and "metadata" in text and "queue drained" in text and "library 3" in text
     raw = w.status_path.with_name(events.NAME).read_text()
     assert str(tmp_path) not in raw and "Lecture" not in raw and ".pdf" not in raw  # ids and timings only
+
+
+def test_status_lists_each_stage_with_its_average_and_time_left(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    w.batch("startup", catch_up=True, limit=2)  # two files classified, one to go
+    stages = {s["stage"]: s for s in json.loads(w.status_path.read_text())["stages"]}
+    assert stages["classify"]["state"] == "active" and stages["classify"]["pending"] == 1
+    assert stages["classify"]["per_item_s"] is not None and stages["classify"]["eta_s"] is not None
+    assert stages["metadata"]["state"] == "pending" and stages["metadata"]["pending"] == 2
+    assert stages["metadata"]["per_item_s"] is None  # no history yet
+    assert [s for s in stages] == ["classify", "metadata"]  # pipeline order, only stages with work
+    w.pause_path.touch()
+    w._settle()
+    assert {s["state"] for s in json.loads(w.status_path.read_text())["stages"]} == {"paused"}
+
+
+def test_a_stage_average_starts_from_the_performance_log(tmp_path):
+    w, conn, lm, order, logs = _two_models(tmp_path)
+    for ms in (2000, 4000):
+        w.events.emit("step", stage="metadata", id=1, ms=ms, outcome="done")
+    assert w.per_item_s("metadata") == 3.0
+    w._average("metadata", 8.0)
+    assert w.per_item_s("metadata") == pytest.approx(0.2 * 8 + 0.8 * 3)
