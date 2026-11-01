@@ -234,8 +234,12 @@ unit (Linux) keeps it running.
   layers) the MLX engine restores a prefix only at 256-token checkpoints where
   a prefill call ended. Questions that share a prefix but diverge after it get
   no reuse unless something primes it: the classifier sends one short prime per
-  state (`OpenAICompatClassifier._prime`). Restore counts are in
-  `~/.cache/lm-studio/server-logs` ("Prompt cache restore: cached_tokens=").
+  state when more than one question will follow (`OpenAICompatClassifier._prime`;
+  triage asks one since `triage-6`, so none). Even primed, each question gets
+  the state back only up to its last 256-token boundary and recomputes the rest
+  (measured 2026-11-01: 22% of the prompt work with two questions). Restore
+  counts are in `~/.cache/lm-studio/server-logs` ("Prompt cache restore:
+  cached_tokens=").
 
 **Seeds:** LM Studio accepts `seed` but its MLX engine ignores it (same seed,
 different answers at temperature 1). The Apple bridge honours it (same seed,
@@ -254,8 +258,8 @@ The seed is part of the inference cache's key either way.
 **The classifier** (`llm/classify.py`, a Jev / "System One" style API):
 
 * Its `kind` distribution is good. Its yes/no "is this library material?"
-  answer is biased towards yes (0.73 for an exam paper it labels `personal`
-  with p=1.0).
+  answer was biased towards yes (0.73 for an exam paper it labels `personal`
+  with p=1.0), and is no longer asked (`triage-6`).
 * So library-ness comes from `P(kind=personal)` (`works.is_library`).
   Probabilities are uncalibrated.
 

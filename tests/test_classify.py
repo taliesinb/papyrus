@@ -256,7 +256,7 @@ def test_openai_falls_back_to_voting_without_logprobs():
     assert len(questions(rec)) == 6  # one logprob probe + 5 samples
     d.classify("s", [LIB])
     assert len(questions(rec)) == 11  # no more probing once switched
-    assert len(rec) == 12  # and one prime: the second classify was about the same state
+    assert len(rec) == 11  # and no prime: one question per state, nothing to reuse
 
 
 def test_openai_primes_the_shared_prefix_once_per_state():
@@ -269,7 +269,9 @@ def test_openai_primes_the_shared_prefix_once_per_state():
         return r
 
     d = OpenAICompatClassifier(model="qwen3.5-4b-mlx", transport=oa_transport(rec, respond))
-    d.classify("state one", [KIND])  # the inference cache asks one question per call
+    d.questions_ahead = 2  # the inference cache asks one question per call, and says how many are left
+    d.classify("state one", [KIND])
+    d.questions_ahead = 1
     d.classify("state one", [LIB])
     assert [is_prime(b) for b in rec] == [True, False, False]
     prime, q0, q1 = rec
@@ -281,10 +283,13 @@ def test_openai_primes_the_shared_prefix_once_per_state():
     assert prime["temperature"] == 0.0
     assert d.last_params == {"method": "logprobs", "requests": 1}
 
+    d.questions_ahead = None
     d.classify("state two", [KIND, LIB])  # a new state is primed again, once
     assert [is_prime(b) for b in rec[3:]] == [True, False, False]
     assert d.last_params == {"method": "logprobs", "requests": 3, "primed": True}
     assert d.last_usage == {"prompt_tokens": 21, "completion_tokens": 3}  # the prime counts
+    d.classify("state three", [KIND])  # one question: no prime (triage-6 asks only `kind`)
+    assert [is_prime(b) for b in rec[6:]] == [False]
 
 
 def test_openai_prime_is_optional_and_never_fails_a_decision():
@@ -305,9 +310,9 @@ def test_openai_prime_is_optional_and_never_fails_a_decision():
         return httpx.Response(200, json=chat_response(tops))
 
     d = OpenAICompatClassifier(model="qwen3.5-4b-mlx", transport=httpx.MockTransport(handler))
-    assert d.classify("s", [LIB])["library"].best == "yes"
-    d.classify("t", [LIB])
-    assert [is_prime(b) for b in seen] == [True, False, False]  # refused once, then not tried again
+    assert d.classify("s", [LIB, PAPERISH])["library"].best == "yes"
+    d.classify("t", [LIB, PAPERISH])
+    assert [is_prime(b) for b in seen] == [True] + [False] * 4  # refused once, then not tried again
 
 
 def test_every_rendered_question_starts_with_the_shared_lead():

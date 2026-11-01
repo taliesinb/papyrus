@@ -451,7 +451,9 @@ class CachedClassifier(_Cached):
         answers: dict[str, Answer] = {}
         self.last_calls = {}
         kw = self._seed_kw(self.inner.classify)
-        for q in questions:
+        for i, q in enumerate(questions):
+            if hasattr(self.inner, "questions_ahead"):  # so it primes the server's cache only if worth it
+                self.inner.questions_ahead = len(questions) - i
             def query(q: Question = q) -> str:
                 return self.store.query_id("classify", q.instructions,
                                            {"key": q.key, "type": q.type, "criteria": q.criteria}, None,

@@ -26,7 +26,7 @@ formatting.
  URLs, copied tabs ─────▶ download ─▶ … the same, with contexts(download); filename_hint assertion
                                │       both keep a copy in <home>/store (files.stored_path)
                                ▼
-                           triage ─▶ assertions on files: kind(+probs), is_library_material(+probs),
+                           triage ─▶ assertions on files: kind(+probs), is_library_material,
                                │       title, authors, year, venue, abstract, summary, topics,
                                │       language, ids
                                ▼

@@ -244,11 +244,13 @@ The fields triage writes for a file:
   has no other triage claims; `works.is_library` counts it as personal unless
   the user or a classifier says otherwise.
 * `kind`, plus `kind_probs` (`{option: p}`) when a classifier is used
-* `is_library_material`, plus `is_library_material_probs`
+* `is_library_material` (from `user`, or from the extraction model when there is no classifier);
+  `classify:` claims and `is_library_material_probs` only from prompts before `triage-6`
 
-  With a classifier (prompt `triage-4`), both come from it alone (`classify:`); the extraction model
-  is asked for them only without one. A file the classifier is sure is personal (P ≥ 0.9) gets no
-  extraction claims at all: promote purges it.
+  With a classifier, `kind` comes from it alone (`classify:`), and library-ness is its
+  P(kind=personal) (`works.is_library`); the extraction model is asked for kind and
+  `is_library_material` only without one. A file the classifier doesn't keep as library material
+  gets no extraction claims at all: promote purges or holds it.
 * `title`, `authors` (list of names), `year`, `venue`
 * `abstract`: an exact span of the page text, located from start/end
   anchors that the model gives (see the source suffix), or found by

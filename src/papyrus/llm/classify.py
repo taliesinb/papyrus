@@ -367,6 +367,9 @@ class OpenAICompatClassifier:
         self.backend = backend_name
         self.prime_prefix = backend_name == "lmstudio" if prime_prefix is None else prime_prefix
         self._primed: str | None = None  # the state the server's cache was last primed with
+        # questions still to come about the current state, counting this call's (set by the
+        # inference cache, which asks one question per call); None: just this call's
+        self.questions_ahead: int | None = None
         headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.Client(timeout=timeout, transport=transport, headers=headers)
         self._context: int | None = None
@@ -397,7 +400,8 @@ class OpenAICompatClassifier:
         out: dict[str, Answer] = {}
         self._seed, self.last_usage = seed, {"prompt_tokens": 0, "completion_tokens": 0}
         calls = self.calls
-        primed = self._prime(state) if questions else False
+        # a prime pays off only when another question will reuse the prefix after this one
+        primed = self._prime(state) if max(len(questions), self.questions_ahead or 0) > 1 else False
         for q in questions:
             out[q.key] = self._decide_one(state, q)
         self.last_params = {"method": self.method, "requests": self.calls - calls}

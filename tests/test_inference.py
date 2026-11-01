@@ -200,7 +200,7 @@ def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
     assert {c["subject"] for c in calls.values()} == {sha}
     title_call = dict(rows)["title"]
     r = triage_file(conn, 1, be, dec)  # e.g. `papyrus triage --all` with nothing changed
-    assert r["cached"] and len(_calls()) == 3  # extract + 2 questions, asked once
+    assert r["cached"] and len(_calls()) == 2  # extract + the classifier's question, asked once
     again = dict(conn.execute("SELECT field, call_id FROM assertions WHERE subject_id=1 AND superseded_at IS NULL"
                               " AND field='title'").fetchall())
     assert again["title"] == title_call
@@ -216,7 +216,7 @@ def test_purge_leaves_no_inference_text(tmp_path):
     assert promote_file(conn, 1) == ("purged", None)
     assert [p for p in root.rglob("*") if p.is_file()] == []
     s = inference.store()
-    assert len(_calls()) == 2  # the classifier's two questions (sure: no extraction); the rows stay
+    assert len(_calls()) == 1  # the classifier's question (sure: no extraction); the row stays
     on_disk = b"".join(p.read_bytes() for p in s.path.parent.glob("inference.sqlite*"))
     assert MARK.encode() not in on_disk and b"Payslip" not in on_disk
 
@@ -273,8 +273,8 @@ def test_openai_classifier_seeds_every_request_and_sums_usage():
 
     d = OpenAICompatClassifier(model="qwen3.5-4b-mlx", vote_samples=5, transport=oa_transport(rec, respond))
     d.classify("s", [Question("lib", "yesno", "Library?")], seed=3)
-    # the prime and the probe, then seed * 5 + i per vote
-    assert [b["seed"] for b in rec] == [3, 3, 15, 16, 17, 18, 19]
+    # the probe (one question: no prime), then seed * 5 + i per vote
+    assert [b["seed"] for b in rec] == [3, 15, 16, 17, 18, 19]
     assert d.last_usage == {"prompt_tokens": 50, "completion_tokens": 5}
     assert d.cache_params()["method"] == "auto" and d.last_params["method"] == "vote"
 
@@ -287,13 +287,13 @@ def test_watch_answers_from_the_cache_without_asking_for_memory(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path, backend=be, memory=mem)
     _pdf(dl / "a.pdf", "Lecture notes on things")
     w.catch_up()
-    assert len(be.prompts) == 1 and mem.calls == 3  # extract + 2 questions, each gated
+    assert len(be.prompts) == 1 and mem.calls == 2  # extract + the question, each gated
     conn.execute("UPDATE files SET triage_status='pending'")  # asked to triage again
     mem.level = "critical"
     w.dirty = True
     w.pump()
     assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
-    assert len(be.prompts) == 1 and mem.calls == 3 and w.state != "waiting-memory"
+    assert len(be.prompts) == 1 and mem.calls == 2 and w.state != "waiting-memory"
     assert conn.execute("SELECT count(*) FROM assertions WHERE call_id IS NOT NULL").fetchone()[0] > 0
 
 

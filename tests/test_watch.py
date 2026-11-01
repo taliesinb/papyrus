@@ -547,7 +547,7 @@ def _two_models(tmp_path, memory="normal", loaded=()):
 def test_triage_classifies_everything_before_extracting(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path)
     w.catch_up()
-    assert order == ["classify"] * 6 + ["extract"] * 3  # two questions a file, then extraction
+    assert order == ["classify"] * 3 + ["extract"] * 3  # one question a file, then extraction
     assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["done"]
     assert conn.execute("SELECT count(*) FROM file_works").fetchone()[0] == 3  # (one work: the same fake title)
     # normal memory pressure: the second model loads beside the first, nothing is unloaded
@@ -560,7 +560,7 @@ def test_under_pressure_the_watcher_swaps_its_own_models(tmp_path):
     w.ledger.ours.add("big-classifier")  # the watcher loaded the classifier earlier
     lm.loaded.append("big-classifier")
     w.catch_up()
-    assert order == ["classify"] * 6 + ["extract"] * 3
+    assert order == ["classify"] * 3 + ["extract"] * 3
     assert lm.unloaded == ["big-classifier"] and lm.loaded == ["small-extractor"]  # one swap, at the phase change
     assert any("swap" in m for m in logs)
 
@@ -568,7 +568,7 @@ def test_under_pressure_the_watcher_swaps_its_own_models(tmp_path):
 def test_a_model_the_user_loaded_is_not_swapped_out(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])  # theirs
     w.catch_up()
-    assert order == ["classify"] * 6 and lm.unloaded == []  # extraction waits for its model
+    assert order == ["classify"] * 3 and lm.unloaded == []  # extraction waits for its model
     assert [r[0] for r in conn.execute("SELECT DISTINCT triage_status FROM files")] == ["classified"]
     assert json.loads(w.status_path.read_text())["state"] == LMSTUDIO_UNAVAILABLE
 
@@ -585,10 +585,10 @@ def test_files_that_arrive_during_extraction_wait_for_the_next_classify_phase(tm
 
     w.resolve_models()[0].inner.extract = extract_and_drop_a_file
     w.catch_up()
-    assert order == ["classify"] * 6 + ["extract"] * 3  # the late file isn't slipped into this phase
+    assert order == ["classify"] * 3 + ["extract"] * 3  # the late file isn't slipped into this phase
     w.clock.advance(5)  # it settles
     w.pump()
-    assert order == ["classify"] * 6 + ["extract"] * 3 + ["classify"] * 2 + ["extract"]
+    assert order == ["classify"] * 3 + ["extract"] * 3 + ["classify"] + ["extract"]
 
 
 # --- LM Studio: never a second model, unload only our own -------------------------------------
@@ -790,7 +790,7 @@ def test_the_next_model_loads_beside_the_users_when_it_fits(tmp_path):
     w, conn, lm, order, logs = _two_models(tmp_path, memory="warn", loaded=["big-classifier"])  # theirs
     w.ledger.room = lambda model: True
     w.catch_up()
-    assert order == ["classify"] * 6 + ["extract"] * 3
+    assert order == ["classify"] * 3 + ["extract"] * 3
     assert lm.unloaded == [] and sorted(lm.loaded) == ["big-classifier", "small-extractor"]
     assert w.ledger.ours == {"small-extractor"}  # the user's 4B is never ours
     assert any("loading small-extractor beside big-classifier" in m for m in logs)

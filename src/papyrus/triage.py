@@ -36,7 +36,9 @@ from .textspan import best_abstract
 #           '--- metadata ---' section of `key: value` lines, then pages from the front and, for a
 #           longer document, the back (pagetext.py: '...' marks text left out, '(no text)' pages
 #           without a text layer), normalised. INSTRUCTIONS say so. The screen reads it too.
-PROMPT_VERSION = "triage-5"
+# triage-6: the classifier asks only `kind`; its is_library_material question is gone (unused, and
+#           a third of the classifier's work: a second pass over the state's tail). No prime then.
+PROMPT_VERSION = "triage-6"
 META_CHARS = 200  # per PDF metadata field in the state: a long keywords list must not crowd out page 1
 ANCHOR_WORDS = 8
 
@@ -109,11 +111,10 @@ EXTRACT_SCHEMA_DECIDED: dict[str, Any] = {
     "required": [k for k in EXTRACT_SCHEMA["required"] if k not in ("kind", "is_library_material")],
 }
 
+# One question: library-ness is P(kind=personal) (works.is_library). The yes/no "is this library
+# material?" question was dropped in triage-6: biased towards yes, and nothing read its answer.
 CLASSIFICATIONS = [
     Question("kind", "choice", "What kind of document is this?", KINDS),
-    Question("is_library_material", "yesno",
-             "Is this something to keep in a personal research/reading library (a paper, book, notes, "
-             "tutorial, slides, documentation), as opposed to personal or administrative paperwork?"),
 ]
 
 
