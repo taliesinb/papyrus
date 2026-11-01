@@ -26,8 +26,8 @@ from typing import Any
 
 from . import db, works
 from .contexts import links as linkmod
-from .enrich import match
-from .enrich.pipeline import THRESHOLD, enrich_work
+from .match import candidates
+from .match.pipeline import THRESHOLD, enrich_work
 
 ID_SOURCE = "heuristic:link"
 
@@ -65,11 +65,11 @@ def resolve_one(conn: sqlite3.Connection, scheme: str, value: str, ref_ids: list
         with db.tx(conn):
             _link(conn, ref_ids, wid, scheme)
         return {"status": "linked", "work_id": wid}
-    records = match.resolve(match.Hint(**{"arxiv_id" if scheme == "arxiv" else "doi": value}), **resolve_kw)
+    records = candidates.resolve(candidates.Hint(**{"arxiv_id" if scheme == "arxiv" else "doi": value}), **resolve_kw)
     good = [r for r in records if (r.match_score or 0) >= THRESHOLD]
     if not good:
         return {"status": "not_found", "best_score": records[0].match_score if records else None}
-    rec = match.merge(match.cluster(good)[0])
+    rec = candidates.merge(candidates.cluster(good)[0])
     other_ids = {k: v for k, v in rec.ids.items() if k in ("arxiv", "doi", "isbn") and v}
     wid = works.find_work(conn, other_ids, rec.title, rec.year)
     if wid:

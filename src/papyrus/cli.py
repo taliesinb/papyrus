@@ -219,7 +219,9 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
     from . import config, inference
     from .llm import get_backend
     from .llm.base import BackendUnavailable
-    from .triage import PROMPT_VERSION, classify_file, extract_metadata
+    from .classify import classify_file
+    from .describe import PROMPT_VERSION
+    from .extract import extract_metadata
     from .watch.system import memory_pressure
 
     conn = _conn(ctx)
@@ -426,7 +428,7 @@ def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_oc
     index and contents pages (they rank lower in search), keeps the PDF outline (to label hits
     with their section), and OCRs pages without a text layer with Apple Vision (needs the bridge
     in tools/afm-bridge). Files of personal paperwork are not extracted unless given as FILE_IDS."""
-    from .fulltext import run
+    from .index import run
 
     def progress(state: str, file_id: int, detail: str) -> None:
         if state == "no-ocr":
@@ -449,7 +451,7 @@ def extract(ctx: click.Context, file_ids: tuple[int, ...], redo_all: bool, no_oc
 def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset: bool, limit: int | None) -> None:
     """Match works against arXiv / OpenAlex / Semantic Scholar / Crossref; fill abstract, venue,
     identifiers, disambiguated authors (ORCID/OpenAlex/S2 ids) and topics."""
-    from .enrich.pipeline import enrich_work, reset_enrichment
+    from .match.pipeline import enrich_work, reset_enrichment
 
     conn = _conn(ctx)
     if reset and not work_ids:
@@ -480,7 +482,7 @@ def enrich(ctx: click.Context, work_ids: tuple[int, ...], redo_all: bool, reset:
 
 
 def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) -> list[int]:
-    from .enrich.pipeline import unenriched_works
+    from .match.pipeline import unenriched_works
     return unenriched_works(conn, file_ids)
 
 

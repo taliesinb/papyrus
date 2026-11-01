@@ -4,8 +4,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from papyrus.enrich import openalex
-from papyrus.enrich.http import HttpClient
+from papyrus.match import openalex
+from papyrus.http import HttpClient
 
 FIX = Path(__file__).parent / "fixtures"
 

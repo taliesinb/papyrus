@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from papyrus.enrich import http as h
+from papyrus import http as h
 
 
 class FakeClock:

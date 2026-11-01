@@ -5,10 +5,10 @@ import math
 
 from papyrus import db, inference, purge, screen
 from papyrus.llm.base import Embedder, ModelInfo
-from papyrus.triage import triage_file
+from papyrus.extract import classify_and_extract
 from papyrus.works import is_library, promote_file
 
-from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
+from test_ingest import PAPER, FakeBackend, FakeClassifier, _lib
 
 MARK = "Quuxperson"
 
@@ -68,7 +68,7 @@ def test_screen_input():
 def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_path):
     conn = _payslip(tmp_path)
     be, scr = FakeBackend(PAPER), _screen()
-    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
+    r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert r["screened"] and r["screen"]["rejected"] and be.prompts == []
     claims = db.current_assertions(conn, "file", 1)
     c = claims["screen"][0]
@@ -92,7 +92,7 @@ def test_screen_sets_personal_paperwork_aside_without_the_language_models(tmp_pa
 def test_input_version_3_is_the_triage_state(tmp_path):
     """Weights trained on input version 3 embed exactly what the classifier and the extraction
     model read."""
-    from papyrus.triage import build_state
+    from papyrus.describe import build_state
 
     conn = _payslip(tmp_path)
     w3 = screen.Weights(WEIGHTS.w, WEIGHTS.b, {**WEIGHTS.meta, "input_version": 3})
@@ -105,7 +105,7 @@ def test_input_version_3_is_the_triage_state(tmp_path):
 def test_library_material_goes_on_to_full_triage(tmp_path):
     conn = _lib(tmp_path, "things.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=_screen())
+    r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=_screen())
     assert not r.get("screened") and r["screen"]["p_personal"] < 0.01 and len(be.prompts) == 1
     claims = db.current_assertions(conn, "file", 1)
     assert claims["screen"][0]["value"]["rejected"] is False
@@ -115,11 +115,11 @@ def test_library_material_goes_on_to_full_triage(tmp_path):
 def test_keep_sends_a_screened_file_through_full_triage(tmp_path):
     conn = _payslip(tmp_path)
     scr = _screen()
-    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True), screen=scr)
+    classify_and_extract(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True), screen=scr)
     assert purge.keep(conn, 1) == ("retriage", None)
     assert conn.execute("SELECT triage_status FROM files WHERE id=1").fetchone()[0] == "pending"
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
+    r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert "screen" not in r and len(be.prompts) == 1  # the user has judged it: no screen
     assert promote_file(conn, 1)[0] == "created"
 
@@ -128,7 +128,7 @@ def test_no_screen_without_a_text_layer(tmp_path):
     conn = _payslip(tmp_path)
     conn.execute("DELETE FROM file_pages")
     be, scr = FakeBackend(PAPER), _screen()
-    r = triage_file(conn, 1, be, FakeClassifier("paper", True), screen=scr)
+    r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True), screen=scr)
     assert "screen" not in r and len(be.prompts) == 1 and scr.embedder.inner.texts == []
 
 

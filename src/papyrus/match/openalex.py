@@ -25,8 +25,8 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from papyrus.enrich import ids as _ids
-from papyrus.enrich.http import HttpClient, HttpError, default_client, mailto
+from papyrus import ids as _ids
+from papyrus.http import HttpClient, HttpError, default_client, mailto
 from papyrus.models import AuthorRecord, WorkRecord
 
 log = logging.getLogger(__name__)

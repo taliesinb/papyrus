@@ -4,13 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from papyrus import db, fulltext, mcp_server
+from papyrus import db, index, mcp_server
 from papyrus.scan import ScanOptions, scan
 from papyrus.search import fts_query, rank_files, search_works
-from papyrus.triage import build_state, triage_file
+from papyrus.describe import build_state
+from papyrus.extract import classify_and_extract
 from papyrus.works import promote_file
 
-from test_triage_promote import PAPER, FakeBackend, FakeClassifier
+from test_ingest import PAPER, FakeBackend, FakeClassifier
 
 
 def make_pdf(path: Path, pages: list[list[str]], outline: list[tuple[str, int]] = ()) -> None:
@@ -58,13 +59,13 @@ CONTENTS = [f"{i} Chapter about things {i * 10}" for i in range(1, 12)]
 
 
 def test_page_kind():
-    assert fulltext.page_kind("\n".join(PROSE), 3, 10) == "body"
-    assert fulltext.page_kind("\n".join(REFERENCES), 9, 10) == "references"
-    assert fulltext.page_kind("\n".join(INDEX), 95, 100) == "index"
-    assert fulltext.page_kind("\n".join(INDEX), 50, 100) == "body"  # an index is at the back
-    assert fulltext.page_kind("\n".join(CONTENTS), 3, 100) == "contents"
-    assert fulltext.page_kind("\n".join(CONTENTS), 50, 100) == "body"  # a table of numbers mid-book
-    assert fulltext.page_kind("References\n[1] too short", 9, 10) == "body"
+    assert index.page_kind("\n".join(PROSE), 3, 10) == "body"
+    assert index.page_kind("\n".join(REFERENCES), 9, 10) == "references"
+    assert index.page_kind("\n".join(INDEX), 95, 100) == "index"
+    assert index.page_kind("\n".join(INDEX), 50, 100) == "body"  # an index is at the back
+    assert index.page_kind("\n".join(CONTENTS), 3, 100) == "contents"
+    assert index.page_kind("\n".join(CONTENTS), 50, 100) == "body"  # a table of numbers mid-book
+    assert index.page_kind("References\n[1] too short", 9, 10) == "body"
 
 
 def _paper_library(tmp_path: Path):
@@ -85,9 +86,9 @@ def _paper_library(tmp_path: Path):
     ids = {r["title"]: r["file_id"] for r in conn.execute(
         "SELECT c.title, r.file_id FROM contexts c JOIN context_refs r ON r.context_id=c.id")}
     paper, slip = ids["paper.pdf"], ids["payslip.pdf"]
-    triage_file(conn, paper, FakeBackend(PAPER), FakeClassifier("paper", True))
+    classify_and_extract(conn, paper, FakeBackend(PAPER), FakeClassifier("paper", True))
     # P(personal) = 0.7: held (not a work, not purged), so its first pages stay
-    triage_file(conn, slip, FakeBackend(dict(PAPER, kind="personal", is_library_material=False, title="Payslip")),
+    classify_and_extract(conn, slip, FakeBackend(dict(PAPER, kind="personal", is_library_material=False, title="Payslip")),
                 FakeClassifier("personal", False, p=0.7))
     assert promote_file(conn, paper)[0] == "created"
     assert promote_file(conn, slip) == ("held", None)
@@ -97,7 +98,7 @@ def _paper_library(tmp_path: Path):
 def test_extract_reads_every_page_of_live_works_only(tmp_path):
     conn, paper, slip = _paper_library(tmp_path)
     assert conn.execute("SELECT count(*) FROM file_pages WHERE file_id=?", (paper,)).fetchone()[0] == 2  # scan
-    stats = fulltext.run(conn, ocr=False)
+    stats = index.run(conn, ocr=False)
     assert stats["files"] == 1 and stats["pages"] == 4
     pages = {r["page"]: r for r in conn.execute("SELECT * FROM file_pages WHERE file_id=?", (paper,))}
     assert set(pages) == {1, 2, 3, 4} and pages[4]["kind"] == "references" and pages[3]["kind"] == "body"
@@ -111,13 +112,13 @@ def test_extract_reads_every_page_of_live_works_only(tmp_path):
     assert "--- page 3 ---" in build_state(conn, paper)
     assert "--- page 3 ---" in build_state(conn, slip)
     assert conn.execute("SELECT max(page) FROM file_pages WHERE file_id=?", (slip,)).fetchone()[0] == 2
-    assert fulltext.run(conn, ocr=False)["files"] == 0  # idempotent
+    assert index.run(conn, ocr=False)["files"] == 0  # idempotent
 
 
 def test_search_ranks_pages_with_sections_and_hides_personal_files(tmp_path):
     conn, paper, slip = _paper_library(tmp_path)
-    fulltext.run(conn, ocr=False)
-    fulltext.run(conn, (slip,), ocr=False)  # extracted on request: still not searchable as a work
+    index.run(conn, ocr=False)
+    index.run(conn, (slip,), ocr=False)  # extracted on request: still not searchable as a work
     (w,) = search_works(conn, "zygomorphic")
     assert w["title"] == "A Study of Things" and w["matching_pages"] == 1
     (h,) = w["page_hits"]
@@ -131,7 +132,7 @@ def test_search_ranks_pages_with_sections_and_hides_personal_files(tmp_path):
 
 def test_search_query_fallbacks(tmp_path):
     conn, _, _ = _paper_library(tmp_path)
-    fulltext.run(conn, ocr=False)
+    index.run(conn, ocr=False)
     assert fts_query("zygo-morphic transform") == '"zygo" "morphic" "transform"'
     assert search_works(conn, "zygomorphic-transform")  # FTS5 syntax error -> tokenised
     assert search_works(conn, '"zygomorphic transform"')  # a phrase
@@ -141,7 +142,7 @@ def test_search_query_fallbacks(tmp_path):
 
 def test_mcp_fulltext_search(tmp_path, monkeypatch):
     conn, paper, _ = _paper_library(tmp_path)
-    fulltext.run(conn, ocr=False)
+    index.run(conn, ocr=False)
     monkeypatch.setenv("PAPYRUS_DB", str(tmp_path / "t.sqlite"))
     (r,) = mcp_server.fulltext_search("zygomorphic")
     assert r["title"] == "A Study of Things" and r["file_id"] == paper
@@ -175,27 +176,27 @@ def test_ocr_first_pages_of_image_only_file_and_retriage(tmp_path, monkeypatch):
     fid = conn.execute("SELECT id FROM files").fetchone()[0]
     conn.execute("UPDATE files SET triage_status='done' WHERE id=?", (fid,))  # triaged blind
     fake = FakeOCR()
-    monkeypatch.setattr(fulltext, "VisionOCR", lambda: fake)
-    stats = fulltext.run(conn)
+    monkeypatch.setattr(index, "VisionOCR", lambda: fake)
+    stats = index.run(conn)
     assert fake.calls == [[1, 2]] and stats["retriage"] == 1  # first pages only: not a work
     rows = conn.execute("SELECT page, source, text FROM file_pages WHERE file_id=? ORDER BY page", (fid,)).fetchall()
     assert [(r[0], r[1]) for r in rows] == [(1, "ocr:vision"), (2, "ocr:vision")] and "legible" in rows[0][2]
     assert conn.execute("SELECT triage_status FROM files WHERE id=?", (fid,)).fetchone()[0] == "pending"
     assert conn.execute("SELECT count(*) FROM file_pages_fts WHERE file_pages_fts MATCH 'legible'").fetchone()[0] == 2
-    fulltext.run(conn)
+    index.run(conn)
     assert fake.calls == [[1, 2]]  # nothing left to OCR
 
 
 def test_ocr_pages_survive_reextraction(tmp_path, monkeypatch):
     conn, paper, _ = _paper_library(tmp_path)
     conn.execute("UPDATE file_pages SET text='' WHERE file_id=? AND page=2", (paper,))
-    fulltext.run(conn, ocr=False)  # page 2 comes back from the text layer
+    index.run(conn, ocr=False)  # page 2 comes back from the text layer
     conn.execute("UPDATE file_pages SET text='' WHERE file_id=? AND page=2", (paper,))
     fake = FakeOCR()
-    monkeypatch.setattr(fulltext, "VisionOCR", lambda: fake)
-    fulltext.run(conn)
+    monkeypatch.setattr(index, "VisionOCR", lambda: fake)
+    index.run(conn)
     assert fake.calls == [[2]]
-    fulltext.run(conn, redo=True)  # the text layer is read again but doesn't replace OCR'd text
+    index.run(conn, redo=True)  # the text layer is read again but doesn't replace OCR'd text
     assert conn.execute("SELECT source FROM file_pages WHERE file_id=? AND page=2", (paper,)).fetchone()[0] == "ocr:vision"
     assert fake.calls == [[2]]
 

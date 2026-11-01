@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .. import config, db
-from ..enrich import http
+from .. import http
 from . import links as linkmod
 
 API = "https://slack.com/api/"

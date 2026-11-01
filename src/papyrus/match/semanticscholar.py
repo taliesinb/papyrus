@@ -17,8 +17,8 @@ import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from papyrus.enrich import ids as _ids
-from papyrus.enrich.http import HttpClient, HttpError, default_client
+from papyrus import ids as _ids
+from papyrus.http import HttpClient, HttpError, default_client
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://api.semanticscholar.org/graph/v1"

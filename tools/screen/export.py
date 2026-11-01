@@ -13,7 +13,7 @@ Each file is <out>/<first 16 hex digits of sha256>.json with three sections:
                 titles (filesystem/download contexts), size, page count, the PDF info
                 dictionary, the text of the first pages (pdfium text layer or Apple Vision
                 OCR, per page), the filename heuristic's hint, and `triage_prompt`, the exact
-                state string triage.build_state gives the models.
+                state string describe.build_state gives the models.
   ground_truth  the library's current resolved view. `label_status` says where it comes from:
                   work               the file belongs to a live work: fields from `works`,
                                      `work_authors`, `work_ids`, `work_topics`
@@ -45,7 +45,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from papyrus import db, triage, works
+from papyrus import db, describe, works
 from papyrus.pdf import TRIAGE_PAGES
 
 INPUT_CONTEXTS = ("filesystem", "download")
@@ -65,7 +65,7 @@ def snapshot(src: Path, dest: Path) -> None:
 
 def contexts(conn: sqlite3.Connection, file_id: int) -> list[dict[str, Any]]:
     out = []
-    for c in conn.execute(  # same order as triage.build_state
+    for c in conn.execute(  # same order as describe.build_state
             "SELECT c.* FROM context_refs r JOIN contexts c ON c.id=r.context_id"
             f" WHERE r.file_id=? AND c.kind IN {INPUT_CONTEXTS}"
             " ORDER BY c.missing_at IS NOT NULL, c.occurred_at", (file_id,)):
@@ -180,7 +180,7 @@ def record(conn: sqlite3.Connection, f: sqlite3.Row) -> dict[str, Any]:
         "text": "\n\n".join(p["text"] for p in pg),
         "pages": pg,
         "filename_hint": hint[0]["value"] if hint else None,
-        "triage_prompt": triage.build_state(conn, f["id"]),
+        "triage_prompt": describe.build_state(conn, f["id"]),
     }
     preds = {k: [{"value": c["value"], "confidence": c["confidence"], "source": c["source"],
                   "created_at": c["created_at"]} for c in v]
@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot(db.default_db_path(), path)
         conn = db.connect(path)
         files = conn.execute("SELECT * FROM files ORDER BY id").fetchall()
-        meta = {"triage_pages": TRIAGE_PAGES, "prompt_version": triage.PROMPT_VERSION,
+        meta = {"triage_pages": TRIAGE_PAGES, "prompt_version": describe.PROMPT_VERSION,
                 "schema_version": db.SCHEMA_VERSION, "exported_at": db.now_iso(),
                 "library": str(db.default_db_path()) if a.db is None else str(a.db)}
         recs = [record(conn, f) for f in files]

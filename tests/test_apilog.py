@@ -3,7 +3,7 @@ import json
 import httpx
 
 from papyrus import apilog, db
-from papyrus.enrich import http as h
+from papyrus import http as h
 
 
 def _client(handler):

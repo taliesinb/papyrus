@@ -21,9 +21,9 @@ from typing import Any
 
 import httpx
 
-from papyrus.enrich import arxiv, crossref, openalex, semanticscholar
-from papyrus.enrich import ids as _ids
-from papyrus.enrich.http import HttpClient, HttpError
+from papyrus.match import arxiv, crossref, openalex, semanticscholar
+from papyrus import ids as _ids
+from papyrus.http import HttpClient, HttpError
 from papyrus.models import AuthorRecord, WorkRecord
 
 log = logging.getLogger(__name__)

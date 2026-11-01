@@ -1,12 +1,12 @@
 from click.testing import CliRunner
 
-import papyrus.enrich.pipeline as pipeline
+import papyrus.match.pipeline as pipeline
 import papyrus.llm as llm
 import papyrus.llm.classify as classify
 from papyrus.cli import main
 from papyrus.llm.base import BackendUnavailable
 
-from test_triage_promote import PAPER, FakeBackend, _lib
+from test_ingest import PAPER, FakeBackend, _lib
 
 
 def test_process_runs_triage_promote_enrich_and_is_idempotent(tmp_path, monkeypatch):

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import httpx
 
-from papyrus.enrich import arxiv
-from papyrus.enrich.http import HttpClient
+from papyrus.match import arxiv
+from papyrus.http import HttpClient
 
 FIX = Path(__file__).parent / "fixtures"
 

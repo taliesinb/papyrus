@@ -4,8 +4,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from papyrus.enrich import semanticscholar as s2
-from papyrus.enrich.http import HttpClient, HttpError
+from papyrus.match import semanticscholar as s2
+from papyrus.http import HttpClient, HttpError
 
 FIX = Path(__file__).parent / "fixtures"
 

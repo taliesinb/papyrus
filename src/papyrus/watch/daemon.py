@@ -10,7 +10,7 @@ A **batch** is one `db.recorded_run(conn, "watch", …)`: it ingests the settled
 `scan.ingest_path` (snapshot, sha256 dedupe, purged tombstones, provenance, exactly as `papyrus
 scan`), then works through pending steps, one item each, new files first:
 
-1. **extract** the text layer of a live work's file (`fulltext.process`, `live_only`);
+1. **extract** the text layer of a live work's file (`index.process`, `live_only`);
 2. **ocr** pages without a text layer (live works' files, and the first pages of image-only files
    before they are triaged);
 3. **enrich** a work that has no API data yet;
@@ -48,7 +48,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import db, fulltext, inference, purge, scan
+from .. import db, index, inference, purge, scan
 from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
 from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, PAUSED,
@@ -189,7 +189,7 @@ class Watch:
 
     def run(self, once: bool = False) -> None:
         """Catch up, then (unless `once`) follow events until interrupted (SIGTERM, ^C)."""
-        from ..triage import PROMPT_VERSION
+        from ..describe import PROMPT_VERSION
 
         self._status(STARTING)
         self.events.emit("start", pid=os.getpid(), dirs=len(self.dirs), prompt_version=PROMPT_VERSION)
@@ -296,7 +296,7 @@ class Watch:
 
     def batch(self, trigger: str, ready: list[Path] = (), gone: list[Path] = (), *, catch_up: bool = False,
               limit: int | None = BATCH_STEPS) -> None:
-        from ..triage import PROMPT_VERSION
+        from ..describe import PROMPT_VERSION
 
         c: Counter = Counter()
         self.models = None  # resolved again on the batch's first triage (the config may have changed)
@@ -511,12 +511,12 @@ class Watch:
 
     def _library_pending(self) -> dict[str, list[int]]:
         """What the library says is pending, per stage (the queue mirrors it)."""
-        from ..enrich.pipeline import unenriched_works
+        from ..match.pipeline import unenriched_works
 
         ocr = self.ocr and self.ocr_ok is not False
         return {
-            "extract": fulltext.pending_files(self.conn),
-            "ocr": list(fulltext.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
+            "extract": index.pending_files(self.conn),
+            "ocr": list(index.ocr_targets(self.conn)) if ocr else [],  # none while OCR can't run
             "enrich": unenriched_works(self.conn),
             "classify": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {TRIAGE_PENDING} ORDER BY id")],
             "metadata": [r[0] for r in self.conn.execute(f"SELECT id FROM files WHERE {METADATA_PENDING} ORDER BY id")],
@@ -602,7 +602,7 @@ class Watch:
                                               else f"{error}, giving up (papyrus watch --retry-failed)"))
 
     def _extract(self, fid: int, run_id: int, c: Counter) -> None:
-        s = fulltext.process(self.conn, (fid,), ocr=False, live_only=True)
+        s = index.process(self.conn, (fid,), ocr=False, live_only=True)
         if s.get("files"):
             c["extracted"] += s["files"]
         if s.get("error"):
@@ -611,7 +611,7 @@ class Watch:
 
     def _ocr(self, fid: int, run_id: int, c: Counter) -> None:
         self._gate("local", None)  # Apple Vision, in the bridge
-        s = fulltext.process(self.conn, (fid,), ocr=True, live_only=True)
+        s = index.process(self.conn, (fid,), ocr=True, live_only=True)
         if s.get("ocr_skipped_pages"):
             self.ocr_ok = False
             self.log("OCR is unavailable (tools/afm-bridge not built, or not macOS); image-only pages stay unread")
@@ -623,8 +623,8 @@ class Watch:
         self.log(f"file {fid} OCR: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)} pages read")
 
     def _enrich(self, wid: int, run_id: int, c: Counter) -> None:
-        from ..enrich import http
-        from ..enrich.pipeline import enrich_work
+        from .. import http
+        from ..match.pipeline import enrich_work
 
         # Don't sit through a rate limit's retries (minutes, with everything else waiting): give up
         # on a refusal that would cost more than ENRICH_PATIENCE_S, record no verdict, come back.
@@ -638,7 +638,7 @@ class Watch:
                           delay=max(RATE_LIMIT_DELAY, r.get("retry_after") or 0))
 
     def _classify(self, fid: int, run_id: int, c: Counter) -> None:
-        from ..triage import classify_file
+        from ..classify import classify_file
 
         _, clf = self._models(run_id)
         r = classify_file(self.conn, fid, clf, run_id=run_id, screen=self.screen)
@@ -660,7 +660,7 @@ class Watch:
             self._promote(fid, run_id, c)
 
     def _metadata(self, fid: int, run_id: int, c: Counter) -> None:
-        from ..triage import extract_metadata
+        from ..extract import extract_metadata
 
         be, _ = self._models(run_id)
         r = extract_metadata(self.conn, fid, be, run_id=run_id)

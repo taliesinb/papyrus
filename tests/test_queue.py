@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from papyrus.cli import main
 from papyrus.watch.queue import MAX_ATTEMPTS, RETRY_S, Queue
 
-from test_triage_promote import PAPER, FakeBackend
+from test_ingest import PAPER, FakeBackend
 from test_watch import Clock, _pdf, _watch
 
 
@@ -80,7 +80,7 @@ def test_counts_and_eta(q):
 
 
 def test_watch_retries_survive_a_restart(tmp_path, monkeypatch):
-    from papyrus.enrich import pipeline
+    from papyrus.match import pipeline
 
     attempts = []
 

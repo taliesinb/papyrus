@@ -3,7 +3,7 @@ from pathlib import Path
 from papyrus import db
 from papyrus.llm.base import Answer, ModelInfo
 from papyrus.scan import ScanOptions, scan
-from papyrus.triage import triage_file
+from papyrus.extract import classify_and_extract
 from papyrus.works import promote_file, work_json
 
 from test_core import _make_pdf
@@ -60,7 +60,7 @@ def test_triage_and_promote_paper(tmp_path):
     conn = _lib(tmp_path, "2412.06464v3.pdf",
                 "A Study of Things. Jane Doe. arXiv:2412.06464v3 [cs.LG] Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeClassifier("paper", True))
+    r = classify_and_extract(conn, 1, be, FakeClassifier("paper", True))
     assert "\nfolder: " in be.prompts[0] and "--- page 1 ---" in be.prompts[0]
     assert r["ids"]["arxiv"] == "2412.06464" and r["ids"]["arxiv_version"] == "v3"
     claims = db.current_assertions(conn, "file", 1)
@@ -81,7 +81,7 @@ def test_personal_document_not_promoted_and_abstract_dropped(tmp_path):
     conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
     out = dict(PAPER, kind="personal", is_library_material=False, abstract_start="Payslip October",
                abstract_end="Net pay 1234.00", title="Payslip")
-    triage_file(conn, 1, FakeBackend(out), FakeClassifier("personal", False))
+    classify_and_extract(conn, 1, FakeBackend(out), FakeClassifier("personal", False))
     claims = db.current_assertions(conn, "file", 1)
     assert "abstract" not in claims and "topics" not in claims
     assert promote_file(conn, 1) == ("purged", None)  # P(personal) = 0.9: sure enough to erase
@@ -92,5 +92,5 @@ def test_classifyr_kind_overrides_biased_yesno(tmp_path):
     promoted, not sure enough to purge)."""
     conn = _lib(tmp_path, "exam.pdf", "Grade 9 June Paper 1. Answer all questions.")
     dec = FakeClassifier("personal", True, p=0.7)
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Grade 9 Paper")), dec)
+    classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Grade 9 Paper")), dec)
     assert promote_file(conn, 1) == ("held", None)

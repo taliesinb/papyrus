@@ -44,7 +44,7 @@ from typing import Callable
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 from . import db, purge, store
-from .enrich import http
+from . import http
 from .pdf import PDF_MAGIC, sha256_file
 from .scan import add_file
 

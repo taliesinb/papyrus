@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from papyrus import db
-from papyrus.enrich import arxiv, match, openalex, pipeline
-from papyrus.enrich import semanticscholar as s2
+from papyrus.match import arxiv, candidates, openalex, pipeline
+from papyrus.match import semanticscholar as s2
 from papyrus.models import WorkRecord
 
 FIX = Path(__file__).parent / "fixtures"
@@ -54,7 +54,7 @@ def fake_resolve(monkeypatch):
         state["hints"].append(hint)
         return copy.deepcopy(state["records"])
 
-    monkeypatch.setattr(match, "resolve", resolve)
+    monkeypatch.setattr(candidates, "resolve", resolve)
     return state
 
 

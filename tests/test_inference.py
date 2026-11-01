@@ -14,11 +14,11 @@ from papyrus.cli import main
 from papyrus.llm.base import Answer, BackendUnavailable, ModelBusy, ModelInfo, Question
 from papyrus.llm.classify import OpenAICompatClassifier
 from papyrus.llm.lmstudio import LMStudioBackend
-from papyrus.triage import triage_file
+from papyrus.extract import classify_and_extract
 from papyrus.works import promote_file
 
 from test_classify import chat_response, oa_transport, top
-from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
+from test_ingest import PAPER, FakeBackend, FakeClassifier, _lib
 
 SCHEMA = {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}
 MARK = "Quuxperson"  # in a payslip: must survive nowhere after a purge
@@ -190,7 +190,7 @@ def test_classifyr_is_cached_per_question():
 def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
     conn = _lib(tmp_path, "notes.pdf", "Lecture notes on things, with exercises.")
     be, dec = inference.cached_backend(FakeBackend(PAPER)), inference.cached_classifier(FakeClassifier("paper", True))
-    r = triage_file(conn, 1, be, dec)
+    r = classify_and_extract(conn, 1, be, dec)
     assert not r["cached"]
     rows = conn.execute("SELECT field, call_id FROM assertions WHERE subject_id=1 AND superseded_at IS NULL"
                         " AND source NOT LIKE 'heuristic:%'").fetchall()
@@ -199,7 +199,7 @@ def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
     sha = conn.execute("SELECT sha256 FROM files WHERE id=1").fetchone()[0]
     assert {c["subject"] for c in calls.values()} == {sha}
     title_call = dict(rows)["title"]
-    r = triage_file(conn, 1, be, dec)  # e.g. `papyrus triage --all` with nothing changed
+    r = classify_and_extract(conn, 1, be, dec)  # e.g. `papyrus triage --all` with nothing changed
     assert r["cached"] and len(_calls()) == 2  # extract + the classifier's question, asked once
     again = dict(conn.execute("SELECT field, call_id FROM assertions WHERE subject_id=1 AND superseded_at IS NULL"
                               " AND field='title'").fetchall())
@@ -209,7 +209,7 @@ def test_triage_records_call_ids_and_a_rerun_reuses_them(tmp_path):
 def test_purge_leaves_no_inference_text(tmp_path):
     conn = _lib(tmp_path, "Payslip_2026-10.pdf", f"Payslip October. Employee Zebedee {MARK}. Net pay 1234.00")
     slip = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip {MARK}", topics=[])
-    triage_file(conn, 1, inference.cached_backend(FakeBackend(slip)),
+    classify_and_extract(conn, 1, inference.cached_backend(FakeBackend(slip)),
                 inference.cached_classifier(FakeClassifier("personal", False, p=0.98)))
     root = tmp_path / "papyrus-home" / "inference"
     assert any(MARK.encode() in p.read_bytes() for p in root.rglob("*") if p.is_file())

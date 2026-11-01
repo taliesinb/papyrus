@@ -3,8 +3,8 @@ from pathlib import Path
 
 import httpx
 
-from papyrus.enrich import crossref
-from papyrus.enrich.http import HttpClient
+from papyrus.match import crossref
+from papyrus.http import HttpClient
 
 FIX = Path(__file__).parent / "fixtures"
 

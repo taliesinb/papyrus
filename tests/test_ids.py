@@ -2,8 +2,8 @@ import datetime as dt
 
 import pytest
 
-from papyrus.enrich import ids
-from papyrus.enrich.ids import ArxivId, find_arxiv_ids, find_dois, find_isbns, normalize_isbn
+from papyrus import ids
+from papyrus.ids import ArxivId, find_arxiv_ids, find_dois, find_isbns, normalize_isbn
 
 
 @pytest.fixture(autouse=True)

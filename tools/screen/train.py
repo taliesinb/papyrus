@@ -25,7 +25,7 @@ Labelled files come from:
   they override the exports too).
 
 Each file is embedded at the screen's level (input version 3: triage's state, the export's
-`triage_prompt`, or for purged originals triage.render_state on the PDF itself; versions 1 and 2:
+`triage_prompt`, or for purged originals describe.render_state on the PDF itself; versions 1 and 2:
 screen.screen_input; prefix and model as in screen.py) straight from LM Studio, *not* through the
 inference cache: the cache would write the pages of purged documents back to disk.
 
@@ -53,7 +53,7 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import Normalizer, StandardScaler
 
-from papyrus import db, screen, triage
+from papyrus import db, describe, screen
 from papyrus.filenames import parse_filename
 from papyrus.llm.embed import LMStudioEmbedder
 from papyrus.pdf import PageReader, read_pdf
@@ -132,14 +132,14 @@ def original_state(p: Path, info) -> str:
     froms = where_froms(p) or []
     hint = parse_filename(p.stem)
     meta = dict(info.meta)
-    d = triage.Document(
+    d = describe.Document(
         names=[p.name], folders=[screen.home_relative(str(p.parent))],
         origins=[froms[0] + (f" (via {froms[1]})" if len(froms) > 1 else "")] if froms else [],
         size=p.stat().st_size, page_count=info.page_count,
-        meta={k: meta.get(k) for k in triage.META_FIELDS},
+        meta={k: meta.get(k) for k in describe.META_FIELDS},
         hint=db.dumps({"title": hint.title, "surnames": hint.surnames, "year": hint.year}) if hint else None)
     with PageReader(p) as reader:
-        return triage.render_state(d, info.page_count, reader.text)
+        return describe.render_state(d, info.page_count, reader.text)
 
 
 def fit(X, y):

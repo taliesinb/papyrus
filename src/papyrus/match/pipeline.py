@@ -2,7 +2,7 @@
 
     enrich_work(conn, work_id) -> {'status': 'enriched' | 'ambiguous' | 'not_found', ...}
 
-Network calls (match.resolve) happen before the write transaction. Writes:
+Network calls (candidates.resolve) happen before the write transaction. Writes:
 * assertions (subject 'work') per contributing record, source 'api:<source>':
   title, abstract, year, venue, authors (names), author_ids, ids, topics, citation_count
 * works: abstract (if empty), title (if empty), venue, date, year, kind (if NULL)
@@ -19,8 +19,8 @@ import sqlite3
 from typing import Any
 
 from papyrus import db, works
-from papyrus.enrich import ids as _ids
-from papyrus.enrich import match, semanticscholar
+from papyrus import ids as _ids
+from papyrus.match import candidates, semanticscholar
 from papyrus.models import AuthorRecord, WorkRecord
 
 THRESHOLD = 0.85
@@ -42,7 +42,7 @@ SKIP_ID_SCHEMES = {"issn"}
 ENRICH_SOURCE = "api:enrich"
 
 
-def build_hint(conn: sqlite3.Connection, work_id: int) -> match.Hint:
+def build_hint(conn: sqlite3.Connection, work_id: int) -> candidates.Hint:
     w = conn.execute("SELECT title, year FROM works WHERE id=?", (work_id,)).fetchone()
     if w is None:
         raise KeyError(f"no work {work_id}")
@@ -55,7 +55,7 @@ def build_hint(conn: sqlite3.Connection, work_id: int) -> match.Hint:
             "SELECT raw_name FROM work_authors WHERE work_id=? AND role='author' ORDER BY position", (work_id,)
         )
     ]
-    return match.Hint(
+    return candidates.Hint(
         arxiv_id=wids.get("arxiv"),
         doi=wids.get("doi"),
         isbn=wids.get("isbn"),
@@ -186,7 +186,7 @@ def _upsert_person(conn: sqlite3.Connection, a: AuthorRecord) -> int | None:
 def _same_author(raw_name: str, a: AuthorRecord) -> bool:
     s1 = _ids.surname_key(raw_name)
     s2 = _ids.surname_key(a.family, is_family=True) if a.family else _ids.surname_key(a.name)
-    if s1 and s2 and match._same_surname(s1, s2):
+    if s1 and s2 and candidates._same_surname(s1, s2):
         return True
     # raw names sometimes arrive as 'Dao T.' or in caps; compare against every word
     words = set(_ids.normalize_title(raw_name).split())
@@ -307,7 +307,7 @@ def _update_work(conn: sqlite3.Connection, work_id: int, merged: WorkRecord) -> 
 _STRONG_IDS = ("arxiv", "doi", "openalex", "s2", "isbn")
 
 
-def _conflict(conn: sqlite3.Connection, work_id: int, hint: match.Hint, rec: WorkRecord) -> str | None:
+def _conflict(conn: sqlite3.Connection, work_id: int, hint: candidates.Hint, rec: WorkRecord) -> str | None:
     """Why `rec` cannot be the same work as `work_id`, or None."""
     if hint.arxiv_id and rec.ids.get("arxiv") and rec.ids["arxiv"] != hint.arxiv_id:
         return f"different arXiv id {rec.ids['arxiv']} (work has {hint.arxiv_id})"
@@ -361,7 +361,7 @@ def enrich_work(
     if not (hint.arxiv_id or hint.doi or hint.isbn or hint.title):
         return {"status": "not_found", "work_id": work_id, "reason": "no identifiers or title"}
     report: dict[str, Any] = {}
-    records = match.resolve(hint, report=report, **resolve_kw)
+    records = candidates.resolve(hint, report=report, **resolve_kw)
     good = [r for r in records if (r.match_score or 0) >= threshold]
     # Nothing matched while a source we rely on refused us: that is "not asked", not "not found".
     # Record no verdict (the work stays pending); try again later. Semantic Scholar without a key
@@ -400,8 +400,8 @@ def enrich_work(
             "best_score": records[0].match_score if records else None,
             "candidates": len(cands),
         }
-    group = match.cluster(good)[0]
-    merged = match.merge(group)
+    group = candidates.cluster(good)[0]
+    merged = candidates.merge(group)
     with db.tx(conn):
         _record_assertions(conn, work_id, group, run_id)
         _update_work(conn, work_id, merged)

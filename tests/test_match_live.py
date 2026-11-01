@@ -8,9 +8,9 @@ import os
 
 import pytest
 
-from papyrus.enrich import arxiv, crossref, match, openalex
-from papyrus.enrich import semanticscholar as s2
-from papyrus.enrich.http import HttpError
+from papyrus.match import arxiv, crossref, candidates, openalex
+from papyrus.match import semanticscholar as s2
+from papyrus.http import HttpError
 
 pytestmark = pytest.mark.skipif(os.environ.get("PAPYRUS_LIVE") != "1", reason="set PAPYRUS_LIVE=1 for live API tests")
 
@@ -52,18 +52,18 @@ def test_s2_embedding_field():
 
 
 def test_resolve_gated_delta_networks():
-    best = match.resolve_best({"arxiv_id": "2412.06464"})
+    best = candidates.resolve_best({"arxiv_id": "2412.06464"})
     assert best.ids["arxiv"] == "2412.06464"
     assert best.authors[0].family == "Yang" and best.authors[0].openalex_id
 
 
 def test_resolve_transformers_are_ssms():
-    recs = match.resolve({"title": "Transformers are SSMs", "authors": ["Dao", "Gu"], "year": 2024})
+    recs = candidates.resolve({"title": "Transformers are SSMs", "authors": ["Dao", "Gu"], "year": 2024})
     assert recs[0].ids.get("arxiv") == "2405.21060" and recs[0].match_score >= 0.85
 
 
 def test_resolve_hopf():
-    best = match.resolve_best(
+    best = candidates.resolve_best(
         {"title": "Hopf algebras and Markov chains: two examples and a theory", "authors": ["Diaconis", "Pang", "Ram"]}
     )
     assert best.ids["doi"] == "10.1007/s10801-013-0456-7" and best.ids["arxiv"] == "1206.3620"
@@ -71,7 +71,7 @@ def test_resolve_hopf():
 
 
 def test_resolve_bellard_non_arxiv():
-    recs = match.resolve(
+    recs = candidates.resolve(
         {"title": "Lossless Data Compression with Neural Networks", "authors": ["Bellard"], "year": 2019}
     )
     top = [r for r in recs if r.match_score >= 0.85]
@@ -81,7 +81,7 @@ def test_resolve_bellard_non_arxiv():
 
 
 def test_resolve_aima_book_known_gap():
-    recs = match.resolve(
+    recs = candidates.resolve(
         {
             "title": "Artificial Intelligence: A Modern Approach 4th edition",
             "authors": ["Russell", "Norvig"],

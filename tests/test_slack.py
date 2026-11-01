@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from papyrus import apilog
 from papyrus.contexts import links as L
 from papyrus.contexts import slack as S
-from papyrus.enrich import http as h
+from papyrus import http as h
 
 
 @pytest.mark.parametrize("url,kind,id_", [
@@ -210,7 +210,7 @@ def test_manifest_scopes():
 
 from papyrus import db as _db  # noqa: E402
 from papyrus import resolve as R  # noqa: E402
-from papyrus.enrich import match as match_mod  # noqa: E402
+from papyrus.match import candidates as match_mod  # noqa: E402
 from papyrus.models import AuthorRecord, WorkRecord  # noqa: E402
 
 

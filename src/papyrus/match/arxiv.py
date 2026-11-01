@@ -10,8 +10,8 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
 
-from papyrus.enrich import ids as _ids
-from papyrus.enrich.http import HttpClient, default_client
+from papyrus import ids as _ids
+from papyrus.http import HttpClient, default_client
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://export.arxiv.org/api/query"

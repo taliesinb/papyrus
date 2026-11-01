@@ -3,14 +3,15 @@
 import pytest
 
 from papyrus import db
-from papyrus.enrich import pipeline
-from papyrus.enrich.match import Hint
+from papyrus.match import pipeline
+from papyrus.match.candidates import Hint
 from papyrus.models import AuthorRecord, WorkRecord
-from papyrus.triage import detect_ids, triage_file
+from papyrus.describe import detect_ids
+from papyrus.extract import classify_and_extract
 from papyrus.works import find_work, promote_file
 
 from test_core import _make_pdf
-from test_triage_promote import PAPER, FakeBackend, FakeClassifier, _lib
+from test_ingest import PAPER, FakeBackend, FakeClassifier, _lib
 
 
 def test_cv_citing_arxiv_url_gets_no_arxiv_id(tmp_path):
@@ -25,11 +26,11 @@ def test_arxiv_margin_stamp_is_trusted(tmp_path):
 
 def test_rejecting_a_work_releases_its_ids(tmp_path):
     conn = _lib(tmp_path, "2411.00161.pdf", "Jane Doe CV")  # filename id -> trusted
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("paper", True))
+    classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("paper", True))
     action, wid = promote_file(conn, 1)
     assert action == "created" and find_work(conn, {"arxiv": "2411.00161"}, None, None) == wid
     # re-triage says personal (held, below the purge threshold) -> promote rejects the work, frees the id
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("personal", False, p=0.7))
+    classify_and_extract(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeClassifier("personal", False, p=0.7))
     assert promote_file(conn, 1)[0] == "rejected"
     assert conn.execute("SELECT count(*) FROM work_ids").fetchone()[0] == 0
     assert find_work(conn, {"arxiv": "2411.00161"}, None, None) is None
@@ -53,7 +54,7 @@ def test_candidate_owned_by_other_work_is_not_merged(tmp_path, monkeypatch):
     other_doi = _rec("openalex", "Hopf algebras and Markov chains: two examples", {"doi": "10.1007/x"},
                      ["Persi Diaconis", "Amy Pang", "Arun Ram"])
     other_arxiv = _rec("s2", "Hopf algebras and Markov chains", {"arxiv": "1206.3620"}, ["Persi Diaconis"])
-    monkeypatch.setattr(pipeline.match, "resolve", lambda hint, **kw: [good, other_doi, other_arxiv])
+    monkeypatch.setattr(pipeline.candidates, "resolve", lambda hint, **kw: [good, other_doi, other_arxiv])
     r = pipeline.enrich_work(conn, thesis)
     assert r["status"] == "enriched" and r["sources"] == ["arxiv"]
     names = [x[0] for x in conn.execute("SELECT raw_name FROM work_authors WHERE work_id=?", (thesis,))]
@@ -87,10 +88,10 @@ def test_recorded_run_closes_on_interrupt_and_crash(tmp_path):
 
 
 def test_live_only_extraction_when_file_and_work_ids_differ(tmp_path):
-    """fulltext.pending_files(live_only=True) formatted LIVE_FILE with a bare `id`, which inside its
+    """index.pending_files(live_only=True) formatted LIVE_FILE with a bare `id`, which inside its
     subquery meant works.id: a file was extracted only if its id equalled its work's. Found on the
     first real catch-up (file 6 = work 1: every extraction failed)."""
-    from papyrus import db, fulltext
+    from papyrus import db, index
     from papyrus.scan import ScanOptions, scan
     from test_core import _make_pdf
 
@@ -103,8 +104,8 @@ def test_live_only_extraction_when_file_and_work_ids_differ(tmp_path):
     wid = conn.execute("INSERT INTO works(kind, title) VALUES ('lecture_notes', 'Notes')").lastrowid
     conn.execute("INSERT INTO file_works(file_id, work_id, relation, source) VALUES (2, ?, 'full', 'test')", (wid,))
     assert wid == 1
-    assert fulltext.pending_files(conn, (2,), live_only=True) == [2]
-    assert fulltext.pending_files(conn, (1,), live_only=True) == []  # file 1 is no live work's
+    assert index.pending_files(conn, (2,), live_only=True) == [2]
+    assert index.pending_files(conn, (1,), live_only=True) == []  # file 1 is no live work's
 
 
 def test_doi_and_isbn_from_the_pdfs_own_subject_and_keywords(tmp_path):
@@ -120,7 +121,7 @@ def test_doi_and_isbn_from_the_pdfs_own_subject_and_keywords(tmp_path):
 
 
 def test_state_gives_size_and_caps_long_metadata(tmp_path):
-    from papyrus.triage import META_CHARS, build_state
+    from papyrus.describe import META_CHARS, build_state
 
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     conn.execute("UPDATE files SET size=2500000, pdf_keywords=? WHERE id=1", ("topic; " * 500,))
@@ -133,7 +134,7 @@ def test_state_gives_size_and_caps_long_metadata(tmp_path):
 def test_state_metadata_on_one_line(tmp_path):
     """A book's keywords held Amazon's product details, one per line with '#' bullets; a creator
     or producer can carry tool noise after a newline."""
-    from papyrus.triage import build_state
+    from papyrus.describe import build_state
 
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     conn.execute("UPDATE files SET pdf_keywords=?, pdf_creator=? WHERE id=1",
@@ -159,7 +160,7 @@ def test_the_classifier_settles_library_ness_not_the_extraction_model(tmp_path):
     dropped their topics and abstract though the classifier kept them (2026-11-01, Qwen3.5-2B)."""
     conn = _lib(tmp_path, "slides.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = _SchemaBackend(dict(PAPER, is_library_material=False, kind="other"))
-    triage_file(conn, 1, be, FakeClassifier("slides", True))
+    classify_and_extract(conn, 1, be, FakeClassifier("slides", True))
     assert "kind" not in be.schemas[0]["properties"] and "is_library_material" not in be.schemas[0]["properties"]
     assert _claims(conn, "topics") and _claims(conn, "abstract")  # kept: the classifier says library
     assert all(s.startswith("classify:") for s in _claims(conn, "kind") + _claims(conn, "is_library_material"))
@@ -168,7 +169,7 @@ def test_the_classifier_settles_library_ness_not_the_extraction_model(tmp_path):
 def test_extraction_is_skipped_when_the_classifier_is_sure_it_is_personal(tmp_path):
     conn = _lib(tmp_path, "payslip.pdf", "Payslip October. Net pay 1234.00")
     be = FakeBackend(PAPER)
-    r = triage_file(conn, 1, be, FakeClassifier("personal", False, p=0.98))
+    r = classify_and_extract(conn, 1, be, FakeClassifier("personal", False, p=0.98))
     assert r["extract_skipped"] and be.prompts == [] and _claims(conn, "title") == []
     assert promote_file(conn, 1) == ("purged", None)
 
@@ -177,7 +178,7 @@ def test_held_files_get_no_metadata_from_a_model(tmp_path):
     """Not library material (0.5-0.9: held): no extraction at all; it is known by its file name."""
     conn = _lib(tmp_path, "letter.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = FakeBackend(PAPER)
-    triage_file(conn, 1, be, FakeClassifier("personal", False, p=0.7))
+    classify_and_extract(conn, 1, be, FakeClassifier("personal", False, p=0.7))
     assert be.prompts == [] and not _claims(conn, "title") and not _claims(conn, "topics")
     assert conn.execute("SELECT triage_status FROM files").fetchone()[0] == "done"
     assert promote_file(conn, 1)[0] == "held"
@@ -186,7 +187,7 @@ def test_held_files_get_no_metadata_from_a_model(tmp_path):
 def test_without_a_classifier_the_extraction_model_still_judges(tmp_path):
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
     be = _SchemaBackend(dict(PAPER, is_library_material=False))
-    triage_file(conn, 1, be, None)
+    classify_and_extract(conn, 1, be, None)
     assert "is_library_material" in be.schemas[0]["properties"] and not _claims(conn, "topics")
 
 
@@ -206,7 +207,7 @@ def test_promote_ignores_null_author_claims_already_stored(tmp_path):
     from papyrus import db
 
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe.")
-    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
+    classify_and_extract(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
     db.assert_(conn, "file", 1, "authors", [None, "Jane Doe"], source="llm:fake:m")
     action, wid = promote_file(conn, 1)
     assert action == "created"
@@ -216,17 +217,17 @@ def test_promote_ignores_null_author_claims_already_stored(tmp_path):
 def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
     """2026-11-01 (test variant): OpenAlex answered 429, and enrichment recorded the work as
     'ambiguous' after waiting 5 minutes. Not asked is not found: no claim, the work stays pending."""
-    from papyrus.enrich import match, pipeline
+    from papyrus.match import candidates, pipeline
 
     conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe.")
-    triage_file(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
+    classify_and_extract(conn, 1, FakeBackend(PAPER), FakeClassifier("paper", True))
     _, wid = promote_file(conn, 1)
 
     def resolve(hint, report=None, **kw):
         report["rate_limited"] = {"openalex": 120.0, "s2": 0.0}
         return []
 
-    monkeypatch.setattr(match, "resolve", resolve)
+    monkeypatch.setattr(candidates, "resolve", resolve)
     monkeypatch.delenv("S2_API_KEY", raising=False)
     r = pipeline.enrich_work(conn, wid)
     assert r["status"] == "rate_limited" and r["sources"] == ["openalex"] and r["retry_after"] == 120.0
@@ -236,5 +237,5 @@ def test_a_rate_limited_lookup_records_no_verdict(tmp_path, monkeypatch):
         report["rate_limited"] = {"s2": 0.0}
         return []
 
-    monkeypatch.setattr(match, "resolve", resolve_s2_only)
+    monkeypatch.setattr(candidates, "resolve", resolve_s2_only)
     assert pipeline.enrich_work(conn, wid)["status"] == "not_found"

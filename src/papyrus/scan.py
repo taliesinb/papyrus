@@ -23,7 +23,7 @@ from typing import Callable, Iterable
 
 from . import db, linux, macos, purge, store
 from .filenames import parse_filename
-from .fulltext import page_kind
+from .index import page_kind
 from .pdf import TRIAGE_PAGES, looks_like_pdf, read_pdf, sha256_file
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".Trash", "Library"}

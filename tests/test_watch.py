@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from papyrus import db
 from papyrus.cli import main
-from papyrus.enrich import match
+from papyrus.match import candidates
 from papyrus.llm.base import BackendUnavailable, ModelBusy, ModelInfo
 from papyrus.watch import EXIT_LOCKED, Backoff, Watch, read_status
 from papyrus.watch import daemon as daemon_mod
@@ -27,7 +27,7 @@ from papyrus.watch.sources import FSEventsWatcher, InotifyWatcher, PollingWatche
 from papyrus.watch.system import InstanceLock, linux_pressure
 
 from test_core import _make_pdf
-from test_triage_promote import PAPER, FakeBackend, FakeClassifier
+from test_ingest import PAPER, FakeBackend, FakeClassifier
 
 MARK = "Quuxperson"  # in a payslip's filename and text: must never reach the log
 SLIP = dict(PAPER, kind="personal", is_library_material=False, title=f"Payslip {MARK}", topics=[],
@@ -865,7 +865,7 @@ def test_a_stage_average_starts_from_the_performance_log(tmp_path):
 
 
 def test_a_rate_limited_match_backs_off_and_the_rest_goes_on(tmp_path, monkeypatch):
-    from papyrus.enrich import pipeline
+    from papyrus.match import pipeline
 
     monkeypatch.setattr(pipeline, "enrich_work", lambda conn, wid, **kw: {
         "status": "rate_limited", "work_id": wid, "sources": ["openalex"], "retry_after": 120.0})

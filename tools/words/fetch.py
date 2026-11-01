@@ -28,7 +28,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from papyrus.enrich import http
+from papyrus import http
 
 REPO = Path(__file__).resolve().parents[2]
 URL = "https://downloads.sourceforge.net/wordlist/12dicts-6.0.2.zip"

@@ -77,7 +77,7 @@ def screen_input(name: str, folder: str, size_bytes: int, host: str | None, text
                  pages: int | None = None, meta: dict[str, Any] | None = None) -> str:
     """What the screen sees of a file (the text it embeds, without the task prefix). Version 2
     adds the page count and the PDF's own metadata."""
-    from .triage import _cap
+    from .describe import _cap
 
     lines = [f"File name: {name}", f"Folder: {folder}", f"Size: {round(size_bytes / 1024)} KB"]
     if host:
@@ -103,7 +103,7 @@ def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str 
     if f is None or not text.strip():
         return None
     if version >= 3:
-        from .triage import build_state
+        from .describe import build_state
 
         return build_state(conn, file_id)
     c = conn.execute(

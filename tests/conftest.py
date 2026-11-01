@@ -17,6 +17,6 @@ def _isolated_library(tmp_path, monkeypatch):
 def no_enrich_network(monkeypatch):
     """Enrichment finds nothing, without asking any API (for tests that run the watcher, which
     enriches what it promotes)."""
-    from papyrus.enrich import match
+    from papyrus.match import candidates
 
-    monkeypatch.setattr(match, "resolve", lambda hint, **kw: [])
+    monkeypatch.setattr(candidates, "resolve", lambda hint, **kw: [])

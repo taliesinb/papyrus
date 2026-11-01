@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from ..enrich import ids
+from .. import ids
 
 # Hosts whose arXiv-shaped path segment is an arXiv id.
 ARXIV_HOSTS = ("arxiv.org", "alphaxiv.org", "ar5iv.org", "ar5iv.labs.arxiv.org", "huggingface.co/papers",

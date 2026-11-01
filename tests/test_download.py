@@ -6,8 +6,8 @@ from click.testing import CliRunner
 
 from papyrus import db, download as dl, store
 from papyrus.cli import main
-from papyrus.enrich import http as h
-from papyrus.triage import build_state, detect_ids
+from papyrus import http as h
+from papyrus.describe import build_state, detect_ids
 
 from test_core import _make_pdf
 
@@ -248,10 +248,10 @@ def test_cli_dry_run_and_usage(tmp_path):
 
 
 def test_cli_process_triages_promotes_and_enriches_new_files(tmp_path, monkeypatch):
-    import papyrus.enrich.pipeline as pipeline
+    import papyrus.match.pipeline as pipeline
     import papyrus.llm as llm
 
-    from test_triage_promote import PAPER, FakeBackend
+    from test_ingest import PAPER, FakeBackend
 
     client, _ = _web(tmp_path)
     h.set_default_client(client)

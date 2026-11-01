@@ -12,8 +12,8 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from papyrus.enrich import ids as _ids
-from papyrus.enrich.http import HttpClient, default_client, mailto
+from papyrus import ids as _ids
+from papyrus.http import HttpClient, default_client, mailto
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://api.crossref.org"

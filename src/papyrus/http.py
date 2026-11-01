@@ -37,7 +37,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from .. import apilog
+from . import apilog
 
 log = logging.getLogger(__name__)
 
