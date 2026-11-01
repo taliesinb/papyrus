@@ -28,8 +28,8 @@ def test_rejecting_a_work_releases_its_ids(tmp_path):
     triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeDecider("paper", True))
     action, wid = promote_file(conn, 1)
     assert action == "created" and find_work(conn, {"arxiv": "2411.00161"}, None, None) == wid
-    # re-triage says personal -> promote rejects the work and frees the id
-    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeDecider("personal", False))
+    # re-triage says personal (held, below the purge threshold) -> promote rejects the work, frees the id
+    triage_file(conn, 1, FakeBackend(dict(PAPER, title="Jane Doe CV")), FakeDecider("personal", False, p=0.7))
     assert promote_file(conn, 1)[0] == "rejected"
     assert conn.execute("SELECT count(*) FROM work_ids").fetchone()[0] == 0
     assert find_work(conn, {"arxiv": "2411.00161"}, None, None) is None

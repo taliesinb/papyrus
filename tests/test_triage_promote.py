@@ -26,8 +26,8 @@ class FakeBackend:
 
 
 class FakeDecider:
-    def __init__(self, kind, lib):
-        self.kind, self.lib = kind, lib
+    def __init__(self, kind, lib, p=0.9):
+        self.kind, self.lib, self.p = kind, lib, p
 
     def info(self):
         return ModelInfo("fakedec", "d")
@@ -36,7 +36,7 @@ class FakeDecider:
         return True
 
     def decide(self, state, questions):
-        return {"kind": Answer("kind", {self.kind: 0.9, "other": 0.1}),
+        return {"kind": Answer("kind", {self.kind: self.p, "other": round(1 - self.p, 6)}),
                 "is_library_material": Answer("is_library_material",
                                               {"yes": 0.8 if self.lib else 0.2, "no": 0.2 if self.lib else 0.8})}
 
@@ -84,12 +84,13 @@ def test_personal_document_not_promoted_and_abstract_dropped(tmp_path):
     triage_file(conn, 1, FakeBackend(out), FakeDecider("personal", False))
     claims = db.current_assertions(conn, "file", 1)
     assert "abstract" not in claims and "topics" not in claims
-    assert promote_file(conn, 1) == ("not_library", None)
+    assert promote_file(conn, 1) == ("purged", None)  # P(personal) = 0.9: sure enough to erase
 
 
 def test_decider_kind_overrides_biased_yesno(tmp_path):
-    """Decider says kind=personal (p=.9) but its yes/no says library: kind wins."""
+    """Decider says kind=personal (p=.7) but its yes/no says library: kind wins (held: not
+    promoted, not sure enough to purge)."""
     conn = _lib(tmp_path, "exam.pdf", "Grade 9 June Paper 1. Answer all questions.")
-    dec = FakeDecider("personal", True)
+    dec = FakeDecider("personal", True, p=0.7)
     triage_file(conn, 1, FakeBackend(dict(PAPER, title="Grade 9 Paper")), dec)
-    assert promote_file(conn, 1) == ("not_library", None)
+    assert promote_file(conn, 1) == ("held", None)

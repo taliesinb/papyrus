@@ -76,8 +76,12 @@ def is_library(claims: dict[str, list[dict]]) -> bool:
 
     The decider's *kind* distribution is well calibrated, but its yes/no 'is this library
     material' answer is biased towards yes (0.7 for an exam paper it calls personal with p=1.0).
-    So: P(kind=personal) from the decider when present, else the extraction model's flag.
+    So: the user's own claim if any, else P(kind=personal) from the decider when present, else the
+    extraction model's flag.
     """
+    for c in claims.get("is_library_material") or []:
+        if c["source"] == "user":
+            return c["value"] is not False
     for c in claims.get("kind_probs") or []:
         if c["source"].startswith("decide:") and isinstance(c["value"], dict):
             return c["value"].get("personal", 0.0) < 0.5
@@ -101,8 +105,20 @@ def release_ids(conn: sqlite3.Connection, work_id: int) -> None:
         conn.execute("DELETE FROM work_ids WHERE work_id=?", (work_id,))
 
 
-def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | None]:
-    """Create or link a work for a triaged file. Returns (action, work_id)."""
+def promote_file(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> tuple[str, int | None]:
+    """Create or link a work for a triaged file, or purge it if it is surely personal paperwork
+    (`purge.verdict`). Returns (action, work_id); action is one of created | linked |
+    already_linked | rejected | purged | held (not library material, not sure enough to purge) |
+    no_title."""
+    from . import purge
+
+    f = conn.execute("SELECT purged_at FROM files WHERE id=?", (file_id,)).fetchone()
+    if f is None or f["purged_at"]:
+        return "purged", None
+    why = purge.verdict(conn, file_id)
+    if why:
+        purge.purge_file(conn, file_id, why, run_id=run_id)
+        return "purged", None
     claims = db.current_assertions(conn, "file", file_id)
     linked = conn.execute("SELECT work_id FROM file_works WHERE file_id=?", (file_id,)).fetchall()
     if linked:
@@ -117,7 +133,7 @@ def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | Non
             return ("rejected" if n else "already_linked"), None
         return "already_linked", None
     if not is_library(claims):
-        return "not_library", None
+        return "held", None
     title = best(claims, "title")
     if not title:
         return "no_title", None
@@ -160,11 +176,16 @@ def promote_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, int | Non
 
 
 def promote_all(conn: sqlite3.Connection) -> dict[str, int]:
-    stats: dict[str, int] = {}
-    for (fid,) in conn.execute("SELECT id FROM files WHERE triage_status='done' ORDER BY id").fetchall():
-        action, _ = promote_file(conn, fid)
-        stats[action] = stats.get(action, 0) + 1
-    return stats
+    from . import purge
+
+    with db.recorded_run(conn, "promote", {}) as (run_id, stats):
+        for (fid,) in conn.execute("SELECT id FROM files WHERE triage_status='done' AND purged_at IS NULL"
+                                   " ORDER BY id").fetchall():
+            action, _ = promote_file(conn, fid, run_id=run_id)
+            stats[action] = stats.get(action, 0) + 1
+        if stats.get("purged"):
+            purge.checkpoint(conn)
+    return {k: v for k, v in stats.items() if k != "status"}
 
 
 def work_json(conn: sqlite3.Connection, work_id: int) -> dict[str, Any]:

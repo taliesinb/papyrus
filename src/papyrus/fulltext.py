@@ -103,7 +103,7 @@ def readable_path(conn: sqlite3.Connection, file_id: int) -> Path | None:
 def pending_files(conn: sqlite3.Connection, file_ids: tuple[int, ...] = (), redo: bool = False) -> list[int]:
     """Files whose text layer is to be read in full: those of live works, or `file_ids`."""
     if file_ids:
-        q = (f"SELECT id FROM files WHERE id IN ({','.join('?' * len(file_ids))})"
+        q = (f"SELECT id FROM files WHERE id IN ({','.join('?' * len(file_ids))}) AND purged_at IS NULL"
              + ("" if redo else " AND fulltext_status <> 'done'"))
         return [r[0] for r in conn.execute(q + " ORDER BY id", file_ids)]
     q = ("SELECT f.id FROM files f WHERE f.text_status IN ('ok', 'no_text') AND " + LIVE_FILE.format(f="f.id")

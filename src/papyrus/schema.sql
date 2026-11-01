@@ -1,4 +1,4 @@
--- papyrus schema, version 2.
+-- papyrus schema, version 3.
 --
 -- Design notes (see docs/schema.md for the long form):
 --
@@ -67,7 +67,10 @@ CREATE TABLE IF NOT EXISTS files (
     fulltext_status TEXT NOT NULL DEFAULT 'pending',
     -- where papyrus keeps its own copy, relative to the library root (NULL = not copied)
     stored_path   TEXT,
-    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- set when the file was purged as personal paperwork (purge.py): the row is then a tombstone
+    -- (sha256, size and a 'purged' assertion), so the same bytes are skipped wherever they turn up
+    purged_at     TEXT
 );
 
 -- Extracted text, one row per page (1-based). Scanning extracts the first

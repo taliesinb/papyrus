@@ -17,7 +17,7 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_enrich_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | triage | promote | extract | enrich | process | works | work | files | show | search | stats | config | mcp | slack | resolve
+uv run papyrus --help                  # scan | download | store | triage | promote | purge | keep | extract | enrich | process | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/decider in effect
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
 cd web && pnpm check                   # svelte-check; the app is served under /papyrus (links go through href())
@@ -64,6 +64,7 @@ only what is pending (see `--all` / `--reset`).
 * **The managed store** (`~/.papyrus/<variant>/store/ab/<sha256>.pdf`) is papyrus's
   own: content-addressed, read-only, written only through `store.commit`.
   Never rewrite or delete a stored file; `files.stored_path` points there.
+  The one exception is `purge.purge_file`, which erases personal paperwork.
   Copy local files in with `store.snapshot` (an APFS clone or Linux reflink, falling back to a
   copy), never `shutil.copy`/`cp`, which duplicate the bytes.
 * **Never delete rows that carry knowledge:**
@@ -72,10 +73,25 @@ only what is pending (see `--all` / `--reset`).
   * assertions are superseded (`superseded_at`), never deleted;
   * undo an enrichment with `pipeline.reset_enrichment`, which keeps the
     history.
+
+  The exception is a file purged as personal paperwork (`purge.py`): what
+  papyrus knew about it is erased on purpose.
 * **Downloaded personal documents live alongside papers in `~/Downloads`:**
   payslips, tax certificates, CVs, exam papers. Don't paste their text into
   commits, tests, fixtures or logs. Triage deliberately stores no abstract or
   topics for non-library documents.
+* **Personal paperwork is purged, or held out of sight** (`purge.py`):
+  * when the decider gives P(kind=personal) ≥ 0.9, promote purges the file down
+    to a tombstone: sha256, size, `purged_at`, the download URL, and one
+    `purged` assertion. Scan and download then skip those bytes without
+    recording anything;
+  * between 0.5 and 0.9 (or without a decider) the file is *held*: no work,
+    first pages kept for review (`papyrus purge --dry-run`, `purge ID`,
+    `keep ID`);
+  * nothing about a file outside a live work may reach the browser or MCP.
+    The web's `LIVE_FILE` (`web/src/lib/server/files.ts`) and Python's
+    `search.LIVE_FILE` gate file bytes, thumbnails, paths, URLs and claims.
+    New routes and tools must use them too.
 
 ## Invariants
 
@@ -216,7 +232,13 @@ only what is pending (see `--all` / `--reset`).
 
 * **Privacy:** only files of live works are extracted past page 2, and every
   search path filters to live works. Keep it that way in new search tools:
-  the first pages of payslips and CVs are in `file_pages`.
+  the first pages of *held* personal files (see Data safety) are in
+  `file_pages`. Purged files have none.
+* **Erasing in SQLite:** a plain `DELETE` leaves the text in free pages (8
+  of 24 fragments of a test payslip survived), and FTS5 masks deleted entries
+  rather than removing them. `purge_file` therefore sets `PRAGMA
+  secure_delete` and the index's `secure-delete` option in the same
+  connection, then checkpoints the WAL. A test checks the bytes on disk.
 * **The ranking exists twice**, in `search.py` and `query.ts`. Change both.
 * **FTS5:** `bm25()`/`snippet()` can't go in an aggregate query, even in a
   subquery (SQLite flattens it): use a `MATERIALIZED` CTE. `MATCH ? AND

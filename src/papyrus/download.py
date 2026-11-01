@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
-from . import db, store
+from . import db, purge, store
 from .enrich import http
 from .pdf import PDF_MAGIC, sha256_file
 from .scan import add_file
@@ -416,11 +416,13 @@ def known_file(conn: sqlite3.Connection, url: str) -> tuple[int, str] | None:
     """A file already in the library for this URL that we can still read: (file_id, how)."""
     target, _ = resolve(url)
     rows = conn.execute(
-        """SELECT r.file_id, c.kind, c.locator, f.stored_path, f.size, c.missing_at
+        """SELECT r.file_id, c.kind, c.locator, f.stored_path, f.size, c.missing_at, f.purged_at
            FROM contexts c JOIN context_refs r ON r.context_id=c.id JOIN files f ON f.id=r.file_id
            WHERE (c.kind='download' AND c.locator=?) OR (c.kind='filesystem' AND c.url IN (?, ?))
            ORDER BY c.kind='download' DESC""", (url, url, target)).fetchall()
     for r in rows:
+        if r["purged_at"]:  # personal paperwork, purged: nothing to fetch again
+            return r["file_id"], "purged"
         if store.is_stored(r["stored_path"], r["size"]):
             return r["file_id"], "stored"
         if r["kind"] == "filesystem" and r["missing_at"] is None and os.path.exists(r["locator"]):
@@ -469,9 +471,18 @@ def record(conn: sqlite3.Connection, f: Fetched, run_id: int, stats: Counter) ->
         stats["failed"] += 1
         return Outcome(link, "failed", detail=f.error or "")
     assert f.tmp and f.sha
+    froms = [f.pdf_url] + ([f.referrer] if f.referrer and f.referrer != f.pdf_url else [])
+    if (purged := purge.is_purged(conn, f.sha)) is not None:
+        # Bytes purged as personal paperwork: keep only the URL (as purge leaves download contexts).
+        f.tmp.unlink(missing_ok=True)
+        with db.tx(conn):
+            ctx_id = _upsert_context(conn, Link(link.url), url=f.pdf_url,
+                                     extra={"where_froms": froms, "purged": True}, now=now, success=False)
+            _resolve_ref(conn, ctx_id, f.pdf_url or link.url, purged, "download")
+        stats["purged_skipped"] += 1
+        return Outcome(link, "purged", purged)
     rel, _created = store.commit(f.tmp, f.sha)
     path = store.abs_path(rel)
-    froms = [f.pdf_url] + ([f.referrer] if f.referrer and f.referrer != f.pdf_url else [])
     extra = {"filename": f.filename, "where_froms": froms, "content_type": f.content_type, "size": f.size}
     with db.tx(conn):
         file_id, new = add_file(conn, path, f.sha, f.size, name=f.filename, stored_rel=rel, run_id=run_id,
@@ -486,7 +497,9 @@ def record_known(conn: sqlite3.Connection, link: Link, file_id: int, how: str) -
     now = db.now_iso()
     with db.tx(conn):
         row = conn.execute("SELECT id FROM contexts WHERE kind='download' AND locator=?", (link.url,)).fetchone()
-        if row:
+        if row and how == "purged":  # no title for personal paperwork
+            conn.execute("UPDATE contexts SET last_seen_at=? WHERE id=?", (now, row["id"]))
+        elif row:
             conn.execute("UPDATE contexts SET title=COALESCE(?, title), last_seen_at=? WHERE id=?",
                          (link.title, now, row["id"]))
     return Outcome(link, "known", file_id, how)

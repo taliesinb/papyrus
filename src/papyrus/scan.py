@@ -2,7 +2,9 @@
 
 Idempotent: a path whose (size, mtime) hasn't changed since the last scan is
 only touched (last_seen_at); files are deduplicated by sha256; contexts under a
-scanned root that no longer exist get `missing_at`.
+scanned root that no longer exist get `missing_at`. Bytes that were purged as
+personal paperwork (`purge.py`) are skipped without recording anything, not even
+the path; they have no context, so they are hashed again on each scan.
 
 New or changed files are snapshotted into the managed store (`store.py`, an
 APFS clone where possible) and hashed from the snapshot.
@@ -19,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import db, linux, macos, store
+from . import db, linux, macos, purge, store
 from .filenames import parse_filename
 from .fulltext import page_kind
 from .pdf import TRIAGE_PAGES, looks_like_pdf, read_pdf, sha256_file
@@ -68,15 +70,21 @@ def add_file(conn: sqlite3.Connection, path: Path, sha: str, size: int, *, name:
     file_id, new = _upsert_file(conn, sha, size)
     stats["new_files" if new else "known_files"] += 1
     if new:
-        stats["text_" + extract_first_pages(conn, file_id, path)] += 1
-        hint = parse_filename(Path(name).stem) if name else None
-        if hint:
-            db.assert_(conn, "file", file_id, "filename_hint",
-                       {"title": hint.title, "surnames": hint.surnames, "year": hint.year},
-                       source="heuristic:filename", run_id=run_id)
+        stats["text_" + first_read(conn, file_id, path, name, run_id)] += 1
     if stored_rel:
         store.set_stored_path(conn, file_id, stored_rel)
     return file_id, new
+
+
+def first_read(conn: sqlite3.Connection, file_id: int, path: Path, name: str | None, run_id: int | None) -> str:
+    """What scanning learns about new bytes: the first pages, PDF info and a filename hint."""
+    status = extract_first_pages(conn, file_id, path)
+    hint = parse_filename(Path(name).stem) if name else None
+    if hint:
+        db.assert_(conn, "file", file_id, "filename_hint",
+                   {"title": hint.title, "surnames": hint.surnames, "year": hint.year},
+                   source="heuristic:filename", run_id=run_id)
+    return status
 
 
 def extract_first_pages(conn: sqlite3.Connection, file_id: int, path: Path, pages: int = TRIAGE_PAGES) -> str:
@@ -181,12 +189,19 @@ def scan(conn: sqlite3.Connection, roots: list[Path], opts: ScanOptions | None =
                 if opts.store:
                     tmp, method = store.snapshot(path)
                     sha = sha256_file(tmp)
+                    if purge.is_purged(conn, sha):  # personal paperwork seen before: record nothing
+                        tmp.unlink(missing_ok=True)
+                        stats["purged_skipped"] += 1
+                        continue
                     rel, created = store.commit(tmp, sha)
                     src, size = store.abs_path(rel), store.abs_path(rel).stat().st_size
                     if created:
                         stats[f"stored_{method}"] += 1
                 else:
                     sha = sha256_file(path)
+                    if purge.is_purged(conn, sha):
+                        stats["purged_skipped"] += 1
+                        continue
             except OSError:
                 stats["unreadable"] += 1
                 continue

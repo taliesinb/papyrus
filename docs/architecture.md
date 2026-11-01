@@ -30,7 +30,8 @@ formatting.
                                │       language, ids
                                ▼
                            promote ─▶ works, work_ids, work_authors(raw), topics(llm), file_works,
-                               │        works_fts; rejects works whose files are personal
+                               │        works_fts; rejects works whose files are personal;
+                               │        purges files that are surely personal down to a tombstone
                                ▼
                            extract ─▶ every page of live works' files (+FTS), page kinds, file_outline;
                                │        OCR (Apple Vision) of pages without a text layer
@@ -55,7 +56,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | scan | `scan.py`, `pdf.py`, `macos.py`, `linux.py`, `filenames.py` | the path is new, or its (size, mtime) changed | Files are deduplicated by sha256. Text is extracted from the first 2 pages only. `kMDItemWhereFroms` (Linux: `user.xdg.origin.url`, `user.xdg.referrer.url`) gives the download URL and referrer. Contexts whose path has disappeared get `missing_at`. |
 | download | `download.py`, `store.py`, `enrich/http.py` | the URL has no download context resolved to a readable file (and no filesystem context with that download URL) | Input: arguments, files, stdin, or the clipboard (RTF links with titles, else HTML, else plain text). arXiv/OpenReview pages map to their PDF; HTML landing pages are followed once via `citation_pdf_url`; a PDF is recognised by its first bytes. Hosts in parallel, one URL at a time per host; the database is written from the main thread only. Failures stay as unresolved refs and are retried next time. |
 | triage | `triage.py`, `llm/*`, `textspan.py` | `files.triage_status <> 'done'` | One extraction call per file, plus one decider call per question. The state sent to the model holds the filename(s), path, download URL, PDF metadata, filename hint and ≤4000 characters of page text. |
-| promote | `works.py` | the file has no `file_works` row | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. |
+| promote | `works.py`, `purge.py` | the file has no `file_works` row (and isn't purged) | Deduplicates by id first, then by normalised title ± 1 year. Library-ness comes from `works.is_library`. Files with P(kind=personal) ≥ 0.9 are purged (`purge.verdict`, `purge_file`); between 0.5 and 0.9 they are held for review. |
 | extract | `fulltext.py`, `ocr.py`, `tools/afm-bridge` | text layer: a file of a live work with `fulltext_status='pending'`; OCR: a page with < 40 characters and `source='pdfium'` (all such pages of extracted files, the first 2 of image-only files) | Reads every page (pypdfium2), labels its kind, stores the outline. OCR is written every 32 pages, so an interrupted run keeps its work; an image-only file that is no work yet goes back to triage once OCR finds text. Whole library (81 PDFs, 6,500 pages): 26 s, most of it Vision's warm-up. |
 | enrich | `enrich/*` | the work has no `api:*` claims and no `enrich_candidates` | `match.resolve` (ids first, then title search) → exclude conflicting candidates → `cluster` → `merge` → write. The score threshold is 0.85. |
 
@@ -70,6 +71,7 @@ Re-running a stage processes only pending items, unless you pass `--all` or
 | `triage.py` | prompts (`INSTRUCTIONS`, `EXTRACT_SCHEMA`, `KINDS`, `DECISIONS`), `build_state`, `detect_ids`, `triage_file` |
 | `textspan.py` | find spans from anchors (`locate`), the `heuristic_abstract` regex, and `best_abstract`, which reconciles the two |
 | `works.py` | `SOURCE_RANK`/`best` resolution, `is_library`, `promote_file`, `reject_work`, `reindex_work`, `work_json` |
+| `purge.py` | personal paperwork: `verdict` (purge, hold or keep), `purge_file` (tombstone, secure delete, store copy and thumbnails), `keep`/`restore` (the user's override), `is_purged` (used by scan and download) |
 | `fulltext.py` | the `extract` stage: `page_kind`, `extract_file` (text layer, outline), `ocr_file`, `run` |
 | `ocr.py` | `VisionOCR`: page OCR through the bridge's `ocr` op (Vision `RecognizeDocumentsRequest`) |
 | `search.py` | ranking shared by the CLI and MCP: `rank_files` (pages → files), `search_works` (RRF with metadata), `fill_snippets`; mirrored in `web/src/lib/server/query.ts` |
@@ -156,6 +158,7 @@ and a CV to works.
 | downloads: sniff bytes, not Content-Type | A journal API serves its PDFs as `application/json`. |
 | full text in FTS5, page rows in the main database | Every page of 81 PDFs (13M characters) adds 25 MB and indexes in 0.2 s; queries take 1–15 ms. Pages keep hits citable by page number. A separate index (Tantivy, Meilisearch) would be invisible to SQL and MCP. At ~50k documents the text may reach a few GB: then consider moving `file_pages` to an `ATTACH`ed file. |
 | extract only live works' files | Personal paperwork sits next to papers in `~/Downloads`; its first 2 pages are needed for triage, the rest aren't needed at all. Search also filters to live works, since those 2 pages are indexed. |
+| purge sure personal paperwork to a tombstone; hold unsure cases; serve only live works' files | Before this, scanning and triage kept the first pages, paths, URLs, PDF metadata, a stored copy and model claims of every payslip and CV. The web app served any file id to the tailnet, and MCP's `get_file` and `sql` read them. Containment can't cover `sql`, so the data goes. The tombstone (sha256, size, URL) keeps "never triage these bytes again" without the content. 0.9 rather than 0.5 because a purge can't be undone from the library: five synthetic personal documents scored P(personal) 0.998–1.0 with the 4B model, and `papyrus keep PATH` restores from the original. A plain `DELETE` left 8 of 24 text fragments in the file; `secure_delete` plus FTS5 `secure-delete` left none. |
 | rank works by Reciprocal Rank Fusion of metadata and pages | bm25 from `works_fts` and `file_pages_fts` aren't on one scale (adding them, as before, let either swamp the other). RRF needs only ranks, and an embedding ranking can join later. |
 | page kinds from the text, not the outline | Outlines were wrong as often as right (a book's "Index" entry spanning its references, "2.1.2 Bibliography" a manual's section about bibliographies). Bibliography-entry density ≥ 0.5 marks 86% of reference pages and 1% of body pages; the body pages were mostly unlabelled reference pages. |
 | OCR with Vision `RecognizeDocumentsRequest` in the existing bridge | On-device, no new dependency, reading order across columns; ~57 ms a page warm, ~25 s warm-up per process. |

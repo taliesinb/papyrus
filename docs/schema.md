@@ -7,7 +7,7 @@ for others; override with `PAPYRUS_DB`). The authoritative DDL is
 the model. Everything is plain SQLite (FTS5 for text search); no extensions
 are required to read it.
 
-The schema version is `meta.schema_version` (now 2). papyrus refuses to open
+The schema version is `meta.schema_version` (now 3). papyrus refuses to open
 a database of another version, and there are no automatic migrations: a
 version change is migrated once, by hand.
 
@@ -55,6 +55,7 @@ version change is migrated once, by hand.
   * `api:arxiv`, `api:openalex`, `api:s2`, `api:crossref`: claims from one source
   * `api:enrich`: the enrichment pipeline's own records (candidates, exclusions, duplicates)
   * `papyrus:reject`: written when a work is rejected
+  * `papyrus:purge`: written when a file is purged as personal paperwork
   * `user`
   * Link tables also use plain stage names: `scan`, `download`, `triage`, `promote`.
 * Precedence when resolving claims (`works.SOURCE_RANK`):
@@ -71,13 +72,42 @@ version change is migrated once, by hand.
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
 | `triage_status` | `pending`, `done` or `error` (LLM triage) |
 | `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
-| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed). |
+| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed), and NULL again once purged. |
+| `purged_at` | set when the file was purged as personal paperwork; the row is then a tombstone (see below) |
+
+**Personal paperwork: held or purged** (`purge.py`). A triaged file that is
+not library material never becomes a work. What happens to it next depends on
+the decider's P(kind=personal):
+
+* **Purged** at ≥ 0.9 (by `promote`, `papyrus purge`), or when the user says
+  so (`papyrus purge ID`). The `files` row keeps `sha256`, `size`,
+  `first_seen_at` and `purged_at`, plus one `purged` assertion. Download
+  contexts keep their URL (`locator`, `url`, `where_froms`; `extra.purged`).
+  Everything else is erased:
+  * page text and its full-text index entries, and the outline;
+  * `page_count` and the `pdf_*` columns;
+  * every other assertion about the file;
+  * filesystem contexts (path, filename, dates), and download contexts'
+    title and filename;
+  * the stored copy, and the web app's cached thumbnails.
+
+  A work whose files were all purged is rejected and stripped: no title,
+  abstract, authors or topics, and only its `released_ids` assertion is kept.
+  Scan and download skip purged bytes without recording anything.
+  `papyrus keep PATH` brings a purged file back from its original.
+* **Held** between 0.5 and 0.9, or without a decider. No work is made and the
+  first pages are kept, for `papyrus purge --dry-run` (which lists held files)
+  and a decision: `papyrus purge ID` or `papyrus keep ID`.
+
+Neither kind is ever served: the web app and MCP show only files of live
+works.
 
 `file_pages(file_id, page, text, source, kind)` holds extracted text per page.
 
 * **Which pages:** scanning extracts the first 2 pages of every file (all that
   triage reads). `papyrus extract` adds the rest for files of live works
-  (`candidate` or `confirmed`); personal paperwork stays at 2 pages.
+  (`candidate` or `confirmed`). Held personal paperwork stays at 2 pages;
+  purged files have none.
 * **`source`:** `pdfium` (the PDF's text layer) or `ocr:vision` (Apple
   Vision, for pages without one). OCR'd pages are never overwritten by the
   text layer.
@@ -123,7 +153,9 @@ ORDER BY page DESC, position DESC LIMIT 1;
   * `confirmed`
   * `rejected`: not library material. Rows are never deleted. Rejecting a
     work releases its `work_ids` (recorded as a `released_ids` assertion) so
-    that the real document can claim them. Hidden from search and MCP.
+    that the real document can claim them. Hidden from search and MCP; the
+    web app lists them only on request, without their files. A rejected work
+    whose files were purged has its title and everything else erased.
   * `merged`: see `merged_into`
 * `work_ids(scheme, value)` is globally unique, so an arXiv id or DOI maps to
   exactly one work.
@@ -205,6 +237,11 @@ The fields triage writes for a file:
 * `topics`: `[{name, field}]`
 * `language`
 * `ids`: `{arxiv, doi, isbn}` found by regex
+* `purged` (source `papyrus:purge`): `{by, p_personal, prompt_version}`,
+  where `by` is the decider's tag or `user`. After a purge it is the file's
+  only assertion; `papyrus keep PATH` supersedes it.
+* `is_library_material` from `user` (`papyrus keep`): outranks the decider,
+  both for promotion and for purging.
 
 The fields written for a work:
 

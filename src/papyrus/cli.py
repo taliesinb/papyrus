@@ -223,10 +223,15 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
                 f"no decider: {e}.\nTriage without one misjudges personal vs library documents. "
                 f"Start LM Studio, or pass --decider none (or set decider = \"none\" in "
                 f"{config.path()}) to triage anyway.") from e
-    if file_ids:
-        ids = list(file_ids)
+    if file_ids:  # purged files have nothing left to triage
+        purged = {r[0] for r in conn.execute(
+            f"SELECT id FROM files WHERE purged_at IS NOT NULL AND id IN ({','.join('?' * len(file_ids))})", file_ids)}
+        if purged:
+            click.echo(f"skipping purged files: {' '.join(map(str, sorted(purged)))}", err=True)
+        ids = [i for i in file_ids if i not in purged]
     else:
-        where = "text_status IN ('ok','no_text')" + ("" if redo_all else " AND triage_status<>'done'")
+        where = ("text_status IN ('ok','no_text') AND purged_at IS NULL"
+                 + ("" if redo_all else " AND triage_status<>'done'"))
         ids = [r[0] for r in conn.execute(f"SELECT id FROM files WHERE {where} ORDER BY id")]
     ids = ids[:limit] if limit else ids
     click.echo(f"triaging {len(ids)} files with {be.info().tag}" + (f" + {dec.info().tag}" if dec else ""))
@@ -253,10 +258,94 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
 @main.command()
 @click.pass_context
 def promote(ctx: click.Context) -> None:
-    """Create/link works from triaged files (dedupes by arXiv/DOI/ISBN and title)."""
+    """Create/link works from triaged files (dedupes by arXiv/DOI/ISBN and title); purge files
+    that are surely personal paperwork (P(kind=personal) >= 0.9), hold the less sure ones."""
     from .works import promote_all
     stats = promote_all(_conn(ctx))
     click.echo(" ".join(f"{k}={v}" for k, v in sorted(stats.items())))
+
+
+@main.command("purge")
+@click.argument("file_ids", nargs=-1, type=int)
+@click.option("--dry-run", is_flag=True, help="Only list what would be purged, and the files held for review.")
+@click.pass_context
+def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> None:
+    """Erase personal paperwork from the library, down to a tombstone (sha256, size, URL).
+
+    Without FILE_IDS: every triaged file the decider is sure is personal (P(kind=personal) >= 0.9;
+    promote already does this as it goes), and a list of the files held for review (personal,
+    but less sure). With FILE_IDS: those files, as your decision. Page text, paths, filenames,
+    PDF metadata, model claims and the stored copy are erased; the same bytes are skipped from
+    then on. `papyrus keep PATH` brings a purged file back from its original."""
+    from . import purge
+
+    conn = _conn(ctx)
+    if file_ids:
+        todo: list[tuple[int, dict | None]] = []
+        for fid in file_ids:
+            r = conn.execute("SELECT purged_at FROM files WHERE id=?", (fid,)).fetchone()
+            if r is None or r["purged_at"]:
+                click.echo(f"{fid:5} {'no such file' if r is None else 'already purged'}", err=True)
+            elif conn.execute("SELECT 1 FROM file_works fw JOIN works w ON w.id=fw.work_id"
+                              " WHERE fw.file_id=? AND w.status='confirmed'", (fid,)).fetchone():
+                click.echo(f"{fid:5} belongs to a confirmed work: not purged", err=True)
+            else:
+                todo.append((fid, {"by": "user"}))
+        held: list[int] = []
+    else:
+        found = purge.candidates(conn, held=True)
+        todo = [(fid, why) for fid, why in found if why]
+        held = [fid for fid, why in found if not why]
+    for fid in held:
+        claims = db.current_assertions(conn, "file", fid)
+        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("decide:")), {})
+        title = next((c["value"] for c in claims.get("title", [])), "")
+        click.echo(f"{fid:5} held   P(personal)={probs.get('personal', float('nan')):.2f}  {str(title)[:60]}")
+    if dry_run:
+        for fid, why in todo:
+            click.echo(f"{fid:5} would purge  {json.dumps(why)}")
+        return
+    with db.recorded_run(conn, "purge", {"files": [f for f, _ in todo]}) as (run_id, stats):
+        stats.update(purged=0, held=len(held))
+        for fid, why in todo:
+            if purge.purge_file(conn, fid, why or {"by": "user"}, run_id=run_id):
+                stats["purged"] += 1
+                click.echo(f"{fid:5} purged")
+        purge.checkpoint(conn)
+    click.echo(f"purged={stats['purged']} held={len(held)}"
+               + ("  (keep one with `papyrus keep ID`, purge it with `papyrus purge ID`)" if held else ""))
+
+
+@main.command("keep")
+@click.argument("targets", nargs=-1, required=True)
+@click.pass_context
+def keep_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
+    """Mark files as library material whatever triage said: TARGETS are file ids, or paths of
+    originals (which also brings back a purged file: its copy, first pages and path)."""
+    from . import purge
+
+    conn = _conn(ctx)
+    with db.recorded_run(conn, "keep", {"targets": len(targets)}) as (run_id, stats):
+        for t in targets:
+            if t.isdigit():
+                r = conn.execute("SELECT purged_at FROM files WHERE id=?", (int(t),)).fetchone()
+                if r is None or r["purged_at"]:
+                    click.echo(f"{t}: {'no such file' if r is None else 'purged; give the path of the original'}",
+                               err=True)
+                    continue
+                action, wid = purge.keep(conn, int(t), run_id)
+                where = f" (work {wid})" if wid else ""
+            else:
+                p = Path(t)
+                if not p.is_file():
+                    click.echo(f"{t}: not a file", err=True)
+                    continue
+                action, fid = purge.restore(conn, p, run_id)
+                where = f" (file {fid})" if fid and action == "restored" else ""
+            stats[action] = stats.get(action, 0) + 1
+            hint = {"restored": "; now `papyrus process` triages it", "no_title": "; `papyrus process` triages it",
+                    "unknown": "; not in the library: `papyrus scan` it"}.get(action, "")
+            click.echo(f"{t}: {action}{where}{hint}")
 
 
 @main.command()
@@ -346,6 +435,7 @@ def _unenriched_works(conn: sqlite3.Connection, file_ids: tuple[int, ...] = ()) 
 def process(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
             limit: int | None) -> None:
     """Triage, promote, extract and enrich whatever is pending: `triage && promote && extract && enrich`.
+    Promote purges what the decider is sure is personal paperwork (see `papyrus purge`).
 
     With FILE_IDS, triages those files and enriches only their works. Stops before promoting
     if triage can't run (e.g. no decider available)."""
@@ -407,7 +497,7 @@ def show_work(ctx: click.Context, work_id: int) -> None:
 def list_files(ctx: click.Context, status: str | None, as_json: bool) -> None:
     """List known files with their current locations."""
     conn = _conn(ctx)
-    q = """SELECT f.id, f.page_count, f.text_status, f.triage_status, f.size, f.stored_path,
+    q = """SELECT f.id, f.page_count, f.text_status, f.triage_status, f.size, f.stored_path, f.purged_at,
                   (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
                     WHERE r.file_id=f.id AND c.kind='filesystem' AND c.missing_at IS NULL) AS paths,
                   (SELECT group_concat(c.locator, char(10)) FROM context_refs r JOIN contexts c ON c.id=r.context_id
@@ -419,7 +509,8 @@ def list_files(ctx: click.Context, status: str | None, as_json: bool) -> None:
         return
     for r in rows:
         first = (r["paths"] or r["urls"] or r["stored_path"] or "(no current path)").split("\n")[0]
-        click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {r['text_status']:8} {r['triage_status']:8} {first}")
+        triage = "purged" if r["purged_at"] else r["triage_status"]
+        click.echo(f"{r['id']:5} {r['page_count'] or '?':>5}p {r['text_status']:8} {triage:8} {first}")
 
 
 def _page_line(h) -> str:
@@ -541,8 +632,10 @@ def stats(ctx: click.Context) -> None:
     conn = _conn(ctx)
     for table in ["files", "works", "people", "contexts", "context_refs", "assertions", "runs"]:
         click.echo(f"{table:14} {conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]}")
-    for r in conn.execute("SELECT text_status, triage_status, fulltext_status, count(*) n FROM files GROUP BY 1, 2, 3"):
+    for r in conn.execute("SELECT text_status, triage_status, fulltext_status, count(*) n FROM files"
+                          " WHERE purged_at IS NULL GROUP BY 1, 2, 3"):
         click.echo(f"  files text={r[0]} triage={r[1]} fulltext={r[2]}: {r[3]}")
+    click.echo(f"  files purged: {conn.execute('SELECT count(*) FROM files WHERE purged_at IS NOT NULL').fetchone()[0]}")
     for r in conn.execute("SELECT source, kind, count(*) FROM file_pages GROUP BY 1, 2 ORDER BY 1, 2"):
         click.echo(f"  pages {r[0]}/{r[1]}: {r[2]}")
 

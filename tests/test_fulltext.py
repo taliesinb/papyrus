@@ -86,10 +86,11 @@ def _paper_library(tmp_path: Path):
         "SELECT c.title, r.file_id FROM contexts c JOIN context_refs r ON r.context_id=c.id")}
     paper, slip = ids["paper.pdf"], ids["payslip.pdf"]
     triage_file(conn, paper, FakeBackend(PAPER), FakeDecider("paper", True))
+    # P(personal) = 0.7: held (not a work, not purged), so its first pages stay
     triage_file(conn, slip, FakeBackend(dict(PAPER, kind="personal", is_library_material=False, title="Payslip")),
-                FakeDecider("personal", False))
+                FakeDecider("personal", False, p=0.7))
     assert promote_file(conn, paper)[0] == "created"
-    assert promote_file(conn, slip) == ("not_library", None)
+    assert promote_file(conn, slip) == ("held", None)
     return conn, paper, slip
 
 

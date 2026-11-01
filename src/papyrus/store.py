@@ -126,7 +126,8 @@ def backfill(conn: sqlite3.Connection, progress: Callable[[str, int, str], None]
     clean_tmp()
     with db.recorded_run(conn, "store", {}) as (_run_id, stats):
         counts: Counter = Counter()
-        rows = conn.execute("SELECT id, sha256, size, stored_path FROM files ORDER BY id").fetchall()
+        rows = conn.execute("SELECT id, sha256, size, stored_path FROM files WHERE purged_at IS NULL ORDER BY id"
+                            ).fetchall()
         for f in rows:
             if is_stored(f["stored_path"], f["size"]):
                 counts["already"] += 1

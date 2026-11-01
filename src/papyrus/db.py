@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 # A variant id: lowercase letters, digits and single dashes (as DeepSea's). No dots, so the
