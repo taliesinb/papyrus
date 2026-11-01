@@ -18,7 +18,7 @@ def test_snapshot_commit_layout_and_readonly(tmp_path):
     assert method in ("clone", "copy") and tmp.parent == store.root() / "tmp"
     sha = sha256_file(tmp)
     rel, created = store.commit(tmp, sha)
-    assert created and rel == f"store/{sha[:2]}/{sha}.pdf"
+    assert created and rel == f"store/{sha[:16]}.pdf"
     p = store.abs_path(rel)
     assert p.read_bytes() == src.read_bytes() and not tmp.exists()
     assert not (stat.S_IMODE(p.stat().st_mode) & 0o222)  # read-only
@@ -26,6 +26,21 @@ def test_snapshot_commit_layout_and_readonly(tmp_path):
     tmp2, _ = store.snapshot(src)
     assert store.commit(tmp2, sha) == (rel, False) and not tmp2.exists()
     assert store.is_stored(rel, p.stat().st_size) and not store.is_stored(rel, 1)
+
+
+def test_a_name_taken_by_other_bytes_falls_back_to_the_full_hash(tmp_path):
+    """Stored files are named by 16 hex digits of their sha256; two different files sharing them
+    must both be kept, the second under its full hash."""
+    a, b = tmp_path / "a.pdf", tmp_path / "b.pdf"
+    _make_pdf(a, "First document")
+    _make_pdf(b, "Second document")
+    sha_a = sha256_file(a)
+    rel_a, _ = store.commit(store.snapshot(a)[0], sha_a)
+    fake_b = sha_a[:16] + sha256_file(b)[16:]  # b's hash, as if it shared a's first 16 digits
+    rel_b, created = store.commit(store.snapshot(b)[0], fake_b)
+    assert created and rel_b == f"store/{fake_b}.pdf" and rel_a == f"store/{sha_a[:16]}.pdf"
+    assert store.abs_path(rel_a).read_bytes() == a.read_bytes()
+    assert store.abs_path(rel_b).read_bytes() == b.read_bytes()
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="clonefile is macOS-only")

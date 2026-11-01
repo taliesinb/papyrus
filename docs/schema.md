@@ -72,7 +72,7 @@ version change is migrated once, by hand.
 | `text_status` | `pending`, `ok`, `no_text` (scanned/image-only) or `error` |
 | `triage_status` | `pending`, `done` or `error` (LLM triage) |
 | `fulltext_status` | `pending` (only the first pages are in `file_pages`), `done` (every page) or `error` (`text_error` says why); see `papyrus extract` |
-| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 2 hex digits>/<sha256>.pdf`. Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed), and NULL again once purged. |
+| `stored_path` | papyrus's own copy, relative to the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`): `store/<first 16 hex digits of sha256>.pdf`, one flat directory (a different file whose 16 digits are already taken would be stored under its full sha256). Read-only and never rewritten. NULL until stored (`papyrus store` backfills files scanned before the store existed), and NULL again once purged. |
 | `purged_at` | set when the file was purged as personal paperwork; the row is then a tombstone (see below) |
 
 **Personal paperwork: held or purged** (`purge.py`). A triaged file that is
@@ -288,20 +288,25 @@ and its back-offs (`backoff_waiting-memory`, `backoff_lmstudio-unavailable`).
 
 A second database, beside the library and independent of it (its own DDL,
 [`src/papyrus/inference.sql`](../src/papyrus/inference.sql), and its own
-`meta.schema_version`, now 1). It records every question asked of a model,
+`meta.schema_version`, now 2). It records every question asked of a model,
 and answers repeated ones (`src/papyrus/inference.py`). It is not reachable
 through MCP's `sql` tool.
 
 | table | key | what |
 |---|---|---|
-| `models` | sha256 of `{backend, model, build}` | a model as far as its answers go: `build` pins the weights (LM Studio: quantization, arch, format; Apple: the OS release). The endpoint is not in the key. `seed_honoured`: whether the same seed gives the same answer (Apple: yes; LM Studio MLX: no) |
-| `queries` | sha256 of `{kind, instructions, output_schema, examples, params}` | a question without its data: `extract` (instructions + JSON Schema) or `decide` (one question: instructions + `{key, type, criteria}`). `params`: temperature, max_tokens, seed and the backend's own settings |
-| `calls` | random hex id (`assertions.call_id`) | one call: `model_id`, `query_id`, `input_sha256`, `input_chars`, `subject` (the document's `files.sha256`), `status` (`running`, `ok`, `error`, `busy`, `unavailable`, `interrupted`), `error` (the exception type only), `output_sha256`, timings (`started_at`, `finished_at`, `duration_ms`), tokens, `model_loaded`, `memory_pressure`, `endpoint`, `host`, `extra`, and `hits`/`last_hit_at` for the times the cache answered with it |
+| `models` | hash of `{backend, model, build}` | a model as far as its answers go: `build` pins the weights (LM Studio: quantization, arch, format; Apple: the OS release). The endpoint is not in the key. `seed_honoured`: whether the same seed gives the same answer (Apple: yes; LM Studio MLX: no) |
+| `queries` | hash of `{kind, instructions, output_schema, examples, params}` | a question without its data: `extract` (instructions + JSON Schema) or `decide` (one question: instructions + `{key, type, criteria}`). `params`: temperature, max_tokens, seed and the backend's own settings |
+| `calls` | 16 random hex digits (`assertions.call_id`) | one call: `model_id`, `query_id`, `input_hash`, `input_chars`, `subject` (the document's `files.sha256`), `status` (`running`, `ok`, `error`, `busy`, `unavailable`, `interrupted`), `error` (the exception type only), `output_hash`, timings (`started_at`, `finished_at`, `duration_ms`), tokens, `model_loaded`, `memory_pressure`, `endpoint`, `host`, `extra`, and `hits`/`last_hit_at` for the times the cache answered with it |
 
-The texts are not in the database. They are files named by their sha256:
-`<home>/inference/inputs/ab/<sha>.txt` (the data asked about, e.g. a
-document's first pages) and `<home>/inference/outputs/ab/<sha>.json` (the
-answer). The cache answers `(model, query, input)` with the newest `ok` call
+Every hash and id here is 16 hex digits (64 bits): a hash is the first 16
+digits of a sha256 (of canonical JSON for models and queries), and only
+`subject` holds a full one, the document's `files.sha256`.
+
+The texts are not in the database. They are files named by their hash, in
+one flat directory each: `<home>/inference/inputs/<hash>.txt` (the data
+asked about, e.g. a document's first pages) and
+`<home>/inference/outputs/<hash>.json` (the answer). A text whose 16 digits
+are already another's would be named by its full sha256. The cache answers `(model, query, input)` with the newest `ok` call
 whose output file exists, so deleting files never breaks anything; it only
 means asking again. `papyrus inference prune` deletes old texts, and purging a
 document deletes the texts of every call whose `subject` is its sha256.

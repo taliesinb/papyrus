@@ -108,7 +108,7 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
   personal`, or `apps/linux/install.py --variant personal`; see
   [`apps/macos/README.md`](apps/macos/README.md)).
 * Database: `~/.papyrus/<variant>/papyrus.sqlite`; override with `PAPYRUS_DB` or `--db`.
-* Managed store: `~/.papyrus/<variant>/store/ab/<sha256>.pdf` (under the home),
+* Managed store: `~/.papyrus/<variant>/store/<16 hex digits of the sha256>.pdf` (under the home, one flat directory),
   read-only copies named by content hash; `files.stored_path` points there.
   Copies of local files are APFS clones on macOS and reflinks on Linux
   (btrfs, XFS): no extra space while the original exists. Plain `cp` would

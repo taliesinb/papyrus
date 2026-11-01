@@ -190,8 +190,8 @@ class HttpClient:
     def _cache_path(self, key: str) -> Path | None:
         if self.cache_dir is None:
             return None
-        h = hashlib.sha256(key.encode()).hexdigest()
-        return self.cache_dir / h[:2] / f"{h}.json"
+        h = hashlib.sha256(key.encode()).hexdigest()[:16]  # one flat directory, 64-bit names
+        return self.cache_dir / f"{h}.json"
 
     def _cache_get(self, key: str) -> Response | None:
         p = self._cache_path(key)

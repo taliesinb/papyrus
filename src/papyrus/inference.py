@@ -3,8 +3,8 @@
     ask this model (models)  this question (queries)  about this data (input sha256)  →  calls
 
 `<library home>/inference.sqlite` (DDL: inference.sql) holds hashes, sizes and timings; the
-texts are files beside it, named by their sha256 (`inference/inputs/ab/<sha>.txt`,
-`inference/outputs/ab/<sha>.json`). So the database stays free of document text, the files can
+texts are files beside it, named by their hash (`inference/inputs/<hash>.txt`,
+`inference/outputs/<hash>.json`, one flat directory each). So the database stays free of document text, the files can
 be deleted whenever (`papyrus inference prune`), a repeated question is answered from the cache,
 and the timings accumulate into estimates of what the next call will cost.
 
@@ -28,8 +28,10 @@ Model identity is {backend, model, build}: not the endpoint. The build comes fro
 `model_build()` (LM Studio: quantization, arch, format; Apple: the OS release). The query is
 {kind, instructions, output_schema, examples, params}, params including the backend's own
 `cache_params()` (its prompt layout version, decider method, guardrails…), so a change to any of
-them is a new query. Hashes are sha256 of canonical JSON (key order kept: a schema's property
-order shapes the answer).
+them is a new query. Every id and hash is the first 16 hex digits (64 bits) of a sha256, of
+canonical JSON for models and queries (key order kept: a schema's property order shapes the
+answer). Should two different texts ever share those digits, the second file is named by its
+full sha256. The `subject` is the document's full `files.sha256`.
 
 Errors are recorded too (status busy | unavailable | interrupted | error, the exception's type
 only), and never served from the cache.
@@ -56,7 +58,8 @@ from typing import Any, Callable, Iterator
 from . import db
 from .llm.base import Answer, BackendUnavailable, ModelBusy, ModelInfo, Question
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: 16-digit ids and hashes, flat directories, calls.input_hash/output_hash
+HASH_CHARS = 16
 _subject: contextvars.ContextVar[str | None] = contextvars.ContextVar("papyrus_inference_subject", default=None)
 
 
@@ -64,8 +67,9 @@ def canonical(obj: Any) -> bytes:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str).encode()
 
 
-def sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def short_hash(data: bytes) -> str:
+    """The first HASH_CHARS hex digits of the sha256 of `data`."""
+    return hashlib.sha256(data).hexdigest()[:HASH_CHARS]
 
 
 @contextlib.contextmanager
@@ -125,11 +129,16 @@ class Store:
     # blobs
 
     def blob(self, kind: str, sha: str) -> Path:
-        return self.root / f"{kind}s" / sha[:2] / (f"{sha}.txt" if kind == "input" else f"{sha}.json")
+        return self.root / f"{kind}s" / (f"{sha}.txt" if kind == "input" else f"{sha}.json")
 
     def _write(self, kind: str, data: bytes) -> str:
-        sha = sha256(data)
+        """Store a text under its hash; returns the hash (the full sha256 if the short one is taken
+        by other bytes)."""
+        sha = short_hash(data)
         p = self.blob(kind, sha)
+        if p.exists() and p.read_bytes() != data:
+            sha = hashlib.sha256(data).hexdigest()
+            p = self.blob(kind, sha)
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_name(f".{uuid.uuid4().hex}.tmp")
@@ -140,7 +149,7 @@ class Store:
     # identities
 
     def model_id(self, backend: str, model: str, build: dict, seed_honoured: bool | None = None) -> str:
-        mid = sha256(canonical({"backend": backend, "model": model, "build": build}))
+        mid = short_hash(canonical({"backend": backend, "model": model, "build": build}))
         if mid not in self._known:
             self.conn.execute("INSERT OR IGNORE INTO models(id, backend, model, build, seed_honoured, first_seen_at)"
                               " VALUES (?,?,?,?,?,?)", (mid, backend, model, json.dumps(build), seed_honoured,
@@ -151,7 +160,7 @@ class Store:
     def query_id(self, kind: str, instructions: str, output_schema: Any, examples: Any, params: dict) -> str:
         q = {"kind": kind, "instructions": instructions, "output_schema": output_schema, "examples": examples,
              "params": params}
-        qid = sha256(canonical(q))
+        qid = short_hash(canonical(q))
         if qid not in self._known:
             self.conn.execute(
                 "INSERT OR IGNORE INTO queries(id, kind, instructions, output_schema, examples, params, first_seen_at)"
@@ -166,11 +175,11 @@ class Store:
 
     def lookup(self, model_id: str, query_id: str, input_sha: str) -> tuple[Any, str] | None:
         """(output, call id) of the newest successful call whose output file still exists."""
-        for r in self.conn.execute("SELECT id, output_sha256 FROM calls WHERE model_id=? AND query_id=?"
-                                   " AND input_sha256=? AND status='ok' ORDER BY started_at DESC",
+        for r in self.conn.execute("SELECT id, output_hash FROM calls WHERE model_id=? AND query_id=?"
+                                   " AND input_hash=? AND status='ok' ORDER BY started_at DESC",
                                    (model_id, query_id, input_sha)).fetchall():
             try:
-                out = json.loads(self.blob("output", r["output_sha256"]).read_bytes())
+                out = json.loads(self.blob("output", r["output_hash"]).read_bytes())
             except (OSError, ValueError):
                 continue
             self.conn.execute("UPDATE calls SET hits=hits+1, last_hit_at=? WHERE id=?", (db.now_iso(), r["id"]))
@@ -182,9 +191,9 @@ class Store:
               endpoint: str | None = None) -> str:
         data = text.encode()
         input_sha = self._write("input", data)
-        call_id = uuid.uuid4().hex
+        call_id = uuid.uuid4().hex[:HASH_CHARS]
         self.conn.execute(
-            "INSERT INTO calls(id, model_id, query_id, input_sha256, input_chars, subject, status, started_at,"
+            "INSERT INTO calls(id, model_id, query_id, input_hash, input_chars, subject, status, started_at,"
             " model_loaded, memory_pressure, endpoint, host) VALUES (?,?,?,?,?,?, 'running', ?,?,?,?,?)",
             (call_id, model_id, query_id, input_sha, len(text), subject, db.now_iso(), model_loaded, memory_pressure,
              endpoint, socket.gethostname()))
@@ -196,7 +205,7 @@ class Store:
         out_sha = self._write("output", data)
         usage = usage or {}
         self.conn.execute(
-            "UPDATE calls SET status='ok', output_sha256=?, output_chars=?, finished_at=?, duration_ms=?,"
+            "UPDATE calls SET status='ok', output_hash=?, output_chars=?, finished_at=?, duration_ms=?,"
             " input_tokens=?, output_tokens=?, extra=? WHERE id=?",
             (out_sha, len(data.decode()), db.now_iso(), duration_ms,
              usage.get("prompt_tokens", usage.get("input_tokens")),
@@ -214,8 +223,8 @@ class Store:
     def _unlink(self, rows: list[sqlite3.Row], inputs: bool = True, outputs: bool = True) -> int:
         n = 0
         for r in rows:
-            for kind, sha in (("input", r["input_sha256"] if inputs else None),
-                              ("output", r["output_sha256"] if outputs else None)):
+            for kind, sha in (("input", r["input_hash"] if inputs else None),
+                              ("output", r["output_hash"] if outputs else None)):
                 if sha:
                     p = self.blob(kind, sha)
                     if p.exists():
@@ -228,14 +237,14 @@ class Store:
         stay: hashes and timings. Returns the number of files deleted."""
         if not self.path.exists():
             return 0
-        rows = self.conn.execute("SELECT input_sha256, output_sha256 FROM calls WHERE subject=?",
+        rows = self.conn.execute("SELECT input_hash, output_hash FROM calls WHERE subject=?",
                                  (document_sha256,)).fetchall()
         return self._unlink(rows)
 
     def prune(self, *, inputs: bool, outputs: bool, older_than_days: float = 0.0) -> int:
         """Delete input and/or output files of calls started more than `older_than_days` ago."""
         cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        rows = self.conn.execute("SELECT input_sha256, output_sha256 FROM calls WHERE started_at <= ?",
+        rows = self.conn.execute("SELECT input_hash, output_hash FROM calls WHERE started_at <= ?",
                                  (cutoff,)).fetchall()
         return self._unlink(rows, inputs, outputs)
 
@@ -249,7 +258,7 @@ class Store:
         if r is None:
             return None
         out = dict(r)
-        for kind, key in (("input", "input_sha256"), ("output", "output_sha256")):
+        for kind, key in (("input", "input_hash"), ("output", "output_hash")):
             p = self.blob(kind, r[key]) if r[key] else None
             out[kind] = p.read_text() if p and p.exists() else None
         return out
@@ -383,7 +392,7 @@ class _Cached:
         model_id = self._model()
         qid = query() if model_id else None
         if model_id and not self.fresh:
-            hit = self.store.lookup(model_id, qid, sha256(text.encode()))
+            hit = self.store.lookup(model_id, qid, short_hash(text.encode()))
             if hit:
                 self.last_hit = True
                 return hit

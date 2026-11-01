@@ -70,8 +70,8 @@ def test_a_repeated_question_is_answered_from_the_cache():
     assert c["status"] == "ok" and c["hits"] == 1 and c["input_chars"] == len("the first pages")
     assert (c["input_tokens"], c["output_tokens"]) == (100, 20) and c["duration_ms"] is not None
     s = inference.store()
-    assert s.blob("input", c["input_sha256"]).read_text() == "the first pages"
-    assert json.loads(s.blob("output", c["output_sha256"]).read_text()) == {"title": "A Study of Things"}
+    assert s.blob("input", c["input_hash"]).read_text() == "the first pages"
+    assert json.loads(s.blob("output", c["output_hash"]).read_text()) == {"title": "A Study of Things"}
     m = s.conn.execute("SELECT * FROM models").fetchone()
     assert (m["backend"], m["model"], json.loads(m["build"]), m["seed_honoured"]) == ("fake", "m", {"quantization": "4bit"}, 1)
     q = s.conn.execute("SELECT * FROM queries").fetchone()
@@ -79,6 +79,20 @@ def test_a_repeated_question_is_answered_from_the_cache():
     assert json.loads(q["params"]) == {"temperature": 0.0, "max_tokens": 1024, "seed": 0, "impl": "x-1"}
     # the database holds hashes, not the text
     assert b"the first pages" not in s.path.read_bytes() + Path(f"{s.path}-wal").read_bytes()
+
+
+def test_ids_are_16_digits_and_a_taken_name_falls_back_to_the_full_hash(monkeypatch):
+    _extract(inference.cached_backend(SeededBackend({"title": "T"})))
+    [c] = _calls()
+    for v in (c["id"], c["model_id"], c["query_id"], c["input_hash"], c["output_hash"]):
+        assert len(v) == 16
+    s = inference.store()
+    assert s.blob("input", c["input_hash"]).parent == s.root / "inputs"  # flat
+    # another text whose short hash is already taken: named by its full sha256
+    monkeypatch.setattr(inference, "short_hash", lambda data: c["input_hash"])
+    name = s._write("input", b"different text")
+    assert len(name) == 64 and s.blob("input", name).read_bytes() == b"different text"
+    assert s.blob("input", c["input_hash"]).read_text() == "the first pages"
 
 
 def test_everything_that_shapes_the_answer_is_in_the_key():

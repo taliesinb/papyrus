@@ -67,7 +67,7 @@ unit (Linux) keeps it running.
 * **Never modify, move or delete the user's files on disk.** papyrus only
   reads them. Report odd files instead. For example, a PDF whose filename
   suggests a textbook may turn out to be an unrelated document.
-* **The managed store** (`~/.papyrus/<variant>/store/ab/<sha256>.pdf`) is papyrus's
+* **The managed store** (`~/.papyrus/<variant>/store/<16 hex digits>.pdf`, flat) is papyrus's
   own: content-addressed, read-only, written only through `store.commit`.
   Never rewrite or delete a stored file; `files.stored_path` points there.
   The one exception is `purge.purge_file`, which erases personal paperwork.

@@ -2,12 +2,15 @@
 
 Layout under the library root (`PAPYRUS_HOME`, default the variant's home `~/.papyrus/<variant>`):
 
-    store/ab/abcdef0123….pdf    named by the sha256 of the bytes, sharded by its first two hex digits
+    store/abcdef0123456789.pdf  named by the first 16 hex digits of the bytes' sha256 (64 bits)
     store/tmp/                  snapshots and partial downloads, renamed into place when complete
 
-`files.stored_path` holds the path relative to the library root
-(`store/ab/abcdef….pdf`). Stored files are read-only (0444) and never rewritten:
-the same name always means the same bytes, so writing one twice is harmless.
+One flat directory: APFS, ext4, btrfs and XFS index directory entries, so tens of thousands of
+files are no burden, and a flat store is easy to browse. `files.stored_path` holds the path
+relative to the library root (`store/abcdef0123456789.pdf`); `files.sha256` keeps the full hash.
+Stored files are read-only (0444) and never rewritten: the same name always means the same
+bytes, so writing one twice is harmless. Should two different files ever share the 16 digits,
+the second is stored under its full 64 (`commit` compares before it drops a copy as known).
 
 Copies are clones where possible: APFS `clonefile(2)` on macOS, a `FICLONE`
 reflink on Linux (btrfs, XFS, …). They cost no space while the original is
@@ -32,14 +35,15 @@ from .pdf import sha256_file
 
 STORE_DIR = "store"
 TMP_SUFFIX = ".part"
+NAME_CHARS = 16  # hex digits of the sha256 in a stored file's name
 
 
 def root() -> Path:
     return db.library_home() / STORE_DIR
 
 
-def rel_path(sha: str, suffix: str = ".pdf") -> str:
-    return f"{STORE_DIR}/{sha[:2]}/{sha}{suffix}"
+def rel_path(sha: str, suffix: str = ".pdf", full: bool = False) -> str:
+    return f"{STORE_DIR}/{sha if full else sha[:NAME_CHARS]}{suffix}"
 
 
 def abs_path(rel: str) -> Path:
@@ -87,10 +91,14 @@ def snapshot(src: Path) -> tuple[Path, str]:
 def commit(tmp: Path, sha: str, suffix: str = ".pdf") -> tuple[str, bool]:
     """Move a complete temp file to its content address. Returns (relative path, created).
 
-    If the address already holds the file, the temp file is dropped instead.
+    If the address already holds the file, the temp file is dropped instead. If it holds other
+    bytes (their sha256 shares the first 16 digits), the file is stored under its full hash.
     """
     rel = rel_path(sha, suffix)
     dst = abs_path(rel)
+    if dst.exists() and not _holds(dst, tmp, sha):
+        rel = rel_path(sha, suffix, full=True)
+        dst = abs_path(rel)
     if dst.exists():
         tmp.unlink(missing_ok=True)
         return rel, False
@@ -98,6 +106,14 @@ def commit(tmp: Path, sha: str, suffix: str = ".pdf") -> tuple[str, bool]:
     os.chmod(tmp, 0o444)
     os.replace(tmp, dst)
     return rel, True
+
+
+def _holds(dst: Path, tmp: Path, sha: str) -> bool:
+    """`dst` holds the bytes whose sha256 is `sha` (sizes first: most mismatches end there)."""
+    try:
+        return dst.stat().st_size == tmp.stat().st_size and sha256_file(dst) == sha
+    except OSError:
+        return False
 
 
 def clean_tmp(max_age_s: float = 3600) -> int:
