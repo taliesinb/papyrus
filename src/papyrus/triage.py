@@ -25,7 +25,9 @@ from .textspan import best_abstract
 
 # triage-1: model copied the abstract verbatim (slow: hundreds of output tokens per paper).
 # triage-2: model gives start/end anchors; the exact span is cut from the page text.
-PROMPT_VERSION = "triage-2"
+# triage-3: the state gives the file's size, and caps each PDF metadata field at META_CHARS.
+PROMPT_VERSION = "triage-3"
+META_CHARS = 200  # per PDF metadata field in the state: a long keywords list must not crowd out page 1
 ANCHOR_WORDS = 8
 
 KINDS = {
@@ -132,8 +134,10 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_C
         if froms:
             lines.append(f"Downloaded from: {froms[0]}" + (f" (via page {froms[1]})" if len(froms) > 1 else ""))
     meta = {k: f[f"pdf_{k}"] for k in ["title", "author", "subject", "keywords", "creator", "producer", "created"]}
-    meta = {k: v for k, v in meta.items() if v}
+    meta = {k: _cap(str(v)) for k, v in meta.items() if v}
     lines.append(f"Pages: {f['page_count']}")
+    if f["size"]:
+        lines.append(f"Size: {_size(f['size'])}")
     if meta:
         lines.append("PDF metadata: " + "; ".join(f"{k}={v}" for k, v in meta.items()))
     hint = conn.execute(
@@ -157,13 +161,22 @@ def build_state(conn: sqlite3.Connection, file_id: int, max_chars: int = STATE_C
     return header + "\n\n" + "\n".join(body)
 
 
+def _cap(v: str, n: int = META_CHARS) -> str:
+    v = " ".join(v.split())
+    return v if len(v) <= n else v[: n - 1].rstrip() + "…"
+
+
+def _size(n: int) -> str:
+    return f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{max(1, round(n / 1e3))} KB"
+
+
 def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     """Identifiers of *this* document, not of papers it cites.
 
     Trusted, in order: filename, download URLs and the title of the link it was downloaded
-    from; then page 1 (arXiv stamp in
-    the margin, DOI/ISBN in the header or footer). Later pages are ignored
-    because they are full of references.
+    from; then the PDF's own subject and keywords fields (DOI and ISBN only: publishers put
+    the document's DOI there); then page 1 (arXiv stamp in the margin, DOI/ISBN in the header
+    or footer). Later pages are ignored because they are full of references.
     """
     from .enrich import ids as idmod
 
@@ -178,6 +191,9 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     page1 = conn.execute("SELECT text FROM file_pages WHERE file_id=? AND page=1", (file_id,)).fetchone()
     page1 = page1["text"] if page1 else ""
 
+    info = conn.execute("SELECT pdf_subject, pdf_keywords FROM files WHERE id=?", (file_id,)).fetchone()
+    pdf_meta = idmod.detect("\n".join(v for v in (info or ()) if v))
+
     found: dict[str, Any] = {}
     meta = idmod.detect("\n".join(names_urls))
     p1 = idmod.detect(page1)
@@ -189,10 +205,10 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
         # page 1 are citations (e.g. a CV listing its author's papers).
         if a := idmod.parse_arxiv_id(m.group(1) + m.group(2)):
             found["arxiv"], found["arxiv_version"] = a.id, a.version
-    dois = [d for d in meta.dois + p1.dois if not idmod.is_arxiv_doi(d)]
+    dois = [d for d in meta.dois + pdf_meta.dois + p1.dois if not idmod.is_arxiv_doi(d)]
     if dois:
         found["doi"] = dois[0]
-    isbns = meta.isbns + p1.isbns
+    isbns = list(dict.fromkeys(meta.isbns + pdf_meta.isbns + p1.isbns))
     if isbns:
         found["isbn"] = isbns[0]
         if len(isbns) > 1:

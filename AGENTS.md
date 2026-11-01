@@ -139,6 +139,8 @@ unit (Linux) keeps it running.
    * the filename and the download URLs (`kMDItemWhereFroms`, or the
      `where_froms` of a `download` context) and the title of the link it was
      downloaded from;
+   * DOIs and ISBNs in the PDF's own subject and keywords fields (publishers
+     put the document's DOI there);
    * on page 1 only, arXiv's margin stamp
      (`arXiv:2412.06464v3 [cs.CL] 6 Mar 2025`).
 

@@ -105,3 +105,26 @@ def test_live_only_extraction_when_file_and_work_ids_differ(tmp_path):
     assert wid == 1
     assert fulltext.pending_files(conn, (2,), live_only=True) == [2]
     assert fulltext.pending_files(conn, (1,), live_only=True) == []  # file 1 is no live work's
+
+
+def test_doi_and_isbn_from_the_pdfs_own_subject_and_keywords(tmp_path):
+    """Publishers write the document's DOI into the PDF's subject (Elsevier: 'Journal, vol (year)
+    pages. doi:...'); page 1 often doesn't show it."""
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things.")
+    conn.execute("UPDATE files SET pdf_subject=?, pdf_keywords=? WHERE id=1",
+                 ("Journal of Things, 12 (2019) 1-20. doi:10.1016/J.THINGS.2019.01.002", "ISBN 978-0-262-03384-8"))
+    assert detect_ids(conn, 1) == {"doi": "10.1016/j.things.2019.01.002", "isbn": "9780262033848"}
+    # the filename and download URLs still come first
+    conn.execute("UPDATE contexts SET extra=json_set(extra, '$.where_froms', json_array('https://doi.org/10.1145/3290345'))")
+    assert detect_ids(conn, 1)["doi"] == "10.1145/3290345"
+
+
+def test_state_gives_size_and_caps_long_metadata(tmp_path):
+    from papyrus.triage import META_CHARS, build_state
+
+    conn = _lib(tmp_path, "x.pdf", "A Study of Things. Jane Doe. Abstract We study things in great detail.")
+    conn.execute("UPDATE files SET size=2500000, pdf_keywords=? WHERE id=1", ("topic; " * 500,))
+    state = build_state(conn, 1)
+    assert "\nSize: 2.5 MB\n" in state and "We study things in great detail" in state
+    meta = next(line for line in state.splitlines() if line.startswith("PDF metadata:"))
+    assert len(meta) < META_CHARS + 40 and meta.endswith("…")
