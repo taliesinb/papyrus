@@ -14,7 +14,9 @@ scan`), then works through pending steps, one item each, new files first:
 2. **ocr** pages without a text layer (live works' files, and the first pages of image-only files
    before they are triaged);
 3. **enrich** a work that has no API data yet;
-4. **triage** a pending file, then **promote** it (which purges sure personal paperwork).
+4. **triage** a pending file, then **promote** it (which purges sure personal paperwork). Triage
+   starts with the screen (screen.py), whose embedding model is small enough to load beside the
+   language model; what it sets aside is held without asking the language model.
 
 A batch ends when nothing is left, after BATCH_STEPS steps (so runs stay short and new files
 don't wait), or with the model steps backing off. Triage's models sit behind the inference
@@ -97,6 +99,13 @@ def resolve_models() -> tuple[Any, Any]:
     return be, dec
 
 
+def resolve_screen() -> Any:
+    """The configured screen (screen.py), or None (turned off, or LM Studio lacks its model)."""
+    from ..screen import get_screen
+
+    return get_screen()
+
+
 def model_kind(m: Any) -> tuple[str, str | None]:
     """How the gate treats a model: lmstudio (the ledger decides), remote (a Jev or OpenAI endpoint:
     no local memory at stake) or local (Apple FM and the like); and its model name."""
@@ -112,7 +121,8 @@ class Watch:
                  unload_after_s: float = 600.0, clock: Callable[[], float] = time.monotonic,
                  log: Callable[[str], None] = default_log, status_path: Path | None = None,
                  store: bool = True, ocr: bool = True, batch_steps: int = BATCH_STEPS,
-                 queue: Queue | None = None, wall: Callable[[], float] = time.time):
+                 queue: Queue | None = None, wall: Callable[[], float] = time.time,
+                 screen: Callable[[], Any] | None = None):
         from ..llm import lmstudio
 
         self.conn = conn
@@ -123,6 +133,8 @@ class Watch:
         self.ledger = ledger or ModelLedger(lmstudio.loaded_models, lmstudio.unload_model, idle_s=unload_after_s,
                                             clock=clock, log=log)
         self.resolve_models = models or (lambda: resolve_models())
+        self.resolve_screen = screen or (lambda: resolve_screen())
+        self.screen: Any = None  # triage's first stage (screen.py), resolved with the models
         self.debouncer = Debouncer(self.dirs, settle_s, clock)
         self.status_path = status_path or db.library_home() / "watch.json"
         self.opts = scan.ScanOptions(store=store)
@@ -542,10 +554,14 @@ class Watch:
         from ..triage import triage_file
 
         be, dec = self._models(run_id)
-        triage_file(self.conn, fid, be, dec, run_id=run_id)
+        r = triage_file(self.conn, fid, be, dec, run_id=run_id, screen=self.screen)
         self.memory_delay = MEMORY_DELAY
         c["triaged"] += 1
-        self.log(f"file {fid} triaged")
+        if r.get("screened"):
+            c["screened"] += 1
+            self.log(f"file {fid} set aside by the screen (P(personal)={r['screen']['p_personal']:.2f})")
+        else:
+            self.log(f"file {fid} triaged")
         self._promote(fid, run_id, c)
 
     # --- models, memory, back-off -------------------------------------------------------------
@@ -560,9 +576,19 @@ class Watch:
             be, dec = self.resolve_models()
             self.models = (self._cached(be, inference.cached_backend),
                            self._cached(dec, inference.cached_decider) if dec is not None else None)
+            try:
+                self.screen = self.resolve_screen()
+            except Exception as e:  # noqa: BLE001  the screen only saves work: go on without it
+                self.screen = None
+                self.log(f"screen unavailable ({type(e).__name__})")
+            if self.screen is not None:
+                self.screen.embedder = inference.cached_embedder(
+                    self.screen.embedder, before_call=lambda: self._gate("embed", None),
+                    pressure=lambda: self.last_level)
             tag = be.info().tag
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
-            self.log(f"triage with {tag}" + (f" + {dec.info().tag}" if dec is not None else " (no decider)"))
+            self.log("triage with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
+                     + tag + (f" + {dec.info().tag}" if dec is not None else " (no decider)"))
         return self.models
 
     def _cached(self, m: Any, wrap: Callable) -> Any:
@@ -579,6 +605,11 @@ class Watch:
         level = self.last_level = self.memory()
         if level == CRITICAL:
             raise Backoff(WAITING_MEMORY, "memory pressure is critical")
+        if kind == "embed":
+            # the screen's embedding model (84 MB) loads beside whatever is loaded, even under
+            # "warn" (which this machine reads whenever LM Studio holds a model); LM Studio's own
+            # idle timeout unloads it
+            return
         if kind == "lmstudio" and model:
             # a model that is already loaded costs little more; loading one under pressure would swap
             self.ledger.claim(model, may_load=level == NORMAL)

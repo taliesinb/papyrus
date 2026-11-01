@@ -8,7 +8,8 @@ texts are files beside it, named by their hash (`inference/inputs/<hash>.txt`,
 be deleted whenever (`papyrus inference prune`), a repeated question is answered from the cache,
 and the timings accumulate into estimates of what the next call will cost.
 
-Use: wrap a Backend or Decider (`cached_backend`, `cached_decider`). The wrapper implements the
+Use: wrap a Backend, Decider or Embedder (`cached_backend`, `cached_decider`, `cached_embedder`).
+The wrapper implements the
 same contract (llm/base.py) and adds:
 
 * **the cache**: (model, query, input) answered by the newest successful call whose output file
@@ -304,8 +305,11 @@ class Store:
         most recently asked-about document (so the current models and prompts), each estimated by
         `estimate_s` at the median input length of its last `last` calls (the latest document's
         own length made it jumpy: a short one halved the estimate). None without history."""
-        r = self.conn.execute("SELECT subject FROM calls WHERE status='ok' AND subject IS NOT NULL"
-                              " ORDER BY started_at DESC LIMIT 1").fetchone()
+        # the latest document that went through full triage (the screen alone, an embedding,
+        # would make every document look like it takes 30 ms)
+        r = self.conn.execute("SELECT c.subject FROM calls c JOIN queries q ON q.id=c.query_id WHERE c.status='ok'"
+                              " AND c.subject IS NOT NULL AND q.kind<>'embed' ORDER BY c.started_at DESC LIMIT 1"
+                              ).fetchone()
         if r is None:
             return None
         pairs = {(c[0], c[1]) for c in self.conn.execute(
@@ -456,6 +460,26 @@ class CachedDecider(_Cached):
             answers[q.key] = Answer(q.key, {k: float(v) for k, v in probs.items()})
             self.last_calls[q.key] = call_id
         return answers
+
+
+class CachedEmbedder(_Cached):
+    """An `Embedder` whose vectors are cached and recorded, one text per call."""
+
+    last_call: str | None = None
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        def query() -> str:
+            return self.store.query_id("embed", "", None, None, self._params())
+
+        out = []
+        for t in texts:
+            v, self.last_call = self._ask(query, t, lambda t=t: self.inner.embed([t])[0])
+            out.append([float(x) for x in v])
+        return out
+
+
+def cached_embedder(embedder: Any, **kw: Any) -> CachedEmbedder:
+    return embedder if isinstance(embedder, CachedEmbedder) else CachedEmbedder(embedder, **kw)
 
 
 def cached_backend(backend: Any, **kw: Any) -> CachedBackend:

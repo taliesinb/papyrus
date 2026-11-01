@@ -28,7 +28,8 @@ brought back with `papyrus keep PATH`.
 When: `verdict` says purge when the user said so (an `is_library_material` claim from `user`),
 or when the decider's P(kind=personal) >= PURGE_THRESHOLD. Between 0.5 (where `works.is_library`
 stops promoting) and the threshold, or without a decider, a personal-looking file is *held*:
-no work, not served, its first pages kept for review (`papyrus purge --held`).
+no work, not served, its first pages kept for review (`papyrus purge --held`). So is a file
+the screen (screen.py) set aside: the screen alone never purges.
 """
 
 from __future__ import annotations
@@ -158,11 +159,20 @@ def checkpoint(conn: sqlite3.Connection) -> None:
 
 
 def keep(conn: sqlite3.Connection, file_id: int, run_id: int | None = None) -> tuple[str, int | None]:
-    """The user says this (unpurged) file is library material: record it, then promote it."""
+    """The user says this (unpurged) file is library material: record it, then promote it. A file
+    the screen set aside was never asked about (no title, no authors): it goes back to triage,
+    which skips the screen for it from now on (action `retriage`)."""
+    from .screen import rejected
     from .works import promote_file
 
+    claims = db.current_assertions(conn, "file", file_id)
+    retriage = rejected(claims) is not None and not claims.get("title")
     with db.tx(conn):
         db.assert_(conn, "file", file_id, "is_library_material", True, source="user", run_id=run_id)
+        if retriage:
+            conn.execute("UPDATE files SET triage_status='pending' WHERE id=?", (file_id,))
+    if retriage:
+        return "retriage", None
     return promote_file(conn, file_id, run_id=run_id)
 
 

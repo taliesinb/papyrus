@@ -76,8 +76,8 @@ def is_library(claims: dict[str, list[dict]]) -> bool:
 
     The decider's *kind* distribution is well calibrated, but its yes/no 'is this library
     material' answer is biased towards yes (0.7 for an exam paper it calls personal with p=1.0).
-    So: the user's own claim if any, else P(kind=personal) from the decider when present, else the
-    extraction model's flag.
+    So: the user's own claim if any, else P(kind=personal) from the decider when present, else
+    the screen's verdict if it set the file aside (screen.py), else the extraction model's flag.
     """
     for c in claims.get("is_library_material") or []:
         if c["source"] == "user":
@@ -85,6 +85,10 @@ def is_library(claims: dict[str, list[dict]]) -> bool:
     for c in claims.get("kind_probs") or []:
         if c["source"].startswith("decide:") and isinstance(c["value"], dict):
             return c["value"].get("personal", 0.0) < 0.5
+    from .screen import rejected
+
+    if rejected(claims) is not None:  # set aside by the screen, before any language model was asked
+        return False
     llm = [c["value"] for c in claims.get("is_library_material") or [] if c["source"].startswith("llm:")]
     return llm[0] is not False if llm else best(claims, "is_library_material") is not False
 

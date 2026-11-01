@@ -100,6 +100,9 @@ unit (Linux) keeps it running.
   * between 0.5 and 0.9 (or without a decider) the file is *held*: no work,
     first pages kept for review (`papyrus purge --dry-run`, `purge ID`,
     `keep ID`);
+  * so is a file the screen (`screen.py`, triage's embedding-model first
+    stage) scores P(personal) ≥ 0.9: triage stops before any language model.
+    The screen alone never purges;
   * nothing about a file outside a live work may reach the browser or MCP.
     The web's `LIVE_FILE` (`web/src/lib/server/files.ts`) and Python's
     `search.LIVE_FILE` gate file bytes, thumbnails, paths, URLs and claims.
@@ -109,7 +112,7 @@ unit (Linux) keeps it running.
 
 1. **Provenance on every claim.** Model and API output goes into `assertions`
    with a `source` tag:
-   * `llm:<backend>:<model>`, `decide:<backend>:<model>`
+   * `llm:<backend>:<model>`, `decide:<backend>:<model>`, `screen:<backend>:<model>`
    * `api:<service>`, `api:enrich`
    * `heuristic:<name>`, `papyrus:<action>`
    * `user`
@@ -152,7 +155,7 @@ unit (Linux) keeps it running.
 7. **Changing a prompt** in `triage.py` (instructions, schema, `KINDS`,
    `DECISIONS`) means bumping `PROMPT_VERSION` and noting what changed in the
    comment above it. It is recorded on every run.
-8. **The `Backend` / `Decider` contracts** in `llm/base.py` and the
+8. **The `Backend` / `Decider` / `Embedder` contracts** in `llm/base.py` and the
    `WorkRecord` / `AuthorRecord` types in `models.py` are shared by several
    modules. Change them deliberately, and update every implementation.
    The optional hooks the inference cache uses (`seed`, `cache_params`,
@@ -176,7 +179,7 @@ unit (Linux) keeps it running.
      clients): their prompts hold the first pages of personal documents.
      They are recorded by the inference cache instead (next).
 10. **Model calls go through the inference cache** (`inference.cached_backend`
-    / `cached_decider`) so they are recorded, timed and reusable, and claims
+    / `cached_decider` / `cached_embedder`) so they are recorded, timed and reusable, and claims
     carry `call_id`. New callers wrap their models the same way.
 
 ## Gotchas (all learned the hard way)
@@ -210,6 +213,11 @@ unit (Linux) keeps it running.
   timeout. Two models at once on this 24 GB **base M4** caused 8 GB of swap
   and a 5× slowdown. Don't load models you don't need, and only unload what
   you loaded (`~/.cache/lm-studio/bin/lms ps / unload`).
+  The exception is the screen's embedding model
+  (`text-embedding-nomic-embed-text-v1.5`, 84 MB, ~30 ms a file, ~6 s to load
+  just in time). It sits beside the 4B without pressure (measured 2026-11-01),
+  `lmstudio.loaded_models` doesn't list it, and the watcher lets it load even
+  under "warn". LM Studio's own idle timeout (1 h) unloads it.
 * **Speed on this machine:**
 
   | model | prompt processing | generation | per file |
@@ -246,6 +254,23 @@ The seed is part of the inference cache's key either way.
   with p=1.0).
 * So library-ness comes from `P(kind=personal)` (`works.is_library`).
   Probabilities are uncalibrated.
+
+**The screen** (`screen.py`, `data/screen.bin`, `tools/screen/`):
+
+* `data/screen.bin` is the production classifier: a logistic regression on
+  nomic-embed-text embeddings of the name, folder, size, download host and
+  first 128 words. Retrain it with `tools/screen/export.py` (each library, any
+  machine) and `tools/screen/train.py` (its docstring has the commands), then
+  commit the new file. The weights hold no text (standardisation folded in).
+* The exports and the training run see the first pages of personal
+  documents. Keep them out of git (`/training/` is ignored), tests and logs.
+  `train.py` embeds without the inference cache on purpose: the cache would
+  write purged documents' text back to disk.
+* Its labels come from earlier triage, which made mistakes: the first
+  training run found two personal documents that triage had promoted to
+  works. Where the screen disagrees with a label, look at the file.
+* It is skipped for files without a text layer: from the name alone it
+  misjudged library files.
 
 **PDF text** (pypdfium2):
 

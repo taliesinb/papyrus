@@ -190,17 +190,22 @@ def store_cmd(ctx: click.Context, check: bool, verbose: bool) -> None:
                    "[default: from config, else auto]")
 @click.option("--all", "redo_all", is_flag=True, help="Re-triage files already done.")
 @click.option("--fresh", is_flag=True, help="Ask the models even where the inference cache has the answer.")
+@click.option("--no-screen", is_flag=True, help="Skip the fast first stage: ask the language models about every file.")
 @click.option("-n", "--limit", type=int)
 @click.pass_context
 def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, decider_spec: str | None,
-           redo_all: bool, fresh: bool, limit: int | None) -> None:
+           redo_all: bool, fresh: bool, no_screen: bool, limit: int | None) -> None:
     """Ask a local model what each file is (kind, title, authors, abstract, topics...).
 
     The backend and decider come from --backend/--decider, else PAPYRUS_BACKEND/PAPYRUS_DECIDER,
     else <home>/config.toml (see `papyrus config`), else auto. LM Studio's server is started
     if it is off. Triage stops if no decider is available, unless the decider is 'none'.
     Answers go through the inference cache (<home>/inference.sqlite): a question already asked
-    about the same text is answered from it (marked 'cached')."""
+    about the same text is answered from it (marked 'cached').
+
+    First, the screen (a small embedding model, ~30 ms a file) sets aside files it is sure are
+    personal paperwork: they are held for review (`papyrus purge --dry-run`) without asking the
+    language models. Turn it off with --no-screen, `[screen] enabled = false` or PAPYRUS_SCREEN=0."""
     from . import config, inference
     from .llm import get_backend
     from .llm.base import BackendUnavailable
@@ -240,19 +245,38 @@ def triage(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, d
     ids = ids[:limit] if limit else ids
     be = inference.cached_backend(be, fresh=fresh, pressure=memory_pressure)
     dec = inference.cached_decider(dec, fresh=fresh, pressure=memory_pressure) if dec else None
-    click.echo(f"triaging {len(ids)} files with {be.info().tag}" + (f" + {dec.info().tag}" if dec else ""))
+    scr = None
+    if not no_screen and ids:
+        from .screen import get_screen
+
+        try:
+            scr = get_screen()
+        except (config.ConfigError, OSError, ValueError) as e:
+            raise click.ClickException(f"screen: {e}") from e
+        if scr is None and config.screen().enabled:
+            click.echo("(screen unavailable: LM Studio doesn't offer its embedding model; asking the language "
+                       "models about every file)", err=True)
+        if scr is not None:
+            scr.embedder = inference.cached_embedder(scr.embedder, fresh=fresh, pressure=memory_pressure)
+    click.echo(f"triaging {len(ids)} files with " + (f"{scr.tag} (P >= {scr.threshold:g}), then " if scr else "")
+               + be.info().tag + (f" + {dec.info().tag}" if dec else ""))
     with db.recorded_run(conn, "triage", {"files": len(ids)}, backend=be.info().tag,
                          prompt_version=PROMPT_VERSION) as (run_id, stats):
         stats.update(ok=0, error=0)
         for fid in ids:
             try:
-                r = triage_file(conn, fid, be, dec, run_id=run_id)
+                r = triage_file(conn, fid, be, dec, run_id=run_id, screen=scr)
             except Exception as e:  # keep going; record the failure
                 stats["error"] += 1
                 conn.execute("UPDATE files SET triage_status='error' WHERE id=?", (fid,))
                 click.echo(f"{fid:5} ERROR {type(e).__name__}: {str(e)[:200]}", err=True)
                 continue
             stats["ok"] += 1
+            if r.get("screened"):
+                stats["screened"] = stats.get("screened", 0) + 1
+                s = r["screen"]
+                click.echo(f"{fid:5} - {'personal':13} {s['screen_s']:5.2f}s screen P(personal)={s['p_personal']:.2f}")
+                continue
             e = r["extracted"]
             mark = "+" if e.get("is_library_material") else "-"
             kind = r.get("kind", (e.get("kind"),))[0]  # decider's answer when available
@@ -285,6 +309,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
     PDF metadata, model claims and the stored copy are erased; the same bytes are skipped from
     then on. `papyrus keep PATH` brings a purged file back from its original."""
     from . import purge
+    from .screen import rejected as screen_rejected
 
     conn = _conn(ctx)
     if file_ids:
@@ -307,7 +332,10 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
         claims = db.current_assertions(conn, "file", fid)
         probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("decide:")), {})
         title = next((c["value"] for c in claims.get("title", [])), "")
-        click.echo(f"{fid:5} held   P(personal)={probs.get('personal', float('nan')):.2f}  {str(title)[:60]}")
+        by = ""
+        if not probs and (p := screen_rejected(claims)) is not None:
+            probs, by = {"personal": p}, " (screen)"
+        click.echo(f"{fid:5} held   P(personal)={probs.get('personal', float('nan')):.2f}{by}  {str(title)[:60]}")
     if dry_run:
         for fid, why in todo:
             click.echo(f"{fid:5} would purge  {json.dumps(why)}")
@@ -351,6 +379,7 @@ def keep_cmd(ctx: click.Context, targets: tuple[str, ...]) -> None:
                 where = f" (file {fid})" if fid and action == "restored" else ""
             stats[action] = stats.get(action, 0) + 1
             hint = {"restored": "; now `papyrus process` triages it", "no_title": "; `papyrus process` triages it",
+                    "retriage": "; the screen had set it aside: `papyrus process` triages it in full",
                     "unknown": "; not in the library: `papyrus scan` it"}.get(action, "")
             click.echo(f"{t}: {action}{where}{hint}")
 

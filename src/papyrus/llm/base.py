@@ -14,6 +14,9 @@ Two kinds of question are asked of a document:
 Backends: LM Studio (OpenAI-compatible HTTP), Apple Foundation Models (Swift
 bridge), and any Jev-compatible `/v1/systemone` endpoint.
 
+A third contract, `Embedder` (LM Studio's `/v1/embeddings`, llm/embed.py), serves the screen
+(screen.py): a fast first stage of triage.
+
 For the inference cache (`papyrus.inference`, which wraps any Backend or Decider), an
 implementation may also offer:
 
@@ -126,3 +129,15 @@ class Decider(Protocol):
     def available(self) -> bool: ...
 
     def decide(self, state: str, questions: list[Question]) -> dict[str, Answer]: ...
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """Turns texts into vectors (the screen, screen.py). `embed` returns one vector per text, in
+    order; raises BackendUnavailable if the model can't be reached."""
+
+    def info(self) -> ModelInfo: ...
+
+    def available(self) -> bool: ...
+
+    def embed(self, texts: list[str]) -> list[list[float]]: ...

@@ -52,6 +52,8 @@ version change is migrated once, by hand.
   * `llm:<backend>:<model>`, e.g. `llm:lmstudio:qwen3.5-4b-mlx`, `llm:apple:system`.
     For abstracts a suffix says how the span was cut: `#anchors` or `#anchors+heuristic`.
   * `decide:<backend>:<model>` (Jev-style decision probabilities)
+  * `screen:<backend>:<model>`, e.g. `screen:lmstudio:text-embedding-nomic-embed-text-v1.5`:
+    triage's first stage (`screen.py`)
   * `api:arxiv`, `api:openalex`, `api:s2`, `api:crossref`: claims from one source
   * `api:enrich`: the enrichment pipeline's own records (candidates, exclusions, duplicates)
   * `papyrus:reject`: written when a work is rejected
@@ -95,9 +97,12 @@ the decider's P(kind=personal):
   abstract, authors or topics, and only its `released_ids` assertion is kept.
   Scan and download skip purged bytes without recording anything.
   `papyrus keep PATH` brings a purged file back from its original.
-* **Held** between 0.5 and 0.9, or without a decider. No work is made and the
-  first pages are kept, for `papyrus purge --dry-run` (which lists held files)
-  and a decision: `papyrus purge ID` or `papyrus keep ID`.
+* **Held** between 0.5 and 0.9, or without a decider, or when the screen set
+  it aside before triage asked any language model (a `screen` claim with
+  `rejected: true`). No work is made and the first pages are kept, for
+  `papyrus purge --dry-run` (which lists held files) and a decision:
+  `papyrus purge ID` or `papyrus keep ID` (a screened file then goes through
+  full triage).
 
 Neither kind is ever served: the web app and MCP show only files of live
 works.
@@ -233,6 +238,11 @@ new claims point at the original call. NULL for claims that no model made.
 The fields triage writes for a file:
 
 * `filename_hint`: `{title, surnames[], year}`
+* `screen` (source `screen:<backend>:<model>`, confidence = p): `{p_personal,
+  threshold, rejected}` from the screen, the embedding classifier that runs
+  first (`screen.py`). With `rejected: true` triage stopped there, so the file
+  has no other triage claims; `works.is_library` counts it as personal unless
+  the user or a decider says otherwise.
 * `kind`, plus `kind_probs` (`{option: p}`) when a decider is used
 * `is_library_material`, plus `is_library_material_probs`
 * `title`, `authors` (list of names), `year`, `venue`

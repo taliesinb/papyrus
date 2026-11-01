@@ -201,15 +201,27 @@ def detect_ids(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
 
 
 def triage_file(conn: sqlite3.Connection, file_id: int, backend: Backend, decider: Decider | None,
-                run_id: int | None = None, max_chars: int = STATE_CHARS) -> dict[str, Any]:
+                run_id: int | None = None, max_chars: int = STATE_CHARS, screen: Any = None) -> dict[str, Any]:
     """Ask the models about one file and record their claims. With cached models
     (inference.cached_backend / cached_decider), each claim carries the call it came from, and
-    the calls carry the file's sha256, so a purge can find them."""
+    the calls carry the file's sha256, so a purge can find them.
+
+    With a `screen` (screen.py), a file it sets aside as personal paperwork stops there:
+    result["screened"] is True and no language model is asked."""
     from . import inference
 
+    result: dict[str, Any] = {"file_id": file_id}
+    if screen is not None:
+        from .screen import screen_file
+
+        s = screen_file(conn, file_id, screen, run_id=run_id)
+        if s is not None:
+            result["screen"] = s
+            if s["rejected"]:
+                result["screened"] = True
+                return result
     state = build_state(conn, file_id, max_chars=max_chars)
     sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
-    result: dict[str, Any] = {"file_id": file_id}
     t0 = time.monotonic()
     btag = "llm:" + backend.info().tag
     with inference.subject(sha):

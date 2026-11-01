@@ -9,6 +9,10 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     [lmstudio]
     autostart = true      # run `lms server start` when LM Studio's server is off
 
+    [screen]              # triage's fast first stage (screen.py)
+    enabled = true        # also PAPYRUS_SCREEN=0
+    threshold = 0.9       # P(personal) at which a file is set aside without asking the 4B model
+
     [watch]               # `papyrus watch` (watch/)
     dirs = ["~/Downloads", "~/Desktop"]
     settle = 3            # seconds a new file must stay unchanged before it is added
@@ -23,7 +27,8 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     domains = []          # extra hosts counted as paper links
 
 Precedence for each setting: command-line option > environment variable
-(`PAPYRUS_BACKEND`, `PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`) > this file > default.
+(`PAPYRUS_BACKEND`, `PAPYRUS_DECIDER`, `PAPYRUS_LMSTUDIO_AUTOSTART`, `PAPYRUS_SCREEN`) > this file
+> default.
 """
 
 from __future__ import annotations
@@ -53,6 +58,12 @@ decider = "auto"
 [lmstudio]
 # Start LM Studio's local server (`lms server start`) when it isn't running.
 autostart = true
+
+# Triage's fast first stage: a small embedding model (84 MB, ~30 ms a file) sets obvious
+# personal paperwork aside, held for review, before the language model is asked.
+# [screen]
+# enabled = true
+# threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
 
 # `papyrus watch`: add new PDFs from these directories (not their subdirectories) as they
 # appear, then triage, promote, extract and enrich them in the background.
@@ -134,6 +145,29 @@ def lmstudio_autostart() -> tuple[bool, str]:
     if not isinstance(v, bool):
         raise ConfigError(f"{path()}: lmstudio.autostart must be true or false, got {v!r}")
     return v, str(path())
+
+
+@dataclass(frozen=True)
+class ScreenSettings:
+    enabled: bool = True
+    threshold: float | None = None  # None: the weights' own
+
+
+def screen() -> ScreenSettings:
+    """The [screen] table; PAPYRUS_SCREEN=0 turns the screen off."""
+    section = load().get("screen") or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path()}: [screen] must be a table")
+    env = os.environ.get("PAPYRUS_SCREEN", "").strip().lower()
+    enabled = section.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"{path()}: screen.enabled must be true or false, got {enabled!r}")
+    if env:
+        enabled = env not in {"0", "false", "no", "off"}
+    t = section.get("threshold")
+    if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 < t <= 1):
+        raise ConfigError(f"{path()}: screen.threshold must be a probability in (0, 1], got {t!r}")
+    return ScreenSettings(enabled, None if t is None else float(t))
 
 
 WATCH_DIRS = ("~/Downloads", "~/Desktop")

@@ -10,6 +10,9 @@ looks at what is loaded:
 * nothing is loaded: the request will load the model just in time. It is then *ours*, unless
   memory is already under pressure, in which case we back off instead.
 
+Embedding models (the screen's, 84 MB) don't count: `lmstudio.loaded_models` lists language
+models only, and the watcher's gate lets the screen load its model beside one (daemon.py).
+
 `release_idle` unloads our models once the watcher has not used them for `idle_s` seconds (and
 at exit). A model someone else loaded is never ours, so it is never unloaded. A model of ours
 that went away (LM Studio's own idle timeout, the user) stops being ours, so that a later load by
