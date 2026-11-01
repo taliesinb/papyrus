@@ -72,6 +72,7 @@ def test_counts_and_eta(q):
     queue.sync({"triage": [1, 2, 3], "extract": [8, 9]})
     assert queue.eta_s() is None  # no history yet
     queue.done("extract", 8, 2000)
+    assert queue.eta_s() is None  # triage has none yet: no partial sum
     queue.done("triage", 1, 20_000)
     assert queue.counts() == {"extract": 1, "ocr": 0, "enrich": 0, "triage": 2, "failed": 0}
     assert queue.eta_s() == 2 * 20 + 1 * 2

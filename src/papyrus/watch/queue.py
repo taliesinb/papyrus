@@ -169,15 +169,16 @@ class Queue:
 
     def eta_s(self, per_item: dict[str, float | None] | None = None) -> float | None:
         """Seconds of work left: pending items per stage times an estimate per item (`per_item`,
-        else the median of the stage's history). None when no pending stage has an estimate."""
+        else the median of the stage's history). None while a stage with pending items has no
+        estimate yet: a sum over the others would look small and be wrong."""
         per_item = per_item or {}
-        total, known = 0.0, False
+        total = 0.0
         for stage, n in self.counts().items():
             if stage == "failed" or not n:
                 continue
             est = per_item.get(stage)
             est = self.median_s(stage) if est is None else est
-            if est is not None:
-                total += n * est
-                known = True
-        return round(total, 1) if known else None
+            if est is None:
+                return None
+            total += n * est
+        return round(total, 1)
