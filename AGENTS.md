@@ -496,7 +496,7 @@ The seed is part of the inference cache's key either way.
     `expr (int)fcopyfile(FD, open("/tmp/x", 0x601, 420), 0, 8)` for each
     database fd that `lsof -p PID` lists, then `kill -9` it (not SIGTERM).
 * **Pause it (for LM Studio experiments, say):** `papyrus pause` (also
-  `papyrus watch --pause`, the menu bar's Pause Ingestion) creates
+  `papyrus watch --pause`, Pause in the menu bar's watcher section) creates
   `<home>/watch.pause`. While it exists, the watcher, whoever runs it, halts
   its loop (state `paused`): it adds, reads, classifies, extracts, indexes
   and matches nothing. File events wait in the debouncer; a catch-up scan

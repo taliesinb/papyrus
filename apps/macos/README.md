@@ -165,18 +165,30 @@ services import`.
     mount point before proxying. The app is built with that base path, so
     loopback and the tailnet see the same URLs.
   * Another variant publishes its own path (`/papyrus-personal`) to its own port.
-  * Quitting withdraws `/papyrus` and leaves every other `serve` handler alone.
-  * Publish on Tailnet (on by default) turns publishing off and on.
-* **The menu** shows:
-  * whether the server is running;
-  * the library's counts and any pipeline run in progress (from
-    `/api/version`, polled every 5 s);
-  * the tailnet address.
+  * Quitting, or stopping the server from the menu, withdraws `/papyrus` and
+    leaves every other `serve` handler alone.
+  * The menu's "Serving on <host>/papyrus" item (on by default, shown only when
+    Tailscale is there) turns publishing off and on.
+* **The menu** has two sections, each a bold title, its state, then its
+  commands, and at the bottom Start at Login (`SMAppService`) and Quit (⌘Q,
+  which stops both and quits the app):
 
-  Its items are Open Papyrus (⌘O), Open in Browser, Open / Copy Tailnet
-  Address, Publish on Tailnet, Watch for New PDFs, Pause Ingestion, Restart Server (⌘R), Show
-  Server Log (⌘L), Show Watcher Log, Open at Login (`SMAppService`) and Quit
-  (⌘Q).
+  | **Papyrus Server** | |
+  |---|---|
+  | state | "Serving on 127.0.0.1:5182" (or "Not serving", "Starting…"); the library's counts and any pipeline run in progress (`/api/version`, polled every 5 s) |
+  | ✓ Serving on `<host>`/papyrus | publishing on the tailnet (only when Tailscale is there) |
+  | Open desktop app (⌘O) | Papyrus.app |
+  | Open browser app, Copy browser app URL | the tailnet address when served there, else `http://127.0.0.1:<port>/papyrus/` |
+  | Show Log (⌘L), Restart (⌘R; not while stopped) | |
+  | Stop / Start | stops or starts the web server (and its tailnet path); the app keeps running |
+
+  | **Papyrus Watcher** | |
+  |---|---|
+  | state | "Stopped" or "Paused" first when so, then the lines below |
+  | Show Log | its log |
+  | Pause / Resume | `<home>/watch.pause`, as `papyrus pause` / `resume` |
+  | Restart | (while it runs) |
+  | Stop / Start | whether this app runs the watcher (remembered across launches) |
 * **Runs the watcher** (`papyrus watch`, the `watch` command in
   `papyrus-app.json`), with `PAPYRUS_VARIANT` and the configured env. Its
   output goes to `~/Library/Logs/<variant name>/watch.log` (file ids and
@@ -188,17 +200,17 @@ services import`.
     terminal, say): it tries again a minute later.
   * Quit sends it SIGTERM first (its run closes as `interrupted`, and it
     unloads any model it loaded), waiting up to 10 s.
-  * Watch for New PDFs (on by default) stops and starts it.
-  * Pause Ingestion creates `<home>/watch.pause` (`papyrus pause`): the
-    watcher, whoever runs it, halts its loop (it adds and ingests nothing) until
-    the item is unticked (`papyrus resume`), then takes the files that arrived
-    meanwhile. For LM Studio experiments without stopping the watcher.
+  * The watcher section's Stop / Start (on by default) stops and starts it.
+  * Pause creates `<home>/watch.pause` (`papyrus pause`): the watcher,
+    whoever runs it, halts its loop (it adds and ingests nothing) until Resume
+    (`papyrus resume`), then takes the files that arrived meanwhile. For LM
+    Studio experiments without stopping the watcher.
 * **From the command line:** `papyrus start` launches this app in the
   background (`open -g -b <server id>`), `papyrus stop` quits it as Quit does
   (SIGTERM), `papyrus open` opens Papyrus.app, `papyrus status` says what runs.
-* **The menu's watcher lines**, in a section of their own, come from
-  `/api/version`'s `watch` (the library's `watch.json`): "Watching for new
-  files" when there is nothing to do; otherwise "Ingested N/M files" (files
+* **The menu's watcher lines** come from the library's `watch.json`, read
+  directly (so they show while the web server is stopped) when the process
+  that wrote it is alive: "Watching for new files" when there is nothing to do; otherwise "Ingested N/M files" (files
   through the pipeline, or set aside, of those it has had since it was last
   idle) and one line per stage with files left, in pipeline order: Reading
   (OCR), Classifying, Extracting, Indexing, Matching. The stage being worked
@@ -206,8 +218,7 @@ services import`.
   ~2m46s left", a moving average started from past timings); the others say
   "pending" (the stages take turns: one loop, local models), "waiting: <reason>"
   (memory pressure, LM Studio busy with another model, rate limited by
-  OpenAlex…) or "paused". Then how many items it gave up on. Show Watcher Log
-  opens its log.
+  OpenAlex…) or "paused". Then how many items it gave up on.
 * **The menu-bar scroll's paper is solid** while the watcher's queue has
   items (due, or waiting for a retry), drawn from `Resources/glyph-filled.svg`;
   a variant's initial is then cut out of the paper.

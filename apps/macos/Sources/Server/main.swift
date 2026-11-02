@@ -14,7 +14,7 @@
 //     starts; a papyrus server on the port that it did not start (`pnpm start`)
 //     is used as it is;
 //   - publishes it with `tailscale serve --https=443 --set-path=<base>
-//     http://127.0.0.1:<port><base>` (Publish on Tailnet, on by default) and
+//     http://127.0.0.1:<port><base>` (the menu's "Serving on <host><base>", on by default) and
 //     withdraws that path when it quits;
 //   - runs `papyrus watch` (the `watch` command in papyrus-app.json, when the
 //     variant watches), which adds new PDFs from ~/Downloads and ~/Desktop and
@@ -22,11 +22,14 @@
 //     ~/Library/Logs/<variant name>/watch.log. It restarts it when it exits
 //     unexpectedly (with backoff; five quick failures in a row stop it) and stops
 //     it with SIGTERM on quit. Exit status 75 means another watcher holds the
-//     library's lock: tried again a minute later. "Watch for New PDFs" turns it
+//     library's lock: tried again a minute later. the watcher section's Stop / Start turns it
 //     off and on;
 //   - the menu shows the library's counts, any pipeline run in progress and the
 //     watcher's state (`/api/version`), and opens Papyrus.app, the browser, the logs;
-//   - Open at Login through SMAppService.
+//   - Start at Login through SMAppService.
+//   - The menu has a section for the server and one for the watcher (a bold title, the state, the
+//     commands: the server's Stop / Start stops or starts the web server and leaves this app
+//     running), then Start at Login and Quit.
 //
 // Being the parent of the server and the watcher, this bundle is the process
 // macOS asks the user about when they read PDFs in ~/Downloads, ~/Desktop or
@@ -291,8 +294,27 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         start()
     }
 
+    /// Stop: the web server stops (and our tailnet path is withdrawn, Serving on the tailnet stays
+    /// ticked), this app keeps running; Start: it starts again (and is published again).
+    @objc func toggleServer() {
+        failures = []
+        if state == .stopped {
+            log.line("started from the menu")
+            start()
+            return
+        }
+        if case .running(owned: false) = state {
+            log.line("stop: the server on the port is not ours; no longer using it")
+        }
+        stopServer()
+        stopping = false
+        state = .stopped
+        if published { unpublish() }
+        log.line("stopped from the menu")
+    }
+
     func poll() {
-        guard process != nil || state != .stopped else { return }
+        guard process != nil || state != .stopped else { refreshIcon(); return }
         probeLibrary(config, timeout: 2) { [weak self] status in
             guard let self else { return }
             self.library = status ?? self.library
@@ -417,24 +439,46 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         poll()
     }
 
+    /// Stop / Start: whether this app runs the watcher at all (remembered across launches).
     @objc func toggleWatch() {
         watchEnabled.toggle()
         watcherFailures = []
         if watchEnabled { startWatcher() } else { stopWatcher(); watcherNote = nil }
     }
 
-    /// The menu's lines about the watcher: "Watching for new files" when there is nothing to do, else
-    /// "Ingested N/M files" and one line per pipeline stage with work left. The stages take turns
-    /// (one loop, local models), so one is active and the others say "pending" (or why they wait).
+    @objc func restartWatcher() {
+        watcherFailures = []
+        stopWatcher()
+        startWatcher()
+    }
+
+    /// The watcher's `<home>/watch.json`, if the process that wrote it is alive (whoever runs it:
+    /// ours, or `papyrus watch` in a terminal). Read directly, so the section works while the web
+    /// server is stopped.
+    var watchStatus: LibraryStatus.Watch? {
+        guard let data = try? Data(contentsOf: libraryHome.appendingPathComponent("watch.json")),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = raw["pid"] as? Int32 ?? (raw["pid"] as? Int).map(Int32.init),
+              let state = raw["state"] as? String, state != "stopped",
+              kill(pid, 0) == 0 || errno == EPERM else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(LibraryStatus.Watch.self, from: data)
+    }
+
+    /// The watcher section's lines: "Stopped" or "Paused" first when so, then "Watching for new
+    /// files" when there is nothing to do, else "Ingested N/M files" and one line per pipeline stage
+    /// with work left. The stages take turns (one loop, local models), so one is active and the
+    /// others say "pending" (or why they wait).
     var watchLines: [String] {
         guard config.watch != nil else { return [] }
-        // A live watcher's status first, whoever runs it (e.g. `papyrus watch --once` in a terminal).
-        guard let w = library?.watch else {
-            if !watchEnabled { return ["Not watching for new PDFs"] }
-            if let note = watcherNote, watcher == nil { return ["Watcher: \(note)"] }
-            return [watcher == nil ? "Watcher: not running" : "Watcher: starting…"]
+        let w = watchStatus
+        if !watchEnabled && w == nil { return ["Stopped"] }
+        var lines: [String] = ingestionPaused ? ["Paused"] : []
+        guard let w else {
+            if let note = watcherNote, watcher == nil { return lines + [note.prefix(1).uppercased() + note.dropFirst()] }
+            return lines + [watcher == nil ? "Not running" : "Starting…"]
         }
-        var lines: [String] = []
         let stages = w.stages ?? []
         if let i = w.ingesting, !stages.isEmpty {
             lines.append("Ingested \(i.done)/\(i.total) \(i.total == 1 ? "file" : "files")")
@@ -588,26 +632,32 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A watcher of this library (ours, or one started in a terminal) has items queued (due, or
     /// waiting for a retry). `/api/version` reports `watch` only while that process lives.
     var queueHasWork: Bool {
-        (library?.watch?.pending ?? [:]).contains { $0.key != "failed" && $0.value > 0 }
+        (watchStatus?.pending ?? [:]).contains { $0.key != "failed" && $0.value > 0 }
     }
 
     /// `~12 min`, `~1 h 20 min`, `under a minute`.
+    /// Two sections, the server's and the watcher's, each a bold title, its state, then its commands;
+    /// then Start at Login and Quit (which stops both and quits this app).
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let header = menu.addItem(withTitle: config.serverName, action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        header.attributedTitle = NSAttributedString(string: config.serverName, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
-
+        func title(_ text: String) {
+            let item = menu.addItem(withTitle: text, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.attributedTitle = NSAttributedString(string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+        }
         func info(_ text: String) {
             let item = menu.addItem(withTitle: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
         }
+
+        // the web server
+        title(config.serverName)
         switch state {
-        case .stopped: info("Stopped")
+        case .stopped: info("Not serving")
         case .starting: info("Starting…")
-        case .failed(let why): info("Not running: \(why)")
+        case .failed(let why): info("Not serving: \(why)")
         case .running(let owned):
-            info("Running on 127.0.0.1:\(config.port)\(owned ? "" : " (started elsewhere)")")
+            info("Serving on 127.0.0.1:\(config.port)\(owned ? "" : " (started elsewhere)")")
             if let c = library?.counts {
                 info("\(c.works) works · \(c.files) files · \(c.people) people")
             }
@@ -615,38 +665,31 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 info("\(run.command) running\(run.backend.map { " (\($0))" } ?? "")")
             }
         }
-        if published, let host = tailnetHost {
-            info("Published at \(host)\(config.base)")
-        } else if publishEnabled, let note = tailscaleNote {
-            info("Not on the tailnet: \(note)")
+        if let host = tailnetHost {  // only when Tailscale is there
+            add(menu, "Serving on \(host)\(config.base)", #selector(togglePublish), "").state = publishEnabled ? .on : .off
+            if publishEnabled, !published, isRunning, let note = tailscaleNote { info(note) }
         }
-        let watch = watchLines
-        if !watch.isEmpty {  // the watcher's own section
+        add(menu, "Open desktop app", #selector(openPapyrus), "o")
+        add(menu, "Open browser app", #selector(openInBrowser), "", enabled: isRunning)
+        add(menu, "Copy browser app URL", #selector(copyBrowserURL), "")
+        add(menu, "Show Log", #selector(showLog), "l")
+        add(menu, "Restart", #selector(restartServer), "r", enabled: state != .stopped)
+        add(menu, state == .stopped ? "Start" : "Stop", #selector(toggleServer), "")
+
+        // the watcher
+        if config.watch != nil {
             menu.addItem(.separator())
-            for line in watch { info(line) }
+            title("\(config.name) Watcher")
+            for line in watchLines { info(line) }
+            add(menu, "Show Log", #selector(showWatchLog), "")
+            add(menu, ingestionPaused ? "Resume" : "Pause", #selector(togglePause), "")
+            if watcher != nil { add(menu, "Restart", #selector(restartWatcher), "") }
+            add(menu, watchEnabled ? "Stop" : "Start", #selector(toggleWatch), "")
         }
 
         menu.addItem(.separator())
-        add(menu, "Open \(config.name)", #selector(openPapyrus), "o")
-        add(menu, "Open in Browser", #selector(openInBrowser), "", enabled: isRunning)
-        add(menu, "Open Tailnet Address", #selector(openTailnet), "", enabled: published && isRunning)
-        add(menu, "Copy Tailnet Address", #selector(copyTailnet), "", enabled: published)
-
-        menu.addItem(.separator())
-        add(menu, "Publish on Tailnet", #selector(togglePublish), "").state = publishEnabled ? .on : .off
-        if config.watch != nil {
-            add(menu, "Watch for New PDFs", #selector(toggleWatch), "").state = watchEnabled ? .on : .off
-            add(menu, "Pause Ingestion", #selector(togglePause), "").state = ingestionPaused ? .on : .off
-        }
-        add(menu, "Restart Server", #selector(restartServer), "r")
-        add(menu, "Show Server Log", #selector(showLog), "l")
-        if config.watch != nil {
-            add(menu, "Show Watcher Log", #selector(showWatchLog), "")
-        }
-
-        menu.addItem(.separator())
-        add(menu, "Open at Login", #selector(toggleLogin), "").state = SMAppService.mainApp.status == .enabled ? .on : .off
-        add(menu, "Quit \(config.serverName)", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
+        add(menu, "Start at Login", #selector(toggleLogin), "").state = SMAppService.mainApp.status == .enabled ? .on : .off
+        add(menu, "Quit", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
 
         poll()
     }
@@ -672,12 +715,12 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let url = papyrusAppURL else { openInBrowser(); return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
-    @objc func openInBrowser() { NSWorkspace.shared.open(config.localURL) }
-    @objc func openTailnet() { if let url = tailnetURL { NSWorkspace.shared.open(url) } }
-    @objc func copyTailnet() {
-        guard let url = tailnetURL else { return }
+    /// The browser app's address: on the tailnet when served there, else on this Mac.
+    var browserURL: URL { (published ? tailnetURL : nil) ?? config.localURL }
+    @objc func openInBrowser() { NSWorkspace.shared.open(browserURL) }
+    @objc func copyBrowserURL() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        NSPasteboard.general.setString(browserURL.absoluteString, forType: .string)
     }
     @objc func showLog() { NSWorkspace.shared.open(log.url) }
     @objc func showWatchLog() { NSWorkspace.shared.open(watchLog.url) }
@@ -688,7 +731,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             log.line("open at login: \(error)")
             let alert = NSAlert()
-            alert.messageText = "Could not change Open at Login"
+            alert.messageText = "Could not change Start at Login"
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }
