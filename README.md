@@ -9,6 +9,27 @@ A local-first library for papers, books, slides and notes. It has:
 * full-text search
 * an MCP server
 
+## Install
+
+papyrus needs [uv](https://docs.astral.sh/uv/), which also fetches Python 3.15 if needed.
+
+```sh
+git clone https://github.com/taliesinb/papyrus ~/github/papyrus
+uv tool install --editable ~/github/papyrus   # a `papyrus` command in ~/.local/bin (put that on PATH)
+papyrus --help
+```
+
+* `--editable`: code changes in the checkout (edits, `git pull`) apply the next time you run
+  `papyrus`. After a change to the dependencies in `pyproject.toml`, reinstall:
+  `uv tool install --editable ~/github/papyrus --reinstall`.
+* The tool has its own environment, resolved by `uv tool` rather than from `uv.lock`. The
+  background services (Papyrus Server.app, the Linux units) run `uv run --frozen` in the
+  checkout's `.venv` instead, which the lock pins. Without the tool, `uv run papyrus …` in the
+  checkout works the same.
+* Remove it with `uv tool uninstall papyrus`.
+
+The menu-bar apps (macOS) and the systemd units (Linux) are separate: see "apps" and "Linux" below.
+
 ## Status
 
 Early. What works today:
