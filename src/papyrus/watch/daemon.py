@@ -758,17 +758,16 @@ class Watch:
 
     @staticmethod
     def _match_errors(r: dict[str, Any]) -> list[str]:
-        """The sources' failures, one line each (repeats counted), as candidates.describe_error says them."""
-        from ..match import semanticscholar
-        from ..match.candidates import describe_error
+        """The sources' failures, one line each (repeats counted), as candidates.describe_error says them,
+        with the pause a refusal or a timeout starts."""
+        from ..match.candidates import cools_down, describe_error
 
-        seen: Counter = Counter(describe_error(e) for e in r.get("errors") or [])
-        out = []
-        for line, n in seen.items():
-            if "Semantic Scholar" in line and "HTTP 429" in line:
-                line += f"; not asking it for {semanticscholar.COOLDOWN_S:.0f} s"
-            out.append(line + (f" ({n} times)" if n > 1 else ""))
-        return out
+        seen: Counter = Counter()
+        for e in r.get("errors") or []:
+            pause = cools_down(e)
+            seen[describe_error(e) + (f"; not asking it for {pause / 60:.0f} min" if pause and pause > 120
+                                      else f"; not asking it for {pause:.0f} s" if pause else "")] += 1
+        return [line + (f" ({n} times)" if n > 1 else "") for line, n in seen.items()]
 
     @staticmethod
     def _match_detail(r: dict[str, Any]) -> str:
@@ -800,7 +799,7 @@ class Watch:
         from ..match.candidates import SOURCE_NAMES
 
         names = [SOURCE_NAMES.get(s, s) for s in r.get("cooling") or []]
-        return f" ({', '.join(names)} not asked: refused recently)" if names else ""
+        return f" ({', '.join(names)} not asked: refused or didn't answer recently)" if names else ""
 
     def _classify(self, fid: int, run_id: int, c: Counter) -> None:
         from ..classify import classify_file

@@ -315,9 +315,25 @@ def test_failures_are_reported_by_status_and_type_never_the_url(monkeypatch):
                      "OpenAlex refused a title search (HTTP 429: rate limited)"]
     assert not any("Secret" in x for x in lines)
     assert report["cooling"] == ["s2"]  # not a request: no error line
-    assert set(report["rate_limited"]) == {"openalex", "s2"}
+    assert set(report["rate_limited"]) == {"arxiv", "openalex", "s2"}  # (no answer: not asked either)
 
 
 def test_merge_requires_records():
     with pytest.raises(ValueError):
         candidates.merge([])
+
+
+def test_an_unanswered_or_cooling_source_counts_as_not_asked(monkeypatch):
+    from papyrus.http import Cooling
+
+    def unanswered(*a, **kw):
+        raise HttpError(0, "https://export.arxiv.org/api/query", "ReadTimeout: x")
+
+    def cooling(*a, **kw):
+        raise Cooling(429, "https://export.arxiv.org/api/query", "skipped")
+
+    Calls(monkeypatch, arxiv_get=unanswered, arxiv_search=cooling)
+    report = {}
+    candidates.resolve({"arxiv_id": "2412.06464", "title": "Gated Delta Networks"}, report=report)
+    assert "arxiv" in report["rate_limited"] and report["cooling"] == ["arxiv"]
+    assert [candidates.cools_down(e) for e in report["errors"]] == [arxiv.COOLDOWN_S]

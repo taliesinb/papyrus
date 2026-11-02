@@ -81,3 +81,50 @@ def test_search_falls_back_to_title_only():
     recs = arxiv.search("Hopf algebras and Markov chains", ["Nobody Wrong"], http=client(handler))
     assert len(recs) == 1 and len(queries) == 2
     assert "au:wrong" in queries[0] and "au:" not in queries[1]
+
+
+def test_a_refusal_or_timeout_leaves_arxiv_alone_for_a_while(monkeypatch):
+    import pytest
+
+    from papyrus.http import Cooling, HttpError
+
+    calls = []
+
+    def refuse(req):
+        calls.append(1)
+        return httpx.Response(429, text="Rate exceeded.")
+
+    with pytest.raises(HttpError) as e:
+        arxiv.get("2412.06464", http=client(refuse))
+    assert e.value.status == 429 and len(calls) == 1 + arxiv.MAX_RETRIES
+    with pytest.raises(Cooling):  # not sent
+        arxiv.search("Anything at all", http=client(refuse))
+    assert len(calls) == 1 + arxiv.MAX_RETRIES
+    monkeypatch.setattr(arxiv, "_cooldown_until", 0.0)  # the pause is over
+
+    def timeout(req):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow", request=req)
+
+    with pytest.raises(HttpError) as e:
+        arxiv.get("2412.06464", http=client(timeout))
+    assert e.value.status == 0
+    with pytest.raises(Cooling):
+        arxiv.get("2412.06464", http=client(timeout))
+
+
+def test_patience_covers_timeouts_too():
+    import pytest
+
+    from papyrus import http as http_mod
+
+    calls = []
+
+    def timeout(req):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow", request=req)
+
+    c = HttpClient(cache_dir=False, transport=httpx.MockTransport(timeout), sleep=lambda s: None, max_retries=5)
+    with http_mod.patience(0.1), pytest.raises(http_mod.HttpError) as e:  # the first backoff (~1 s) is over budget
+        c.get("https://example.org/x")
+    assert e.value.status == 0 and len(calls) == 1

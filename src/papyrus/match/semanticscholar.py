@@ -18,7 +18,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from papyrus import ids as _ids
-from papyrus.http import HttpClient, HttpError, default_client
+from papyrus.http import Cooling, HttpClient, HttpError, default_client
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://api.semanticscholar.org/graph/v1"
@@ -46,13 +46,14 @@ def _headers() -> dict[str, str]:
     return {"x-api-key": k} if k else {}
 
 
-# After retries are exhausted on 429 we stop calling S2 for a while instead of making
-# every subsequent lookup wait through its own backoff cycle.
+# After retries are exhausted on 429 (or 503, or no answer) we stop calling S2 for a while instead
+# of making every subsequent lookup wait through its own backoff cycle.
 COOLDOWN_S = 120.0
+COOLDOWN_STATUSES = (0, 429, 503)
 _cooldown_until = 0.0
 
 
-class S2RateLimited(HttpError):
+class S2RateLimited(Cooling):
     pass
 
 
@@ -69,7 +70,7 @@ def _call(method: str, url: str, *, http: HttpClient | None, **kw: Any) -> Any |
             return http.post_json(url, kw.pop("body"), headers=_headers(), **kw)
         return http.get_json(url, headers=_headers(), **kw)
     except HttpError as e:
-        if e.status == 429:
+        if e.status in COOLDOWN_STATUSES:
             _cooldown_until = time.monotonic() + COOLDOWN_S
         raise
 

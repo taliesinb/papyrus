@@ -382,6 +382,12 @@ The seed is part of the inference cache's key either way.
   `~/.papyrus/env`, `envfile.py`). With a key, after a 429 it is skipped for
   120 s. A source's failures are reported by status and exception type only
   (`candidates.describe_error`): the URL holds the title.
+* **arXiv** (no keys; 1 request / 3 s) sometimes refuses ("Rate exceeded", 429,
+  some after 20-30 s) or times out whatever our rate: 2026-11-02 03:13-04:33
+  UTC. So `arxiv.py` gives a request 15 s and 2 retries, then leaves arXiv
+  alone for 5 min (`http.Cooling`). A source that refused, didn't answer or is
+  cooling down counts as *not asked*: no verdict, the work stays pending.
+  The raw exchanges are in `<home>/api-log/*.jsonl` (no table).
 * **OpenAlex** works keyless on a small shared budget (`OPENALEX_API_KEY`
   for $1/day). Its records are sometimes wrong (another paper's title under
   an arXiv id, wrong affiliations).

@@ -74,13 +74,19 @@ class RateLimited(HttpError):
         self.retry_after = retry_after
 
 
+class Cooling(HttpError):
+    """Not sent: the source refused (or didn't answer) recently and is left alone for a while
+    (arxiv.py, semanticscholar.py). Matching treats it as "not asked", not as "not found"."""
+
+
 _patience: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("papyrus_http_patience", default=None)
 
 
 @contextmanager
 def patience(seconds: float):
     """Within the block, retries sleep at most `seconds` in all: a 429/503 whose backoff would go
-    beyond raises `RateLimited` instead of waiting. For callers that have other work to do (the
+    beyond raises `RateLimited` instead of waiting, and a timeout or dropped connection its HttpError
+    (status 0). For callers that have other work to do (the
     watcher); without it a request waits through all its retries (up to minutes)."""
     token = _patience.set([seconds])
     try:
@@ -265,8 +271,10 @@ class HttpClient:
         ok_statuses: frozenset[int] = frozenset({200, 404}),
         max_retries: int | None = None,
         backoff_cap: float | None = None,
+        timeout: float | None = None,
     ) -> Response:
-        """Perform a request; returns statuses in `ok_statuses`, raises HttpError otherwise."""
+        """Perform a request; returns statuses in `ok_statuses`, raises HttpError otherwise.
+        `timeout`: seconds for this request (default: the client's)."""
         url = full_url(url, params)
         body = json.dumps(json_body, sort_keys=True) if json_body is not None else None
         key = f"{method.upper()} {redact_url(url)}" + (f"\n{body}" if body else "")
@@ -285,12 +293,18 @@ class HttpClient:
             req_headers = {**({"Content-Type": "application/json"} if body else {}), **(headers or {})}
             started = time.time()
             try:
-                r = self._client.request(method, url, content=body.encode() if body else None, headers=req_headers)
+                r = self._client.request(method, url, content=body.encode() if body else None, headers=req_headers,
+                                         timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout)
             except httpx.TransportError as e:
                 _log_attempt(method, url, req_headers, body, started, attempt, error=f"{type(e).__name__}: {e}")
                 if attempt >= retries:
                     raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
                 delay = self._backoff(attempt, None, backoff_cap)
+                budget = _patience.get()
+                if budget is not None:  # a server that times out is slow to recover: don't sit through retries
+                    if delay > budget[0]:
+                        raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
+                    budget[0] -= delay
                 log.info("%s %s: %s; retrying in %.1fs", method, redact_url(url), e, delay)
                 self._sleep(delay)
                 attempt += 1

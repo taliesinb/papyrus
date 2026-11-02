@@ -23,7 +23,7 @@ import httpx
 
 from papyrus.match import arxiv, crossref, openalex, semanticscholar
 from papyrus import ids as _ids
-from papyrus.http import HttpClient, HttpError
+from papyrus.http import Cooling, HttpClient, HttpError
 from papyrus.models import AuthorRecord, WorkRecord
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,17 @@ ALL_SOURCES = ("arxiv", "openalex", "s2", "crossref")
 SOURCE_NAMES = {"arxiv": "arXiv", "openalex": "OpenAlex", "s2": "Semantic Scholar", "crossref": "Crossref"}
 CALL_NAMES = {"get": "lookup by id", "get_by_arxiv": "lookup by arXiv id", "get_by_doi": "lookup by DOI",
               "by_isbn": "lookup by ISBN", "search": "title search", "match_title": "title search"}
+
+
+def cooldown_s(source: str) -> float | None:
+    """How long a source is left alone after a refusal or a timeout (None: it isn't)."""
+    return {"arxiv": arxiv.COOLDOWN_S, "s2": semanticscholar.COOLDOWN_S}.get(source)
+
+
+def cools_down(err: Mapping[str, Any]) -> float | None:
+    """The pause this failure starts (arxiv.py, semanticscholar.py: 429, 503 or no answer)."""
+    statuses = {"arxiv": arxiv.COOLDOWN_STATUSES, "s2": semanticscholar.COOLDOWN_STATUSES}.get(err["source"], ())
+    return cooldown_s(err["source"]) if err.get("status") in statuses else None
 
 
 def default_sources() -> tuple[str, ...]:
@@ -196,12 +207,13 @@ class _Collector:
             return None
         try:
             return fn(*args, **kw)
-        except semanticscholar.S2RateLimited:  # not a request: S2 refused recently and isn't asked for a while
+        except Cooling:  # not a request: the source refused recently and isn't asked for a while
             self.cooling.add(source)
             self.rate_limited.setdefault(source, 0.0)
             return None
         except (HttpError, httpx.HTTPError, ET.ParseError, ValueError, KeyError) as e:
-            if isinstance(e, HttpError) and e.status in (429, 503):
+            # refused (429/503) or no answer (0): "not asked", so no verdict is recorded on what's left
+            if isinstance(e, HttpError) and e.status in (0, 429, 503):
                 self.rate_limited[source] = max(self.rate_limited.get(source, 0.0), getattr(e, "retry_after", 0.0))
             # the status and the type, not the message: an HttpError's names its URL, which holds
             # search terms (a title), and this goes to the watcher's log, which names ids and counts only

@@ -1053,7 +1053,8 @@ def test_a_match_logs_each_sources_refusal_once_by_name(tmp_path, monkeypatch):
     from papyrus.match import pipeline
 
     errs = [{"source": "s2", "call": "get", "status": 429, "error": None}] * 2 + [
-        {"source": "crossref", "call": "get", "status": 400, "error": None}]
+        {"source": "crossref", "call": "get", "status": 400, "error": None},
+        {"source": "arxiv", "call": "search", "status": 0, "error": "ReadTimeout"}]
     monkeypatch.setattr(pipeline, "match_work", lambda conn, wid, **kw: {
         "status": "matched", "work_id": wid, "score": 1.0, "sources": ["openalex"], "ids": {"doi": "10.1/x"},
         "authors_linked": 1, "errors": errs, "cooling": ["s2"]})
@@ -1063,8 +1064,10 @@ def test_a_match_logs_each_sources_refusal_once_by_name(tmp_path, monkeypatch):
     lines = [m.split(" match: ", 1)[1] for m in logs if " match: " in m]
     assert "Semantic Scholar refused a lookup by id (HTTP 429: rate limited); not asking it for 120 s (2 times)" in lines
     assert "Crossref answered a lookup by id with HTTP 400" in lines
+    assert "arXiv did not answer a title search (ReadTimeout); not asking it for 5 min" in lines
     assert any(x.startswith("matched in ") and x.endswith(
-        "(score 1.00; from openalex; ids: doi; 1 author linked) (Semantic Scholar not asked: refused recently)")
+        "(score 1.00; from openalex; ids: doi; 1 author linked) (Semantic Scholar not asked: refused or didn't answer "
+        "recently)")
         for x in lines)
     assert not any("10.1/x" in m for m in logs)
 
