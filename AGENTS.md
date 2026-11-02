@@ -404,7 +404,10 @@ The seed is part of the inference cache's key either way.
 * **It writes to the real library** as soon as Papyrus Server.app (or the
   Linux unit) runs it. Try changes on a scratch library and directory:
   `PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl`. Without `--dir` it
-  watches the config's `[watch] dirs`, by default the real `~/Downloads`.
+  watches the config's `[watch] dirs`, by default the real `~/Downloads`. An
+  entry ending in `/**` (`~/Dropbox/doc/**`) is a *tree*: its subdirectories
+  too, at any depth (not hidden or `scan.SKIP_DIRS` ones). Adding a big tree
+  queues every PDF in it at the next start: hours of model work.
 * **One watcher per library** (`<home>/watch.lock`). A second one, or `--once`
   while one runs, exits with status 75, which the app and the unit don't
   treat as a crash.

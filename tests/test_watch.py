@@ -242,6 +242,115 @@ def test_debounce_reports_gone_paths_and_ignores_other_directories(tmp_path):
     assert d.pending == {} and d.due() == ([], [tmp_path / "deleted.pdf"])
 
 
+def test_debounce_takes_a_trees_subdirectories(tmp_path):
+    """A [watch] dirs entry ending in /** (a tree): files at any depth, a directory moved in is
+    walked, a directory that went takes what was below it; hidden and skipped directories stay out."""
+    clock = Clock()
+    tree, plain = tmp_path / "doc", tmp_path / "dl"
+    (tree / "paper" / "2024").mkdir(parents=True)
+    (tree / ".git").mkdir()
+    plain.mkdir()
+    (plain / "sub").mkdir()
+    d = Debouncer([plain], settle_s=3, clock=clock, trees=[tree])
+    deep = tree / "paper" / "2024" / "a.pdf"
+    deep.write_bytes(b"%PDF-1.4 a")
+    (tree / ".git" / "h.pdf").write_bytes(b"%PDF-1.4 h")
+    (plain / "sub" / "x.pdf").write_bytes(b"%PDF-1.4 x")
+    for p in (deep, tree / ".git" / "h.pdf", plain / "sub" / "x.pdf"):
+        d.touch(p)
+    clock.advance(3)
+    assert d.due() == ([deep], [])  # not the hidden directory's, nor the plain directory's subdirectory
+    moved = tree / "book"  # a folder of PDFs moved in: one event, for the folder
+    (moved / "vol1").mkdir(parents=True)
+    (moved / "b.pdf").write_bytes(b"%PDF-1.4 b")
+    (moved / "vol1" / "c.pdf").write_bytes(b"%PDF-1.4 c")
+    d.touch(moved)
+    clock.advance(3)
+    assert d.due() == ([moved / "b.pdf", moved / "vol1" / "c.pdf"], [])
+    shutil.rmtree(tree / "paper")
+    d.touch(tree / "paper")
+    assert d.due() == ([], [tree / "paper"])
+
+
+def test_the_watcher_scans_and_follows_a_tree(tmp_path):
+    tree = tmp_path / "doc"
+    (tree / "thesis").mkdir(parents=True)
+    old = _pdf(tree / "thesis" / "t.pdf", "A Thesis on Things. Jane Doe. Abstract We study things in great detail.")
+    w, conn, dl, clock, logs = _watch(tmp_path, trees=[tree])
+    w.catch_up()
+    assert [r[0] for r in conn.execute("SELECT locator FROM contexts")] == [str(old.resolve())]
+    (tree / "paper" / "2024").mkdir(parents=True)
+    new = _pdf(tree / "paper" / "2024" / "p.pdf", "A Study of Things. John Roe. Abstract We study more things.",
+               old=False)
+    w.watcher.inject(new)
+    w.pump()
+    clock.advance(3)
+    w.pump()
+    assert sorted(r[0] for r in conn.execute("SELECT locator FROM contexts")) == sorted([str(old.resolve()), str(new.resolve())])
+    shutil.rmtree(tree / "paper")
+    w.watcher.inject(tree.resolve() / "paper")  # the folder went: what was below it is missing
+    w.pump()
+    missing = {r[0] for r in conn.execute("SELECT locator FROM contexts WHERE missing_at IS NOT NULL")}
+    assert missing == {str(new.resolve())}
+    assert any("1 with their subdirectories" in m for m in logs)
+    w.close()
+
+
+def test_watch_dirs_entries_ending_in_a_double_star_are_trees(tmp_path):
+    from papyrus import config
+
+    plain, trees = config.split_watch_dirs(["~/Downloads", "~/Dropbox/doc/**", " /tmp/x/** "])
+    assert plain == (Path("~/Downloads").expanduser(),)
+    assert trees == (Path("~/Dropbox/doc").expanduser(), Path("/tmp/x"))
+    config.path().parent.mkdir(parents=True, exist_ok=True)
+    config.path().write_text('[watch]\ndirs = ["~/Desktop", "~/Dropbox/doc/**"]\n')
+    s = config.watch()
+    assert s.dirs == (Path("~/Desktop").expanduser(),) and s.trees == (Path("~/Dropbox/doc").expanduser(),)
+
+
+def test_polling_watcher_walks_trees(tmp_path):
+    tree = tmp_path / "doc"
+    (tree / "a" / "b").mkdir(parents=True)
+    w = PollingWatcher([], interval=0.1, trees=[tree])
+    w.start()
+    try:
+        (tree / "a" / "b" / "deep.pdf").write_bytes(b"%PDF")
+        assert _wait_for(w, tree / "a" / "b" / "deep.pdf")
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="FSEvents is macOS-only")
+def test_fsevents_watcher_reports_a_trees_deep_files(tmp_path):
+    tree = tmp_path.resolve() / "doc"
+    (tree / "a").mkdir(parents=True)
+    w = FSEventsWatcher([], latency=0.1, trees=[tree])
+    w.start()
+    try:
+        (tree / "a" / "deep.pdf").write_bytes(b"%PDF")
+        assert _wait_for(w, tree / "a" / "deep.pdf")
+    finally:
+        w.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="inotify is Linux-only")
+def test_inotify_watcher_follows_new_directories_in_a_tree(tmp_path):
+    tree = tmp_path / "doc"
+    (tree / "a").mkdir(parents=True)
+    w = InotifyWatcher([], trees=[tree])
+    w.start()
+    try:
+        (tree / "a" / "x.pdf").write_bytes(b"%PDF")
+        assert _wait_for(w, tree / "a" / "x.pdf")
+        (tree / "new").mkdir()
+        assert _wait_for(w, tree / "new")
+        time.sleep(0.2)
+        (tree / "new" / "y.pdf").write_bytes(b"%PDF")
+        assert _wait_for(w, tree / "new" / "y.pdf")
+    finally:
+        w.close()
+
+
 # --- ingestion through the scan path ----------------------------------------------------------
 
 

@@ -1,9 +1,10 @@
 """Where `papyrus watch` hears about changes: FSEvents (macOS), inotify (Linux), or polling.
 
-Every source watches a few directories (not their subdirectories) and reports *paths that may
-have changed*: a file in one of the directories, or the directory itself when the source lost
-track and the whole directory should be looked at again (FSEvents' MustScanSubDirs, inotify's
-queue overflow). Sources say nothing about whether a file is finished; `debounce.Debouncer`
+Every source watches a few directories (not their subdirectories) and *trees* (directories with
+their subdirectories, `[watch] dirs` entries ending in `/**`) and reports *paths that may have
+changed*: a file in one of them, a directory that appeared in a tree, or a watched directory
+itself when the source lost track and the whole of it should be looked at again (FSEvents'
+MustScanSubDirs, inotify's queue overflow). The debouncer drops what lies outside them. Sources say nothing about whether a file is finished; `debounce.Debouncer`
 decides that by watching its size and times.
 
 All three run a background thread (FSEvents: a dispatch queue) that feeds a queue; `get` waits
@@ -41,8 +42,9 @@ class _Queued:
 
     name = "?"
 
-    def __init__(self, dirs: list[Path]):
+    def __init__(self, dirs: list[Path], trees: list[Path] = ()):
         self.dirs = [Path(d) for d in dirs]
+        self.trees = [Path(t) for t in trees]
         self._q: queue.Queue[Path] = queue.Queue()
 
     def _put(self, path: Path) -> None:
@@ -80,25 +82,48 @@ def _listing(d: Path) -> dict[str, tuple[int, int, int]]:
     return out
 
 
+def _tree_listing(root: Path) -> dict[str, tuple[int, int, int]]:
+    """`_listing` of a tree: every file below it (relative names), as `papyrus scan -r` walks it."""
+    from ..scan import TREE_DEPTH, skipped_dir
+
+    out = {}
+    base = len(root.parts)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not skipped_dir(d) and len(Path(dirpath).parts) - base < TREE_DEPTH]
+        rel = Path(dirpath).relative_to(root)
+        for name in filenames:
+            try:
+                st = os.stat(os.path.join(dirpath, name), follow_symlinks=False)
+            except OSError:
+                continue
+            out[str(rel / name)] = (st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    return out
+
+
 class PollingWatcher(_Queued):
-    """Lists each directory every `interval` seconds and reports the entries that changed."""
+    """Lists each directory (each tree, walked) every `interval` seconds and reports the entries
+    that changed."""
 
     name = "polling"
 
-    def __init__(self, dirs: list[Path], interval: float = 5.0):
-        super().__init__(dirs)
+    def __init__(self, dirs: list[Path], interval: float = 5.0, trees: list[Path] = ()):
+        super().__init__(dirs, trees)
         self.interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    def _list(self, d: Path) -> dict[str, tuple[int, int, int]]:
+        return _tree_listing(d) if d in self.trees else _listing(d)
+
     def start(self) -> None:
-        before = {d: _listing(d) for d in self.dirs}
+        roots = self.dirs + self.trees
+        before = {d: self._list(d) for d in roots}
 
         def loop() -> None:
             nonlocal before
             while not self._stop.wait(self.interval):
-                for d in self.dirs:
-                    now = _listing(d)
+                for d in roots:
+                    now = self._list(d)
                     for name in now.keys() | before[d].keys():
                         if now.get(name) != before[d].get(name):
                             self._put(d / name)
@@ -115,7 +140,7 @@ class PollingWatcher(_Queued):
 
 IN_ATTRIB, IN_CLOSE_WRITE, IN_MOVED_FROM, IN_MOVED_TO = 0x4, 0x8, 0x40, 0x80
 IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_MOVE_SELF = 0x100, 0x200, 0x400, 0x800
-IN_Q_OVERFLOW, IN_IGNORED, IN_ONLYDIR = 0x4000, 0x8000, 0x01000000
+IN_Q_OVERFLOW, IN_IGNORED, IN_ONLYDIR, IN_ISDIR = 0x4000, 0x8000, 0x01000000, 0x40000000
 IN_NONBLOCK, IN_CLOEXEC = 0o4000, 0o2000000
 # IN_MODIFY is left out: it fires on every write of a download. CLOSE_WRITE, MOVED_TO and
 # ATTRIB (xattrs written by the browser) say enough, and the debouncer re-checks what is pending.
@@ -138,8 +163,11 @@ def parse_inotify(buf: bytes) -> list[tuple[int, int, str]]:
 class InotifyWatcher(_Queued):
     name = "inotify"
 
-    def __init__(self, dirs: list[Path]):
-        super().__init__(dirs)
+    """inotify watches on each directory, and on every directory of each tree (added as they
+    appear; a directory moved in is reported, and the debouncer walks it)."""
+
+    def __init__(self, dirs: list[Path], trees: list[Path] = ()):
+        super().__init__(dirs, trees)
         if not sys.platform.startswith("linux"):
             raise OSError("inotify is Linux-only")
         self._libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -150,15 +178,35 @@ class InotifyWatcher(_Queued):
             err = ctypes.get_errno()
             raise OSError(err, os.strerror(err))
         self._wds: dict[int, Path] = {}
+        self._tree_wds: set[int] = set()
         for d in self.dirs:
-            wd = self._libc.inotify_add_watch(self._fd, os.fsencode(d), INOTIFY_MASK)
-            if wd < 0:
-                err = ctypes.get_errno()
-                os.close(self._fd)
-                raise OSError(err, os.strerror(err), str(d))
-            self._wds[wd] = d
+            self._add(d, fail=True)
+        for t in self.trees:
+            self._add_tree(t, fail=True)
         self._stop_r, self._stop_w = os.pipe()
         self._thread: threading.Thread | None = None
+
+    def _add(self, d: Path, *, fail: bool = False, tree: bool = False) -> None:
+        wd = self._libc.inotify_add_watch(self._fd, os.fsencode(d), INOTIFY_MASK)
+        if wd < 0:
+            if not fail:  # a directory that went again, or the watch limit: the next scan sees it
+                return
+            err = ctypes.get_errno()
+            os.close(self._fd)
+            raise OSError(err, os.strerror(err), str(d))
+        self._wds[wd] = d
+        if tree:
+            self._tree_wds.add(wd)
+
+    def _add_tree(self, root: Path, *, fail: bool = False) -> None:
+        from ..scan import TREE_DEPTH, skipped_dir
+
+        self._add(root, fail=fail, tree=True)
+        base = len(root.parts)
+        for dirpath, dirnames, _ in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not skipped_dir(d) and len(Path(dirpath).parts) - base < TREE_DEPTH]
+            for d in dirnames:
+                self._add(Path(dirpath) / d, tree=True)
 
     def start(self) -> None:
         def loop() -> None:
@@ -174,10 +222,16 @@ class InotifyWatcher(_Queued):
                     return
                 for wd, mask, name in parse_inotify(buf):
                     if mask & IN_Q_OVERFLOW:  # events were dropped: look at everything again
-                        for d in self.dirs:
+                        for d in self.dirs + self.trees:
                             self._put(d)
                     elif wd in self._wds and name:
-                        self._put(self._wds[wd] / name)
+                        p = self._wds[wd] / name
+                        if mask & IN_ISDIR and mask & (IN_CREATE | IN_MOVED_TO) and wd in self._tree_wds:
+                            from ..scan import skipped_dir
+
+                            if not skipped_dir(name):
+                                self._add_tree(p)  # a new directory in a tree: watch it, and look inside
+                        self._put(p)
 
         self._thread = threading.Thread(target=loop, name="papyrus-watch-inotify", daemon=True)
         self._thread.start()
@@ -235,12 +289,13 @@ def _frameworks():
 
 
 class FSEventsWatcher(_Queued):
-    """An FSEvents stream with per-file events, delivered on a private dispatch queue."""
+    """An FSEvents stream with per-file events, delivered on a private dispatch queue. FSEvents
+    streams cover subdirectories anyway: for plain directories the debouncer drops deeper paths."""
 
     name = "fsevents"
 
-    def __init__(self, dirs: list[Path], latency: float = 0.5):
-        super().__init__(dirs)
+    def __init__(self, dirs: list[Path], latency: float = 0.5, trees: list[Path] = ()):
+        super().__init__(dirs, trees)
         if sys.platform != "darwin":
             raise OSError("FSEvents is macOS-only")
         self.latency = latency
@@ -253,7 +308,7 @@ class FSEventsWatcher(_Queued):
         for i in range(n):
             p = Path(os.fsdecode(names[i]))
             if flags[i] & (kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged):
-                for d in self.dirs:  # coalesced or the root moved: look again at what it covers
+                for d in self.dirs + self.trees:  # coalesced or the root moved: look again at what it covers
                     if p == d or d.is_relative_to(p) or p.is_relative_to(d):
                         self._put(d)
             else:
@@ -261,7 +316,8 @@ class FSEventsWatcher(_Queued):
 
     def start(self) -> None:
         cf = self._cf
-        strings = [cf.CFStringCreateWithCString(None, os.fsencode(d), kCFStringEncodingUTF8) for d in self.dirs]
+        strings = [cf.CFStringCreateWithCString(None, os.fsencode(d), kCFStringEncodingUTF8)
+                   for d in self.dirs + self.trees]
         arr = (ctypes.c_void_p * len(strings))(*strings)
         paths = cf.CFArrayCreate(None, arr, len(strings), self._array_callbacks)
         flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagWatchRoot
@@ -289,16 +345,16 @@ class FSEventsWatcher(_Queued):
             self._queue = None
 
 
-def make_watcher(dirs: list[Path], kind: str = "auto") -> Watcher:
+def make_watcher(dirs: list[Path], kind: str = "auto", trees: list[Path] = ()) -> Watcher:
     """FSEvents on macOS, inotify on Linux, polling elsewhere, when asked (`kind='polling'`), or
     when the native source can't start."""
     if kind == "polling":
-        return PollingWatcher(dirs)
+        return PollingWatcher(dirs, trees=trees)
     try:
         if sys.platform == "darwin":
-            return FSEventsWatcher(dirs)
+            return FSEventsWatcher(dirs, trees=trees)
         if sys.platform.startswith("linux"):
-            return InotifyWatcher(dirs)
+            return InotifyWatcher(dirs, trees=trees)
     except OSError as e:
         print(f"watch: native file events unavailable ({type(e).__name__}); polling instead", file=sys.stderr)
-    return PollingWatcher(dirs)
+    return PollingWatcher(dirs, trees=trees)

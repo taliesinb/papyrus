@@ -13,7 +13,11 @@ Ignored:
   empty `x.pdf`: Firefox creates the final name empty and moves the `.part` over it at the end.
 
 A path that no longer exists is reported as *gone*, so its filesystem context can be marked
-missing. Paths outside the watched directories (deeper ones included) are ignored.
+missing (a directory under a tree: everything below it). Paths outside the watched directories
+are ignored, and so are deeper ones, except under *trees*, directories watched with their
+subdirectories (`[watch] dirs` entries ending in `/**`): there a file at any depth counts (as
+for `papyrus scan -r`: not in hidden or skipped directories), and a directory reported (moved in,
+or to be looked at again) is walked.
 """
 
 from __future__ import annotations
@@ -52,8 +56,10 @@ class _Pending:
 
 
 class Debouncer:
-    def __init__(self, dirs: list[Path], settle_s: float = 3.0, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, dirs: list[Path], settle_s: float = 3.0, clock: Callable[[], float] = time.monotonic,
+                 trees: list[Path] = ()):
         self.dirs = {Path(d) for d in dirs}
+        self.trees = [Path(t) for t in trees]
         self.settle_s = settle_s
         self.clock = clock
         self.pending: dict[Path, _Pending] = {}
@@ -70,12 +76,21 @@ class Debouncer:
                 return
             for name in names:
                 if is_candidate(name):
-                    p = path / name
-                    sig = _sig(p)
-                    if sig is not None and self._handed.get(p) != sig:
-                        self._add(p, sig)
+                    self._consider(path / name)
             return
-        if path.parent not in self.dirs or not is_candidate(path.name):
+        tree = self._tree_of(path)
+        if tree is not None and not is_candidate(path.name):
+            if path.is_dir():  # a directory moved in, or one to look at again: everything below it
+                from ..scan import ScanOptions, TREE_DEPTH, iter_pdfs
+
+                depth = TREE_DEPTH - (len(path.relative_to(tree).parts) - 1)
+                for p in iter_pdfs(path, ScanOptions(recursive=True, max_depth=max(depth, 0))):
+                    if is_candidate(p.name):
+                        self._consider(p)
+            elif not path.exists() and (path == tree or path.suffix == ""):
+                self._gone.append(path)  # a directory went: what was below it went too
+            return
+        if (path.parent not in self.dirs and tree is None) or not is_candidate(path.name):
             return
         sig = _sig(path)
         if sig is None:
@@ -87,6 +102,20 @@ class Debouncer:
         if self._handed.get(path) == sig:
             return  # unchanged since handed out: reading or hashing it fires events of its own
         self._add(path, sig)
+
+    def _tree_of(self, path: Path) -> Path | None:
+        """The tree `path` is in (or is), if any."""
+        from ..scan import TREE_DEPTH, in_tree
+
+        for t in self.trees:
+            if path == t or in_tree(path, t, TREE_DEPTH):
+                return t
+        return None
+
+    def _consider(self, p: Path) -> None:
+        sig = _sig(p)
+        if sig is not None and self._handed.get(p) != sig:
+            self._add(p, sig)
 
     def seen(self, path: Path) -> None:
         """`path` was just ingested by other means (the catch-up scan): ignore its events until it

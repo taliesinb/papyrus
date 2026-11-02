@@ -19,7 +19,7 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     tail_fraction = 0.2   # share of the page budget kept for the last pages
 
     [watch]               # `papyrus watch` (watch/)
-    dirs = ["~/Downloads", "~/Desktop"]
+    dirs = ["~/Downloads", "~/Desktop"]   # "DIR/**": DIR with its subdirectories
     settle = 3            # seconds a new file must stay unchanged before it is added
     unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
     background = true     # run at background priority (false: normal, e.g. to benchmark ingestion)
@@ -80,8 +80,9 @@ autostart = true
 # state_tokens = 1000
 # tail_fraction = 0.2       # share of the page budget kept for the last pages
 
-# `papyrus watch`: add new PDFs from these directories (not their subdirectories) as they
-# appear, then ingest them in the background: read, classify, extract, promote, index, match.
+# `papyrus watch`: add new PDFs from these directories (not their subdirectories; end an entry
+# in /** to include them, e.g. "~/Dropbox/doc/**") as they appear, then ingest them in the
+# background: read, classify, extract, promote, index, match.
 [watch]
 dirs = ["~/Downloads", "~/Desktop"]
 # settle = 3            # seconds a file must stay unchanged before it is added
@@ -221,7 +222,8 @@ WATCH_DIRS = ("~/Downloads", "~/Desktop")
 
 @dataclass(frozen=True)
 class WatchSettings:
-    dirs: tuple[Path, ...]
+    dirs: tuple[Path, ...]  # watched without their subdirectories
+    trees: tuple[Path, ...] = ()  # entries ending in /**: watched with their subdirectories
     settle_s: float = 3.0
     unload_after_s: float = 600.0
     background: bool = True  # background priority (PRIO_DARWIN_BG / nice + idle I/O): yield to everything else
@@ -246,7 +248,21 @@ def watch() -> WatchSettings:
     background = section.get("background", True)
     if not isinstance(background, bool):
         raise ConfigError(f"{path()}: watch.background must be true or false, got {background!r}")
-    return WatchSettings(dirs=tuple(Path(d).expanduser() for d in dirs), background=background, **out)
+    plain, trees = split_watch_dirs(dirs)
+    return WatchSettings(dirs=plain, trees=trees, background=background, **out)
+
+
+def split_watch_dirs(entries: list[str] | tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """[watch] dirs entries -> (directories, trees): `~/Dropbox/doc/**` is ~/Dropbox/doc with its
+    subdirectories, `~/Downloads` the directory alone."""
+    plain, trees = [], []
+    for e in entries:
+        e = str(e).strip()
+        if e.endswith("/**"):
+            trees.append(Path(e[:-3] or "/").expanduser())
+        else:
+            plain.append(Path(e).expanduser())
+    return tuple(plain), tuple(trees)
 
 
 def init() -> tuple[Path, bool]:

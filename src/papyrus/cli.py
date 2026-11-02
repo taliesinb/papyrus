@@ -566,8 +566,8 @@ def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
 
 @main.command()
 @click.option("--once", is_flag=True, help="Catch up (scan the watched directories, ingest what is pending) and exit.")
-@click.option("--dir", "dirs", multiple=True, type=click.Path(file_okay=False, path_type=Path), metavar="DIR",
-              help="Watch DIR instead of the config's [watch] dirs (repeatable).")
+@click.option("--dir", "dirs", multiple=True, metavar="DIR",
+              help="Watch DIR instead of the config's [watch] dirs (repeatable; DIR/** with its subdirectories).")
 @click.option("--poll", is_flag=True, help="Poll the directories instead of using FSEvents / inotify.")
 @click.option("--status", "show_status", is_flag=True, help="Print the running watcher's status (JSON) and exit.")
 @click.option("--perf", "perf", flag_value="latest", default=None,
@@ -579,10 +579,11 @@ def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
                    "files are still added. Lasts until --resume.")
 @click.option("--resume", "pause", flag_value=False, help="Resume model work, and exit.")
 @click.pass_context
-def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, show_status: bool, perf: str | None,
+def watch(ctx: click.Context, once: bool, dirs: tuple[str, ...], poll: bool, show_status: bool, perf: str | None,
           retry_failed: bool, pause: bool | None) -> None:
-    """Add new PDFs from ~/Downloads and ~/Desktop (config: [watch] dirs) as they appear, and
-    ingest them (read, classify, extract, promote, index, match), at background priority.
+    """Add new PDFs from ~/Downloads and ~/Desktop (config: [watch] dirs; an entry DIR/** takes
+    DIR's subdirectories too) as they appear, and ingest them (read, classify, extract, promote,
+    index, match), at background priority.
 
     Runs in the foreground; Papyrus Server.app (macOS) or a systemd user service (Linux) runs it
     in the background. One watcher per library. Model work waits under memory pressure, while
@@ -622,12 +623,15 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
         config.backend(), config.classifier(), config.lmstudio_autostart()  # fail now on a bad config
     except config.ConfigError as e:
         raise click.ClickException(str(e)) from e
-    roots = [Path(d).expanduser().resolve() for d in (dirs or settings.dirs)]
-    missing = [d for d in roots if not d.is_dir()]
+    plain, trees = config.split_watch_dirs(dirs) if dirs else (settings.dirs, settings.trees)
+    roots = [Path(d).expanduser().resolve() for d in plain]
+    tree_roots = [Path(d).expanduser().resolve() for d in trees]
+    missing = [d for d in roots + tree_roots if not d.is_dir()]
     for d in missing:
         click.echo(f"watch: not a directory, skipped: {d}", err=True)
     roots = [d for d in roots if d not in missing]
-    if not roots:
+    tree_roots = [d for d in tree_roots if d not in missing]
+    if not roots and not tree_roots:
         raise click.ClickException("no directory to watch (config: [watch] dirs, or --dir)")
     rescued = sorted(home.glob("rescued-*"))
     if rescued:  # watch/daemon.py, Watch._guard: the files on disk are not what the last watcher had
@@ -642,9 +646,11 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[Path, ...], poll: bool, sh
         ctx.exit(EXIT_LOCKED)
     try:
         prio = lower_priority() if settings.background else []
-        click.echo(f"watch: {home}, {len(roots)} directories, priority {'+'.join(prio) or 'normal'}", err=True)
-        w = Watch(_conn(ctx), roots, watcher=PollingWatcher(roots) if poll else None, settle_s=settings.settle_s,
-                  unload_after_s=settings.unload_after_s)
+        click.echo(f"watch: {home}, {len(roots) + len(tree_roots)} directories"
+                   + (f" ({len(tree_roots)} with their subdirectories)" if tree_roots else "")
+                   + f", priority {'+'.join(prio) or 'normal'}", err=True)
+        w = Watch(_conn(ctx), roots, trees=tree_roots, watcher=PollingWatcher(roots, trees=tree_roots) if poll else None,
+                  settle_s=settings.settle_s, unload_after_s=settings.unload_after_s)
         try:
             w.run(once=once)
         except KeyboardInterrupt:

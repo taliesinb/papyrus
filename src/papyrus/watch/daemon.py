@@ -138,11 +138,12 @@ class Watch:
                  log: Callable[[str], None] = default_log, status_path: Path | None = None,
                  store: bool = True, ocr: bool = True, batch_steps: int = BATCH_STEPS,
                  queue: Queue | None = None, wall: Callable[[], float] = time.time,
-                 screen: Callable[[], Any] | None = None):
+                 screen: Callable[[], Any] | None = None, trees: list[Path] = ()):
         from ..llm import lmstudio
 
         self.conn = conn
         self.dirs = [Path(d).expanduser().resolve() for d in dirs]
+        self.trees = [Path(d).expanduser().resolve() for d in trees]  # watched with their subdirectories
         self.watcher = watcher
         self.memory = memory or (lambda: memory_pressure())
         self.clock, self.log = clock, log
@@ -152,7 +153,7 @@ class Watch:
         self.resolve_models = models or (lambda: resolve_models())
         self.resolve_screen = screen or (lambda: resolve_screen())
         self.screen: Any = None  # the classify stage's first step (screen.py), resolved with the models
-        self.debouncer = Debouncer(self.dirs, settle_s, clock)
+        self.debouncer = Debouncer(self.dirs, settle_s, clock, trees=self.trees)
         self.status_path = status_path or db.library_home() / "watch.json"
         self.opts = scan.ScanOptions(store=store)
         self.ocr = ocr
@@ -197,7 +198,7 @@ class Watch:
         from ..describe import PROMPT_VERSION
 
         self._status(STARTING)
-        self.events.emit("start", pid=os.getpid(), dirs=len(self.dirs), prompt_version=PROMPT_VERSION)
+        self.events.emit("start", pid=os.getpid(), dirs=len(self.dirs) + len(self.trees), prompt_version=PROMPT_VERSION)
         try:
             if not once:
                 self._start_watcher()
@@ -213,14 +214,15 @@ class Watch:
 
     def _start_watcher(self) -> None:
         if self.watcher is None:
-            self.watcher = make_watcher(self.dirs)
+            self.watcher = make_watcher(self.dirs, trees=self.trees)
         try:
             self.watcher.start()
         except OSError as e:
             self.log(f"{self.watcher.name} failed to start ({type(e).__name__}); polling instead")
-            self.watcher = PollingWatcher(self.dirs)
+            self.watcher = PollingWatcher(self.dirs, trees=self.trees)
             self.watcher.start()
-        self.log(f"watching {len(self.dirs)} directories ({self.watcher.name})")
+        self.log(f"watching {len(self.dirs) + len(self.trees)} directories"
+                 + (f" ({len(self.trees)} with their subdirectories)" if self.trees else "") + f" ({self.watcher.name})")
 
     def close(self) -> None:
         if self.watcher is not None:
@@ -305,7 +307,8 @@ class Watch:
 
         c: Counter = Counter()
         self.models = None  # resolved again on the batch's first model step (the config may have changed)
-        with db.recorded_run(self.conn, "watch", {"trigger": trigger, "files": len(ready), "dirs": len(self.dirs)},
+        with db.recorded_run(self.conn, "watch", {"trigger": trigger, "files": len(ready),
+                                                   "dirs": len(self.dirs) + len(self.trees)},
                              prompt_version=PROMPT_VERSION) as (run_id, rs):
             try:
                 self._status(INGESTING)
@@ -342,15 +345,18 @@ class Watch:
         self._settle()
 
     def _scan_dirs(self, run_id: int, c: Counter) -> None:
-        """`papyrus scan` of the watched directories, except that files changed within the last
-        few seconds wait in the debouncer (they may still be downloading)."""
+        """`papyrus scan` of the watched directories (`scan -r` of the trees), except that files
+        changed within the last few seconds wait in the debouncer (they may still be downloading)."""
+        from dataclasses import replace
+
         from .. import store
 
         if self.opts.store:
             store.clean_tmp()
         now, wall = db.now_iso(), time.time()
         self.unreadable = []
-        for root in self.dirs:
+        tree_opts = replace(self.opts, recursive=True, max_depth=scan.TREE_DEPTH)
+        for root, opts in [(d, self.opts) for d in self.dirs] + [(t, tree_opts) for t in self.trees]:
             if not root.is_dir():
                 c["dirs_missing"] += 1
                 continue
@@ -364,7 +370,7 @@ class Watch:
                 self.log(f"cannot read {root}: allow access in System Settings > Privacy & Security >"
                          " Files and Folders; trying again every minute")
                 continue
-            for path in scan.iter_pdfs(root, self.opts):
+            for path in scan.iter_pdfs(root, opts):
                 if not is_candidate(path.name):
                     continue
                 try:
@@ -382,9 +388,11 @@ class Watch:
         now = db.now_iso()
         for path in ready:
             self._scan_file(path, run_id, c, now)
-        for path in gone:
-            n = self.conn.execute("UPDATE contexts SET missing_at=? WHERE kind='filesystem' AND locator=?"
-                                  " AND missing_at IS NULL", (now, str(path))).rowcount
+        for path in gone:  # a file, or a directory of a tree: everything below it
+            prefix = str(path).rstrip("/") + "/"
+            n = self.conn.execute("UPDATE contexts SET missing_at=? WHERE kind='filesystem' AND missing_at IS NULL"
+                                  " AND (locator=? OR substr(locator, 1, ?)=?)",
+                                  (now, str(path), len(prefix), prefix)).rowcount
             c["went_missing"] += n
 
     def _busy(self) -> dict[str, Any]:
@@ -491,8 +499,11 @@ class Watch:
         return extra.get("size") == st.st_size and extra.get("mtime") == db.to_iso(st.st_mtime)
 
     def _has_context(self, path: Path) -> bool:
-        return self.conn.execute("SELECT 1 FROM contexts WHERE kind='filesystem' AND locator=? AND missing_at IS NULL",
-                                 (str(path),)).fetchone() is not None
+        """A live filesystem context at `path`, or below it (a tree's directory that went)."""
+        prefix = str(path).rstrip("/") + "/"
+        return self.conn.execute("SELECT 1 FROM contexts WHERE kind='filesystem' AND missing_at IS NULL"
+                                 " AND (locator=? OR substr(locator, 1, ?)=?) LIMIT 1",
+                                 (str(path), len(prefix), prefix)).fetchone() is not None
 
     def _promote_backlog(self, run_id: int, c: Counter) -> None:
         """Files classified and extracted (by the CLI, or a watcher that stopped) but never promoted."""
@@ -878,7 +889,7 @@ class Watch:
         self.state, self.detail = state, detail
         data: dict[str, Any] = {
             "state": state, "detail": detail, "pid": os.getpid(), "since": self.started, "updated": db.now_iso(),
-            "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs), "paused": self.paused,
+            "watcher": getattr(self.watcher, "name", None), "dirs": len(self.dirs) + len(self.trees), "paused": self.paused,
             "loaded_by_watch": sorted(self.ledger.ours),
             "totals": {k: self.totals[k] for k in ("new_files", "classified", "extracted", "promote_created", "promote_linked",
                                                    "promote_purged", "indexed", "match_matched") if self.totals[k]},

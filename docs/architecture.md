@@ -62,7 +62,9 @@ background:
 
 1. **Hearing about files:** FSEvents on macOS, inotify on Linux (both through
    ctypes), polling as a fallback, on the `[watch] dirs` of the config (default
-   `~/Downloads`, `~/Desktop`; not their subdirectories).
+   `~/Downloads`, `~/Desktop`; not their subdirectories, unless the entry ends
+   in `/**`, e.g. `~/Dropbox/doc/**`: a *tree*, scanned like `scan -r` and
+   followed at any depth; inotify adds a watch per directory as they appear).
 2. **Waiting until they are finished** (`debounce.py`): size, mtime and ctime
    unchanged for `settle` seconds (3). Browsers' partial files (`.download`,
    `.crdownload`, `.part`) and hidden files are ignored; the rename to the
@@ -350,7 +352,7 @@ Roughly by value:
   links and "download these tabs" still need a path; the likely shape is the
   same: the server runs `papyrus download`/`scan` as recorded runs, rather
   than the web server opening the database for writing.
-* **The watcher:** subdirectories of watched directories are not watched
-  (FSEvents would allow it; inotify needs a watch per directory). A model
-  the watcher loaded and the user then started using is unloaded after 10
+* **The watcher:** a tree (`DIR/**`) on Linux takes one inotify watch per
+  directory, within `fs.inotify.max_user_watches`; past it, new directories
+  are seen only at the next catch-up scan. A model the watcher loaded and the user then started using is unloaded after 10
   idle minutes of the watcher, since LM Studio can't say who uses a model.

@@ -27,6 +27,7 @@ from .index import page_kind
 from .pdf import FIRST_PAGES, looks_like_pdf, read_pdf, sha256_file
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".Trash", "Library"}
+TREE_DEPTH = 32  # how deep `papyrus watch` follows a directory watched with its subdirectories
 
 
 @dataclass
@@ -37,6 +38,21 @@ class ScanOptions:
     store: bool = True  # keep a copy in the managed store
 
 
+def skipped_dir(name: str) -> bool:
+    """A directory a recursive scan doesn't enter: hidden, tooling, the Trash, bundles."""
+    return name in SKIP_DIRS or name.startswith(".") or name.endswith((".app", ".photoslibrary", ".bundle"))
+
+
+def in_tree(path: Path, root: Path, max_depth: int = 4) -> bool:
+    """Whether a recursive scan of `root` reaches `path` (a file or a directory below it)."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    dirs = rel.parts[:-1]
+    return bool(rel.parts) and len(dirs) <= max_depth and not any(skipped_dir(d) for d in dirs)
+
+
 def iter_pdfs(root: Path, opts: ScanOptions) -> Iterable[Path]:
     root = root.expanduser().resolve()
     if root.is_file():
@@ -45,11 +61,7 @@ def iter_pdfs(root: Path, opts: ScanOptions) -> Iterable[Path]:
     base_depth = len(root.parts)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=opts.follow_symlinks):
         depth = len(Path(dirpath).parts) - base_depth
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if opts.recursive and depth < opts.max_depth and d not in SKIP_DIRS and not d.startswith(".")
-            and not d.endswith((".app", ".photoslibrary", ".bundle"))
-        )
+        dirnames[:] = sorted(d for d in dirnames if opts.recursive and depth < opts.max_depth and not skipped_dir(d))
         for fn in sorted(filenames):
             if fn.lower().endswith(".pdf") and not fn.startswith("."):
                 yield Path(dirpath) / fn
