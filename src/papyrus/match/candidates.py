@@ -29,6 +29,32 @@ from papyrus.models import AuthorRecord, WorkRecord
 log = logging.getLogger(__name__)
 
 ALL_SOURCES = ("arxiv", "openalex", "s2", "crossref")
+SOURCE_NAMES = {"arxiv": "arXiv", "openalex": "OpenAlex", "s2": "Semantic Scholar", "crossref": "Crossref"}
+CALL_NAMES = {"get": "lookup by id", "get_by_arxiv": "lookup by arXiv id", "get_by_doi": "lookup by DOI",
+              "by_isbn": "lookup by ISBN", "search": "title search", "match_title": "title search"}
+
+
+def default_sources() -> tuple[str, ...]:
+    """The sources to ask: all of them, except Semantic Scholar without S2_API_KEY (its keyless pool
+    refuses almost every request, and each refusal costs retries)."""
+    return ALL_SOURCES if semanticscholar.api_key() else tuple(s for s in ALL_SOURCES if s != "s2")
+
+
+def describe_error(err: Mapping[str, Any]) -> str:
+    """One source's failure, for people: `Semantic Scholar refused a lookup by id (HTTP 429: rate limited)`.
+    Built from the status and the exception's type only: the URL (a title as search terms) never."""
+    name = SOURCE_NAMES.get(err["source"], err["source"])
+    call = CALL_NAMES.get(err.get("call") or "", err.get("call") or "a request")
+    status = err.get("status")
+    if status == 429:
+        return f"{name} refused a {call} (HTTP 429: rate limited)"
+    if status == 503:
+        return f"{name} refused a {call} (HTTP 503: unavailable)"
+    if status == 0:
+        return f"{name} did not answer a {call} ({err.get('error') or 'network error'})"
+    if status:
+        return f"{name} answered a {call} with HTTP {status}"
+    return f"{name}'s answer to a {call} could not be read ({err.get('error')})"
 
 
 @dataclass
@@ -160,23 +186,32 @@ class _Collector:
     def __init__(self, sources: Sequence[str]):
         self.sources = set(sources)
         self.records: list[WorkRecord] = []
-        self.errors: list[str] = []
+        # each failure: source, call, HTTP status (0: no answer) or None, and the exception's type
+        self.errors: list[dict[str, Any]] = []
         self.rate_limited: dict[str, float] = {}  # source -> seconds it asked us to wait (429/503)
+        self.cooling: set[str] = set()  # sources not asked: still cooling down from an earlier refusal
 
     def call(self, source: str, fn: Callable[..., Any], *args: Any, **kw: Any) -> Any:
         if source not in self.sources:
             return None
         try:
             return fn(*args, **kw)
+        except semanticscholar.S2RateLimited:  # not a request: S2 refused recently and isn't asked for a while
+            self.cooling.add(source)
+            self.rate_limited.setdefault(source, 0.0)
+            return None
         except (HttpError, httpx.HTTPError, ET.ParseError, ValueError, KeyError) as e:
             if isinstance(e, HttpError) and e.status in (429, 503):
                 self.rate_limited[source] = max(self.rate_limited.get(source, 0.0), getattr(e, "retry_after", 0.0))
-            # the status, not the message: an HttpError's names its URL, which holds search terms (a
-            # title), and this goes to the watcher's log, which names ids and counts only
-            what = f"HTTP {e.status}" if isinstance(e, HttpError) else type(e).__name__
-            msg = f"{source}.{getattr(fn, '__name__', fn)}: {what}"
-            log.warning("%s", msg)
-            self.errors.append(msg)
+            # the status and the type, not the message: an HttpError's names its URL, which holds
+            # search terms (a title), and this goes to the watcher's log, which names ids and counts only
+            status = e.status if isinstance(e, HttpError) else None
+            kind = (e.body.split(":", 1)[0] if status == 0 and isinstance(getattr(e, "body", None), str)
+                    else None if status else type(e).__name__)
+            err = {"source": source, "call": getattr(fn, "__name__", str(fn)).rpartition(".")[2], "status": status,
+                   "error": kind}
+            log.warning("%s", describe_error(err))
+            self.errors.append(err)
             return None
 
     def add(self, rec: WorkRecord | None, s: float) -> WorkRecord | None:
@@ -209,14 +244,15 @@ def _is_preprint(rec: WorkRecord) -> bool:
 def resolve(
     hint: Hint | Mapping[str, Any],
     *,
-    sources: Sequence[str] = ALL_SOURCES,
+    sources: Sequence[str] | None = None,
     find_published: bool = True,
     http: HttpClient | None = None,
     report: dict[str, Any] | None = None,
 ) -> list[WorkRecord]:
-    """Candidate records from all sources for `hint`, best first (match_score set).
-    `report`, if given, receives `rate_limited`: {source: seconds to wait} for sources that refused
-    with 429/503 (so "nothing found" may only mean "not asked").
+    """Candidate records from the sources (default: `default_sources()`) for `hint`, best first
+    (match_score set). `report`, if given, receives `rate_limited`: {source: seconds to wait} for
+    sources that refused with 429/503 (so "nothing found" may only mean "not asked"), `errors`
+    (each failure, see `describe_error`) and `cooling` (sources not asked: cooling down).
 
     Identifier route first (arXiv id → arXiv + OpenAlex + S2, then the published
     version via its DOI or an OpenAlex title search; DOI → OpenAlex + Crossref + S2;
@@ -224,7 +260,7 @@ def resolve(
     nothing. Errors from individual sources are logged and skipped.
     """
     h = Hint.of(hint)
-    c = _Collector(sources)
+    c = _Collector(default_sources() if sources is None else sources)
     kw = {"http": http}
 
     arx_id = _ids.parse_arxiv_id(h.arxiv_id) if h.arxiv_id else None
@@ -306,6 +342,8 @@ def resolve(
     recs = sorted(c.records, key=lambda r: -(r.match_score or 0))
     if report is not None:
         report["rate_limited"] = dict(c.rate_limited)
+        report["errors"] = list(c.errors)
+        report["cooling"] = sorted(c.cooling)
     return recs
 
 

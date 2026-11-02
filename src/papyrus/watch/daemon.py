@@ -233,6 +233,7 @@ class Watch:
 
         self._status(STARTING)
         self.events.emit("start", pid=os.getpid(), dirs=len(self.dirs) + len(self.trees), prompt_version=PROMPT_VERSION)
+        self._log_match_sources()
         try:
             if not once:
                 self._start_watcher()
@@ -245,6 +246,14 @@ class Watch:
                 self.pump(self._timeout())
         finally:
             self.close()
+
+    def _log_match_sources(self) -> None:
+        from ..envfile import path as env_path
+        from ..match.candidates import SOURCE_NAMES, default_sources
+
+        names = ", ".join(SOURCE_NAMES[s] for s in default_sources())
+        note = "" if "s2" in default_sources() else f"; not Semantic Scholar: no S2_API_KEY (in {env_path()})"
+        self.log(f"matching with {names}{note}")
 
     def _start_watcher(self) -> None:
         if self.watcher is None:
@@ -738,11 +747,28 @@ class Watch:
         with http.patience(MATCH_PATIENCE_S):
             r = match_work(self.conn, wid, run_id=run_id)
         c[f"match_{r['status']}"] += 1
-        self.log(f"{self._work(wid)} match: {r['status']} in {self._took()}" + self._match_detail(r))
+        ref = self._work(wid)
+        for line in self._match_errors(r):
+            self.log(f"{ref} match: {line}")
+        self.log(f"{ref} match: {r['status']} in {self._took()}" + self._match_detail(r) + self._cooling_note(r))
         if r["status"] == "rate_limited":
             names = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref", "s2": "Semantic Scholar"}
             raise Backoff(RATE_LIMITED, "rate limited by " + ", ".join(names.get(x, x) for x in r["sources"]),
                           delay=max(RATE_LIMIT_DELAY, r.get("retry_after") or 0))
+
+    @staticmethod
+    def _match_errors(r: dict[str, Any]) -> list[str]:
+        """The sources' failures, one line each (repeats counted), as candidates.describe_error says them."""
+        from ..match import semanticscholar
+        from ..match.candidates import describe_error
+
+        seen: Counter = Counter(describe_error(e) for e in r.get("errors") or [])
+        out = []
+        for line, n in seen.items():
+            if "Semantic Scholar" in line and "HTTP 429" in line:
+                line += f"; not asking it for {semanticscholar.COOLDOWN_S:.0f} s"
+            out.append(line + (f" ({n} times)" if n > 1 else ""))
+        return out
 
     @staticmethod
     def _match_detail(r: dict[str, Any]) -> str:
@@ -768,6 +794,13 @@ class Watch:
         if status == "skipped" and r.get("kind"):
             return f" (a {r['kind']} without identifiers)"
         return ""
+
+    @staticmethod
+    def _cooling_note(r: dict[str, Any]) -> str:
+        from ..match.candidates import SOURCE_NAMES
+
+        names = [SOURCE_NAMES.get(s, s) for s in r.get("cooling") or []]
+        return f" ({', '.join(names)} not asked: refused recently)" if names else ""
 
     def _classify(self, fid: int, run_id: int, c: Counter) -> None:
         from ..classify import classify_file

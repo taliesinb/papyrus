@@ -379,6 +379,8 @@ def match_work(
         return {"status": "skipped", "work_id": work_id, "kind": kind}
     report: dict[str, Any] = {}
     records = candidates.resolve(hint, report=report, **resolve_kw)
+    # what went wrong on the way, for the watcher's log (candidates.describe_error)
+    notes = {k: report[k] for k in ("errors", "cooling") if report.get(k)}
     good = [r for r in records if (r.match_score or 0) >= threshold]
     # Nothing matched while a source we rely on refused us: that is "not asked", not "not found".
     # Record no verdict (the work stays pending); try again later. Semantic Scholar without a key
@@ -387,7 +389,7 @@ def match_work(
                if s != "s2" or semanticscholar.api_key()}
     if not good and limited:
         return {"status": "rate_limited", "work_id": work_id, "sources": sorted(limited),
-                "retry_after": max(limited.values())}
+                "retry_after": max(limited.values()), **notes}
     # A candidate that is demonstrably a *different* work must not be merged in, however well
     # its title matches (e.g. a thesis vs. the journal paper with the same title prefix).
     excluded = [(r, why) for r in good if (why := _conflict(conn, work_id, hint, r))]
@@ -416,6 +418,7 @@ def match_work(
             "work_id": work_id,
             "best_score": records[0].match_score if records else None,
             "candidates": len(cands),
+            **notes,
         }
     group = candidates.cluster(good)[0]
     merged = candidates.merge(group)
@@ -435,4 +438,5 @@ def match_work(
         "authors_linked": linked,
         "topics": n_topics,
         "possible_duplicates": dups,
+        **notes,
     }

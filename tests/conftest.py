@@ -10,7 +10,10 @@ def _isolated_library(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPYRUS_HTTP_CACHE", "0")
     monkeypatch.setenv("PAPYRUS_LMSTUDIO_AUTOSTART", "0")
     monkeypatch.setenv("PAPYRUS_SCREEN", "0")  # the screen's embedding model is LM Studio's too
-    for var in ("PAPYRUS_CONFIG", "PAPYRUS_BACKEND", "PAPYRUS_CLASSIFIER", "PAPYRUS_VARIANT", "PAPYRUS_ROOT"):
+    # (not PAPYRUS_ROOT, set above: deleting it made the CLI read the real ~/.papyrus/env) and no API keys:
+    # without S2_API_KEY Semantic Scholar is not asked (candidates.default_sources)
+    for var in ("PAPYRUS_CONFIG", "PAPYRUS_BACKEND", "PAPYRUS_CLASSIFIER", "PAPYRUS_VARIANT", "S2_API_KEY",
+                "OPENALEX_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
 

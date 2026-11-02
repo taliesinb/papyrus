@@ -12,6 +12,12 @@ from papyrus.models import AuthorRecord, WorkRecord
 FIX = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _s2_key(monkeypatch):
+    """These tests stub Semantic Scholar's answers: give it a (fake) key, or it isn't asked."""
+    monkeypatch.setenv("S2_API_KEY", "test-key")
+
+
 def load(name):
     return json.loads((FIX / name).read_text())
 
@@ -278,6 +284,38 @@ def test_resolve_restricted_sources(monkeypatch):
     recs = candidates.resolve({"arxiv_id": "2412.06464"}, sources=("arxiv",))
     assert [r.source for r in recs] == ["arxiv"]
     assert set(calls.names()) == {"arxiv.get"}
+
+
+def test_semantic_scholar_is_not_asked_without_a_key(monkeypatch):
+    monkeypatch.delenv("S2_API_KEY")
+    assert "s2" not in candidates.default_sources()
+    calls = Calls(monkeypatch, arxiv_get=lambda aid, **kw: arxiv_rec("2412.06464"))
+    candidates.resolve({"arxiv_id": "2412.06464", "title": "Gated Delta Networks"})
+    assert calls.names() and not any(n.startswith("s2.") for n in calls.names())
+    monkeypatch.setenv("S2_API_KEY", "k")
+    assert "s2" in candidates.default_sources()
+
+
+def test_failures_are_reported_by_status_and_type_never_the_url(monkeypatch):
+    def refused(*a, **kw):
+        raise HttpError(429, "https://api.openalex.org/works?search=Secret+Title", "slow down")
+
+    def unreachable(*a, **kw):
+        raise HttpError(0, "https://export.arxiv.org/api/query?search_query=Secret+Title",
+                        "ConnectTimeout: https://export.arxiv.org/api/query?search_query=Secret+Title")
+
+    def cooling(*a, **kw):
+        raise s2.S2RateLimited(429, "https://api.semanticscholar.org/x", "skipped: cooldown")
+
+    Calls(monkeypatch, openalex_search=refused, arxiv_search=unreachable, s2_match_title=cooling)
+    report = {}
+    candidates.resolve({"title": "Secret Title"}, report=report)
+    lines = [candidates.describe_error(e) for e in report["errors"]]
+    assert lines == ["arXiv did not answer a title search (ConnectTimeout)",
+                     "OpenAlex refused a title search (HTTP 429: rate limited)"]
+    assert not any("Secret" in x for x in lines)
+    assert report["cooling"] == ["s2"]  # not a request: no error line
+    assert set(report["rate_limited"]) == {"openalex", "s2"}
 
 
 def test_merge_requires_records():

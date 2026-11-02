@@ -377,8 +377,11 @@ The seed is part of the inference cache's key either way.
 
 **Matching APIs** (`match/`):
 
-* **Semantic Scholar** returns 429 almost always without `S2_API_KEY`; after
-  repeated 429s it is skipped for 120 s.
+* **Semantic Scholar** returns 429 almost always without `S2_API_KEY`, so it
+  is not asked without one (`candidates.default_sources`; the key goes in
+  `~/.papyrus/env`, `envfile.py`). With a key, after a 429 it is skipped for
+  120 s. A source's failures are reported by status and exception type only
+  (`candidates.describe_error`): the URL holds the title.
 * **OpenAlex** works keyless on a small shared budget (`OPENALEX_API_KEY`
   for $1/day). Its records are sometimes wrong (another paper's title under
   an arXiv id, wrong affiliations).
