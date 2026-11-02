@@ -3,7 +3,7 @@
 * Optional key in env ``S2_API_KEY`` (sent as ``x-api-key``). With a key: 1 request/s
   on all endpoints. Without: requests share a global unauthenticated pool and 429s are
   common — the HTTP client backs off and retries (several seconds per call is normal), then
-  pauses Semantic Scholar for 2 min (services.SERVICES; per key: the keyless pool and a key are
+  pauses Semantic Scholar for 2 min (default-config.toml's [services.s2]; per key: the keyless pool and a key are
   paused apart). match/candidates doesn't ask it at all without a key.
 * Paper ids: 'arXiv:2405.21060', 'DOI:10.1007/...', 'CorpusId:123', or the 40-hex paperId.
 * ``embedding.specter_v2`` (768 floats) is available on the paper and batch endpoints

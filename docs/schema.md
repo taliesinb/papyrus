@@ -367,16 +367,17 @@ stats | state | show | pause | resume | import`.
 |---|---|---|
 | `services` | hash of `{name, base_url, api_version}` | who answers: `arxiv`, `openalex`, `crossref`, `s2`, `slack`, `arxiv-web` (PDFs), or `web:<host>` for any other host |
 | `credentials` | hash of `{service, kind, location, fingerprint}` | what it was asked with: `public`, a `key` (where it was sent, e.g. `header:x-api-key`, and the first 16 hex digits of the sha256 of `<location>:<secret>`: never the secret), or `unknown` (imported, redacted before we saw it) |
-| `policies` | hash of `{service, settings}` | how it was asked: `interval_s`, `timeout_s`, `max_retries`, `backoff_base`, `backoff_cap`, `pause_s`, `pause_statuses`, `reuse_s`, `scope` (`services.Policy`; defaults in `services.SERVICES`, overrides in config.toml's `[services.<name>]`) |
+| `policies` | hash of `{service, settings}` | how it was asked: `interval_s`, `timeout_s`, `max_retries`, `backoff_base`, `backoff_cap`, `pause_s`, `pause_statuses`, `cache_ttl` (`"inf"`: forever), `scope` (`services.Policy`; defaults in `src/papyrus/data/default-config.toml`'s `[services]` and `[services.<name>]`, overridden in a library's config.toml) |
 | `requests` | hash of `{service, method, url, body_hash}` | what was asked: the URL with its query sorted, secrets and the service's `ignore_params` (`mailto`) dropped. The same request with another key is the same request |
 | `calls` | 16 random hex digits | one attempt (retries are calls of their own, `attempt` 0, 1, …) or a request not sent because its service was paused: `status` (`ok`, `http_error`, `no_answer`, `paused`, `interrupted`, `too_large`), `http_status`, `error` (the exception type only), `started_at`, `finished_at`, `duration_ms`, `url` (as sent, secrets redacted), `final_url`, `redirects`, `req_headers` / `resp_headers` (redacted), `resp_type`, `resp_hash` (the body, in `services/bodies/`), `resp_size`, `resp_sha256` (downloads: `files.sha256`), `retry_after_s`, `subject` (`work:<id>` for matching), `run_id` + `library` (the library's run), `pid`, `host`, `hits`/`last_hit_at` (times the answer was reused), `imported` (`api-log`, `http-cache`) |
 | `state` | `<service id>` or `<service id>/<credential id>` | one per rate-limit scope: `next_ok_at` (unix seconds: no request before), `paused_until`, `pause_reason` (`HTTP 429`, `no answer (ReadTimeout)`, `by hand`), `paused_by` (the call), `last_ok_at`, `last_failure_at`, `failures` (in a row) |
 
 Response bodies (and POST bodies) are not in the database: they are zstd
 files named by the hash of the redacted text,
-`~/.papyrus/services/bodies/<hash>.zst`. Downloaded PDFs are not kept here
+`~/.papyrus/services.bodies/<hash>.zst`. Downloaded PDFs are not kept here
 (they go to the library's store). Nothing is deleted: an answer older than
-the policy's `reuse_s` (30 days; never for Slack and PDFs) is just not
+its cache TTL (the policy's `cache_ttl`, 30 days, never for Slack and PDFs;
+or the caller's `cache_ttl`) is just not
 reused. A request that fails for good with one of `pause_statuses` (429,
 503, no answer) pauses its scope for `pause_s` (arXiv 5 min, Semantic
 Scholar 2 min); matching counts a paused source as "not asked".

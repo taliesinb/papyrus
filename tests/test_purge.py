@@ -80,7 +80,7 @@ def test_purged_bytes_are_skipped_wherever_they_turn_up(tmp_path):
         return httpx.Response(200, content=data, headers={"content-type": "application/pdf",
                                                           "content-disposition": 'attachment; filename="slip.pdf"'})
 
-    client = h.HttpClient(cache_dir=False, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client = h.HttpClient(cache_ttl=0, transport=httpx.MockTransport(handler), sleep=lambda s: None)
     url = "https://payroll.example/slips/2026-10.pdf"
     stats, (o,) = download(conn, [Link(url, f"Payslip {MARK}")], client=client)
     assert (o.state, o.file_id, stats["purged_skipped"]) == ("purged", 1, 1)

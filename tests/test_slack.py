@@ -151,7 +151,7 @@ def _fake_slack(now):
                                   headers={"x-oauth-scopes": "search:read,users:read"})
         return httpx.Response(200, json={"ok": False, "error": "unknown_method"})
 
-    return h.HttpClient(cache_dir=False, transport=httpx.MockTransport(handler), sleep=lambda s: None), calls
+    return h.HttpClient(cache_ttl=0, transport=httpx.MockTransport(handler), sleep=lambda s: None), calls
 
 
 def test_find_filters_and_records(tmp_path, monkeypatch):

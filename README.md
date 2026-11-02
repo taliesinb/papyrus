@@ -127,7 +127,7 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 * Inference cache: `~/.papyrus/<variant>/inference.sqlite` (hashes and
   timings of every model call) and `~/.papyrus/<variant>/inference/` (the
   texts asked about and answered, by hash; private, like the store).
-* Web services store: `~/.papyrus/services.sqlite` and `~/.papyrus/services/`
+* Web services store: `~/.papyrus/services.sqlite` and `~/.papyrus/services.bodies/`
   (every API request and download, with the answers; shared by every
   variant; private: it holds Slack messages). Tables in
   [`docs/schema.md`](docs/schema.md#the-web-services-store-papyrus_rootservicessqlite).

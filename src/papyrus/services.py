@@ -4,13 +4,15 @@
     this request (requests)  →  calls,  and where each rate limit and pause stands  →  state
 
 `<PAPYRUS_ROOT>/services.sqlite` (DDL: services.sql), one per machine, with the response bodies as
-zstd files beside it (`services/bodies/<hash>.zst`). It replaces the JSONL API log
+zstd files beside it (`services.bodies/<hash>.zst`; a dot, so no variant can be called that). It replaces the JSONL API log
 (`<home>/api-log/`, apilog.py) and the 30-day response cache (`~/.cache/papyrus/http`); `papyrus
 services import` brings those in. It is what `http.HttpClient` goes through, and it gives it:
 
-* **reuse**: a request answered before, within the policy's `reuse_s`, with a status the caller
+* **reuse**: a request answered before, no older than its cache TTL, with a status the caller
   reuses (200 and 404 by default), is answered from the store, and counts in that call's `hits`.
-  Nothing is ever deleted; an older answer is just not reused;
+  The TTL is `cache_ttl`: seconds, None (forever), 0 (never), or AUTO (the default: the service
+  policy's `cache_ttl`, from config.toml), per request and per client (`resolve_ttl`). Nothing
+  is ever deleted; an older answer is just not reused;
 * **one rate limit and one pause per scope, for every process**: before each attempt the request
   reserves the next slot in `state` (a short transaction), then sleeps outside it. A request that
   fails for good with one of the policy's `pause_statuses` (429, 503, no answer) pauses the scope
@@ -21,9 +23,10 @@ services import` brings those in. It is what `http.HttpClient` goes through, and
 
 Services are recognised by host (SERVICES; anything else is `web:<host>`). A service's identity
 is {name, base_url, api_version}: who answers. The credential (a key's fingerprint, or public) and
-the policy (interval, retries, timeout, pause, reuse) are recorded per call, not part of it, so
-the history of a service survives a new key or a new policy. Policies can be overridden per
-library in config.toml's `[services.<name>]` tables (config.services_overrides).
+the policy (interval, retries, timeout, pause, cache TTL) are recorded per call, not part of it, so
+the history of a service survives a new key or a new policy. The policies are config: shipped in
+src/papyrus/data/default-config.toml (with the reasons for each), changed per library in
+config.toml's [services] and [services.<name>] tables (config.services_layers, `policy_for`).
 
 Ids and hashes: the first 16 hex digits (64 bits) of a sha256 of canonical JSON (inference's rule).
 Times in `calls` are UTC ISO strings; `state` keeps unix seconds.
@@ -35,6 +38,7 @@ import contextlib
 import contextvars
 import hashlib
 import json
+import math
 import os
 import socket
 import sqlite3
@@ -55,6 +59,8 @@ from . import apilog, db
 SCHEMA_VERSION = "0.1"
 HASH_CHARS = 16
 DAY = 86400.0
+
+AUTO = sentinel("AUTO")  # cache_ttl: the service policy's (config). Truthy: test it with `is AUTO`
 
 _subject: contextvars.ContextVar[str | None] = contextvars.ContextVar("papyrus_services_subject", default=None)
 _run: dict[str, Any] = {"run_id": None, "library": None}  # process-wide, so download threads inherit it
@@ -95,7 +101,9 @@ def set_run(run_id: int | None, library: str | None = None) -> tuple[int | None,
 
 @dataclass(frozen=True)
 class Policy:
-    """How a service is asked. Every field can be overridden in config.toml's [services.<name>]."""
+    """How a service is asked. The values in effect come from config (default-config.toml's
+    [services] and [services.<name>], then the library's config.toml); these are only the fallback
+    should a key be missing from both."""
 
     interval_s: float = 0.0       # at least this long between requests (per scope)
     timeout_s: float = 30.0       # per attempt
@@ -104,41 +112,35 @@ class Policy:
     backoff_cap: float = 60.0
     pause_s: float = 0.0          # after a request fails for good with a pause status: ask nothing for this long
     pause_statuses: tuple[int, ...] = (0, 429, 503)  # 0: no answer (timeout, connection refused)
-    reuse_s: float = 30 * DAY     # reuse an answer this young (0: never)
+    cache_ttl: float = 30 * DAY   # reuse an answer this young (0: never; inf: forever)
     scope: str = "credential"     # what the rate limit and pause count: "credential" (per key) | "service"
 
     def settings(self) -> dict[str, Any]:
         d = asdict(self)
         d["pause_statuses"] = list(self.pause_statuses)
+        if d["cache_ttl"] == math.inf:
+            d["cache_ttl"] = "inf"  # (JSON has no infinity)
         return d
 
 
 @dataclass(frozen=True)
 class Service:
+    """Who answers. Its policy is config: [services.<name>] (`policy_for`)."""
+
     name: str
     hosts: tuple[str, ...]
     base_url: str
     api_version: str = ""
-    policy: Policy = field(default_factory=Policy)
     ignore_params: frozenset[str] = frozenset({"mailto"})  # not part of a request's identity
 
 
-# arXiv: 1 request / 3 s per machine (https://info.arxiv.org/help/api/tou.html); when it struggles it
-# refuses ("Rate exceeded", some only after 20-30 s) or times out, whatever our rate (2026-11-02,
-# 03:13-04:33 UTC): short timeout, few retries, then 5 min alone. 99% of answers take under 10 s.
-# Semantic Scholar: 1 rps with a key; its keyless pool refuses nearly always (match/candidates
-# doesn't ask it without S2_API_KEY). OpenAlex: 10 rps keyless. Crossref's polite pool (mailto):
-# 10 rps, 3 at once (2025-10).
 SERVICES: tuple[Service, ...] = (
-    Service("arxiv", ("export.arxiv.org",), "https://export.arxiv.org/api",
-            policy=Policy(interval_s=3.0, timeout_s=15.0, max_retries=2, pause_s=300.0, scope="service")),
-    Service("arxiv-web", ("arxiv.org", "www.arxiv.org"), "https://arxiv.org",
-            policy=Policy(interval_s=1.0, reuse_s=0.0, scope="service")),
-    Service("openalex", ("api.openalex.org",), "https://api.openalex.org", policy=Policy(interval_s=0.11)),
-    Service("crossref", ("api.crossref.org",), "https://api.crossref.org", policy=Policy(interval_s=0.35)),
-    Service("s2", ("api.semanticscholar.org",), "https://api.semanticscholar.org/graph", "v1",
-            policy=Policy(interval_s=1.05, pause_s=120.0)),
-    Service("slack", ("slack.com",), "https://slack.com/api", policy=Policy(reuse_s=0.0)),
+    Service("arxiv", ("export.arxiv.org",), "https://export.arxiv.org/api"),
+    Service("arxiv-web", ("arxiv.org", "www.arxiv.org"), "https://arxiv.org"),
+    Service("openalex", ("api.openalex.org",), "https://api.openalex.org"),
+    Service("crossref", ("api.crossref.org",), "https://api.crossref.org"),
+    Service("s2", ("api.semanticscholar.org",), "https://api.semanticscholar.org/graph", "v1"),
+    Service("slack", ("slack.com",), "https://slack.com/api"),
 )
 _BY_HOST = {h: s for s in SERVICES for h in s.hosts}
 
@@ -154,12 +156,14 @@ def by_name(name: str) -> Service | None:
     return next((s for s in SERVICES if s.name == name), None)
 
 
-_overrides_cache: dict[str, Any] = {"key": None, "value": {}}
+Layers = list[tuple[dict[str, Any], dict[str, dict[str, Any]]]]  # ([services] keys, {name: [services.<name>] keys})
+_layers_cache: dict[str, Any] = {"key": None, "value": None}
 
 
-def overrides() -> dict[str, dict[str, Any]]:
-    """config.toml's [services.<name>] tables (config.services_overrides), re-read when the file
-    changes. A bad table is reported once and ignored: HTTP must not stop over it."""
+def layers() -> Layers:
+    """The policy settings in force (config.services_layers: the shipped defaults, then this
+    library's config.toml), re-read when the config file changes. A bad table is reported and the
+    shipped defaults used alone: HTTP must not stop over it."""
     from . import config
 
     p = config.path()
@@ -167,33 +171,56 @@ def overrides() -> dict[str, dict[str, Any]]:
         key = (str(p), p.stat().st_mtime_ns)
     except OSError:
         key = (str(p), None)
-    if _overrides_cache["key"] != key:
+    if _layers_cache["key"] != key:
         try:
-            value = config.services_overrides()
+            value = config.services_layers()
         except config.ConfigError as e:
             import logging
 
-            logging.getLogger(__name__).warning("%s (using the default policies)", e)
-            value = {}
-        _overrides_cache.update(key=key, value=value)
-    return _overrides_cache["value"]
+            logging.getLogger(__name__).warning("%s (using papyrus's default service policies)", e)
+            value = [config.default_services_layer()]
+        _layers_cache.update(key=key, value=value)
+    return _layers_cache["value"]
 
 
 def effective_policy(name: str) -> Policy | None:
-    """A known service's policy as this library has it (defaults + config.toml)."""
+    """A known service's policy as this library has it (the defaults, then config.toml)."""
     svc = by_name(name)
-    return policy_for(svc, overrides()) if svc else None
+    return policy_for(svc, layers()) if svc else None
 
 
-def policy_for(svc: Service, overrides: Mapping[str, Mapping[str, Any]] | None = None, **kw: Any) -> Policy:
-    """The service's policy, with config.toml's [services.<name>] and then `kw` (a caller's
-    max_retries, timeout_s, …; None values ignored) applied."""
-    p = svc.policy
-    o = dict((overrides or {}).get(svc.name) or {})
+def policy_for(svc: Service, layers: Layers | None = None, **kw: Any) -> Policy:
+    """The service's policy: Policy()'s fallbacks < every layer's [services] keys < every layer's
+    [services.<name>] keys (for any other host: [services.web], then [services."web:<host>"]) <
+    `kw` (a caller's max_retries, timeout_s, …; None values ignored)."""
+    names = ["web", svc.name] if svc.name.startswith("web:") else [svc.name]
+    o: dict[str, Any] = {}
+    for base, _ in layers or ():
+        o.update(base)
+    for n in names:
+        for _, per in layers or ():
+            o.update(per.get(n) or {})
     o.update({k: v for k, v in kw.items() if v is not None})
     if "pause_statuses" in o:
         o["pause_statuses"] = tuple(o["pause_statuses"])
-    return replace(p, **o) if o else p
+    return replace(Policy(), **o)
+
+
+def resolve_ttl(*choices: Any, policy: Policy) -> float:
+    """The cache TTL in seconds (inf: forever) for a request: the first of `choices` (the call's
+    `cache_ttl`, then the client's) that isn't AUTO, None meaning forever; else 0 if
+    PAPYRUS_HTTP_CACHE=0; else the policy's."""
+    for c in choices:
+        if c is AUTO:
+            continue
+        if c is None:
+            return math.inf
+        if isinstance(c, bool) or not isinstance(c, (int, float)) or not c >= 0:
+            raise ValueError(f"cache_ttl must be seconds >= 0, None (forever) or AUTO, got {c!r}")
+        return float(c)
+    if os.environ.get("PAPYRUS_HTTP_CACHE", "").strip().lower() in {"0", "false", "no", "off"}:
+        return 0.0
+    return policy.cache_ttl
 
 
 # --- identities ----------------------------------------------------------------------------------
@@ -271,7 +298,14 @@ class Store:
     def __init__(self, directory: Path):
         self.dir = Path(directory)
         self.path = self.dir / "services.sqlite"
-        self.bodies = self.dir / "services" / "bodies"
+        self.bodies = self.dir / "services.bodies"  # a dot: not a name a variant (~/.papyrus/<v>) can have
+        old = self.dir / "services" / "bodies"  # where they were for an hour on 2026-11-02 (remove in 2026-12)
+        if old.is_dir() and not self.bodies.exists():
+            try:
+                os.rename(old, self.bodies)
+                old.parent.rmdir()
+            except OSError:
+                pass
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.RLock()  # one connection, shared by download's threads
         self._known: set[str] = set()
@@ -343,8 +377,7 @@ class Store:
         if not p.exists():
             if not self.bodies.exists():
                 self.bodies.mkdir(parents=True, exist_ok=True)
-                for d in (self.bodies.parent, self.bodies):
-                    os.chmod(d, 0o700)
+                os.chmod(self.bodies, 0o700)
             tmp = p.with_name(f".{uuid.uuid4().hex}.tmp")
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as fh:
@@ -395,13 +428,13 @@ class Store:
         return rid
 
     def ids(self, method: str, url: str, headers: Mapping[str, str] | None, body: str | None,
-            policy: Policy | None = None, overrides: Mapping[str, Mapping[str, Any]] | None = None,
+            policy: Policy | None = None, layers: Layers | None = None,
             record_policy: bool = True, **policy_kw: Any) -> Ids:
         """Every id a request needs (registering them), and its effective policy (`record_policy`
         False: no policy row, for imported calls)."""
         method = method.upper()
         svc = service_for(url)
-        pol = policy or policy_for(svc, overrides, **policy_kw)
+        pol = policy or policy_for(svc, layers, **policy_kw)
         sid = self.service_id(svc)
         kind, loc, fp = credential_of(url, headers)
         cid = self.credential_id(sid, kind, loc, fp)
@@ -413,16 +446,16 @@ class Store:
 
     # reuse
 
-    def lookup(self, request_id: str, statuses: Iterable[int], max_age_s: float,
+    def lookup(self, request_id: str, statuses: Iterable[int], ttl: float,
                now: float | None = None) -> Hit | None:
-        """The newest successful answer to this request, younger than `max_age_s`, with one of
-        `statuses`, whose body is still there; counts the hit."""
-        if max_age_s <= 0:
+        """The newest successful answer to this request, no older than `ttl` seconds (inf: any
+        age; 0: none), with one of `statuses`, whose body is still there; counts the hit."""
+        if not ttl > 0:
             return None
         statuses = sorted(set(statuses))
         if not statuses:
             return None
-        cutoff = now_iso(max(0.0, (time.time() if now is None else now) - max_age_s))
+        cutoff = "" if ttl == math.inf else now_iso(max(0.0, (time.time() if now is None else now) - ttl))
         rows = self._x(f"SELECT id, http_status, resp_hash, resp_headers, url, final_url FROM calls WHERE request_id=?"
                        f" AND status='ok' AND http_status IN ({','.join('?' * len(statuses))}) AND started_at >= ?"
                        " ORDER BY started_at DESC LIMIT 5", (request_id, *statuses, cutoff)).fetchall()

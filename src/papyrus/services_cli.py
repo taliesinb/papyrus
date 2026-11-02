@@ -129,7 +129,7 @@ def pause_cmd(service: str, minutes: float) -> None:
     if svc is None:
         raise click.ClickException(f"unknown service {service} ({', '.join(s.name for s in services.SERVICES)})")
     # make sure its (public) scope exists, so there is a row to pause
-    st.ensure_scope(st.ids("GET", svc.base_url, None, None, overrides=services.overrides()))
+    st.ensure_scope(st.ids("GET", svc.base_url, None, None, layers=services.layers()))
     n = st.pause(service, minutes * 60)
     click.echo(f"paused {service} for {minutes:g} min ({n} scope{'s' if n != 1 else ''})")
 

@@ -31,6 +31,11 @@ python3 apps/linux/install.py [--variant personal | --all] [--uninstall]   # Lin
 # both installers: --watch / --no-watch (recorded in variant.yml; default: release watches, other variants don't)
 ```
 
+**Python 3.15** (`requires-python = ">=3.15.1"`, `.python-version`):
+`compression.zstd` (3.14) and the `sentinel` builtin (3.15, PEP 661) are
+used. The watcher runs `uv run --frozen` from this checkout's `.venv`: after
+changing the Python version or the lock, restart it.
+
 **Platforms:** macOS and Linux. The installers share `apps/variants.py`.
 Each OS-specific piece of the CLI has its counterpart:
 
@@ -183,15 +188,22 @@ history.
    `http.HttpClient` (matching, `papyrus download`, Slack, tools) is recorded,
    attempt by attempt with its response, in the web services store
    (`services.py`, `~/.papyrus/services.sqlite`, one per machine; tables in
-   `docs/schema.md`; bodies as zstd files in `~/.papyrus/services/bodies/`).
-   It also reuses answers (the policy's `reuse_s`) and holds every service's
+   `docs/schema.md`; bodies as zstd files in `~/.papyrus/services.bodies/`).
+   It also reuses answers (`cache_ttl`, below) and holds every service's
    rate limit and pause, shared by every process. Query it with `sqlite3` or
    `papyrus services stats | state | show`. Later code can trawl old
    responses for fields nobody extracted at the time. So:
    * new API clients go through `HttpClient`, never a bare `httpx`/`urllib`
      call, and one-off experiments too (`uv run python …` with
-     `http.default_client()`); a new API gets a `services.Service` (host,
-     policy: interval, timeout, retries, pause, reuse) in `services.SERVICES`;
+     `http.default_client()`); a new API gets a `services.Service` (name,
+     hosts) in `services.SERVICES` and its policy (interval, timeout, retries,
+     pause, cache TTL, with the reasons) in `src/papyrus/data/default-config.toml`'s
+     `[services.<name>]`;
+   * `cache_ttl` on `HttpClient(...)` and on each request: seconds, `0` (never
+     reuse: ask), `None` (any age), or `services.AUTO` (the default: the
+     policy's, from config; `PAPYRUS_HTTP_CACHE=0` makes AUTO mean 0). A
+     request's beats the client's. `AUTO` is a 3.15 `sentinel`: truthy, so
+     test it with `is AUTO`;
    * credentials are redacted before writing (`apilog.SECRET_*`; only a
      fingerprint is kept, `services.credentials`); pass keys as headers;
    * the store is private data (Slack messages): never copy it into commits,
@@ -392,7 +404,7 @@ The seed is part of the inference cache's key either way.
   (`candidates.describe_error`): the URL holds the title.
 * **arXiv** (no keys; 1 request / 3 s per machine) sometimes refuses ("Rate
   exceeded", 429, some after 20-30 s) or times out whatever our rate:
-  2026-11-02 03:13-04:33 UTC. So its policy (`services.SERVICES`) gives a
+  2026-11-02 03:13-04:33 UTC. So its policy (`default-config.toml`) gives a
   request 15 s and 2 retries, then pauses arXiv for 5 min in every process
   (`http.Cooling`; `papyrus services state`, `resume arxiv`). A source that
   refused, didn't answer or is paused counts as *not asked*: no verdict, the
@@ -404,7 +416,7 @@ The seed is part of the inference cache's key either way.
 * **Books:** Crossref, OpenAlex and S2 are poor for books. Open Library is
   the planned fix.
 * Set `PAPYRUS_MAILTO`. Answers are reused from the services store for 30
-  days (the policy's `reuse_s`; `PAPYRUS_HTTP_CACHE=0` turns reuse off; the
+  days (the policy's `cache_ttl`; `PAPYRUS_HTTP_CACHE=0` turns reuse off; the
   requests are recorded either way). The old `~/.cache/papyrus/http` and
   `<home>/api-log/` were imported on 2026-11-02 (`papyrus services import`).
 
@@ -518,8 +530,8 @@ with the same decorators.
   `download.download` (or `http.set_default_client` for CLI tests).
 * **The web services store:** `tests/test_services.py`. It follows
   `PAPYRUS_ROOT`, so each test has its own (a pause in one test doesn't reach
-  the next); conftest turns reuse off (`PAPYRUS_HTTP_CACHE=0`; pass
-  `cache_dir=True` to test it). Give `HttpClient` a fake `clock` (unix
+  the next); conftest turns reuse off where `cache_ttl` is AUTO
+  (`PAPYRUS_HTTP_CACHE=0`; pass `cache_ttl=None` or seconds to test reuse). Give `HttpClient` a fake `clock` (unix
   seconds) and `sleep` to test rate limits and pauses without waiting.
 * **The inference cache:** `tests/test_inference.py`. Wrap `FakeBackend` /
   `FakeClassifier` with `inference.cached_backend` / `cached_classifier`; the store

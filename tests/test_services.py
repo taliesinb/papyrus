@@ -43,7 +43,7 @@ def test_records_request_and_response_with_secrets_redacted():
                               headers={"X-RateLimit-Remaining": "7"})
 
     r = _client(handler).get_json("https://slack.com/api/search.messages", params={"query": "has:link", "token": "xoxp-q"},
-                                  headers={"Authorization": "Bearer xoxp-secret", "X-Trace": "1"}, use_cache=False)
+                                  headers={"Authorization": "Bearer xoxp-secret", "X-Trace": "1"}, cache_ttl=0)
     assert r["access_token"] == "xoxp-secret"  # the caller still gets the real response
     st = services.store()
     (c,) = _calls()
@@ -66,7 +66,7 @@ def test_records_request_and_response_with_secrets_redacted():
 def test_every_attempt_is_a_call():
     seq = iter([httpx.Response(429, headers={"Retry-After": "10"}, text="slow down"), httpx.Response(200, text="fine")])
     clock = Clock()
-    _client(lambda req: next(seq), clock=clock).get("https://api.example.org/x", use_cache=False)
+    _client(lambda req: next(seq), clock=clock).get("https://api.example.org/x", cache_ttl=0)
     cs = _calls()
     assert [(c["attempt"], c["status"], c["http_status"]) for c in cs] == [(0, "http_error", 429), (1, "ok", 200)]
     assert cs[0]["retry_after_s"] == 10 and clock.sleeps == [10.0]
@@ -81,25 +81,29 @@ def test_an_answer_is_reused_across_keys_and_mailto_and_counted():
         n.append(1)
         return httpx.Response(200, json={"n": len(n)})
 
-    c = _client(handler, cache_dir=True)
+    c = _client(handler, cache_ttl=None)
     a = c.get_json("https://api.openalex.org/works/W1", params={"mailto": "a@b"}, headers={"Authorization": "Bearer K"})
     r = c.request("GET", "https://api.openalex.org/works/W1", params={"mailto": "c@d"})
     assert a == r.json() == {"n": 1} and r.from_cache and len(n) == 1
     (call,) = _calls()
     assert call["hits"] == 1 and call["last_hit_at"]
-    # not reused: use_cache=False, an answer older than reuse_s, a status the caller doesn't accept
-    assert c.get_json("https://api.openalex.org/works/W1", use_cache=False) == {"n": 2}
-    old = _client(handler, cache_dir=True, cache_ttl=0)
+    # not reused: cache_ttl=0 for the request, or for the client
+    assert c.get_json("https://api.openalex.org/works/W1", cache_ttl=0) == {"n": 2}
+    old = _client(handler, cache_ttl=0)
     assert old.get_json("https://api.openalex.org/works/W1") == {"n": 3}
-    assert _client(handler, cache_dir=False).get_json("https://api.openalex.org/works/W1") == {"n": 4}
+    assert _client(handler, cache_ttl=0).get_json("https://api.openalex.org/works/W1") == {"n": 4}
 
 
-def test_slack_and_downloads_are_never_reused():
+def test_cache_ttl_auto_follows_the_policy(monkeypatch):
+    monkeypatch.delenv("PAPYRUS_HTTP_CACHE")  # (conftest's: no reuse where cache_ttl is AUTO)
     n = []
-    c = _client(lambda req: (n.append(1), httpx.Response(200, json={"ok": True}))[1], cache_dir=True)
-    c.get_json("https://slack.com/api/auth.test")
-    c.get_json("https://slack.com/api/auth.test")
-    assert len(n) == 2  # services.SERVICES: slack reuse_s = 0
+    c = _client(lambda req: (n.append(1), httpx.Response(200, json={"ok": True}))[1])  # cache_ttl=AUTO
+    for _ in range(2):
+        c.get_json("https://slack.com/api/auth.test")  # default-config.toml: [services.slack] cache_ttl = 0
+        c.get_json("https://api.crossref.org/works/10.1/x")  # [services] cache_ttl = 30 days
+    assert len(n) == 3
+    c.get_json("https://slack.com/api/auth.test", cache_ttl=None)  # a request's own TTL beats the policy
+    assert len(n) == 3
 
 
 def test_download_records_hash_not_bytes_and_redirects(tmp_path):
@@ -123,7 +127,7 @@ def test_no_answer_is_recorded_as_such():
         raise httpx.ConnectError("refused")
 
     with pytest.raises(h.HttpError) as e:
-        _client(handler, max_retries=1).get("https://api.example.org/z", use_cache=False)
+        _client(handler, max_retries=1).get("https://api.example.org/z", cache_ttl=0)
     assert e.value.status == 0
     cs = _calls()
     assert [(c["status"], c["error"], c["http_status"]) for c in cs] == [("no_answer", "ConnectError", None)] * 2
@@ -135,8 +139,8 @@ def test_calls_name_the_run_and_library_and_the_files_are_private():
     c = _client(lambda r: httpx.Response(200, text="ok"))
     with db.recorded_run(conn, "test") as (run_id, _):
         with services.subject("work:7"):
-            c.get("https://api.example.org/a", use_cache=False)
-    c.get("https://api.example.org/b", use_cache=False)
+            c.get("https://api.example.org/a", cache_ttl=0)
+    c.get("https://api.example.org/b", cache_ttl=0)
     a, b = _calls()
     assert (a["run_id"], a["library"], a["subject"]) == (run_id, str(db.library_home()), "work:7")
     assert (b["run_id"], b["subject"]) == (None, None)
@@ -153,9 +157,9 @@ def test_the_rate_limit_is_shared_by_every_process():
     clock = Clock()
     a = _client(lambda r: httpx.Response(200, text="<feed/>"), clock=clock, store=services.Store(services.root()))
     b = _client(lambda r: httpx.Response(200, text="<feed/>"), clock=clock, store=services.Store(services.root()))
-    a.get("https://export.arxiv.org/api/query", params={"id_list": "1"}, use_cache=False)
-    b.get("https://export.arxiv.org/api/query", params={"id_list": "2"}, use_cache=False)
-    a.get("https://api.crossref.org/works/x", use_cache=False)  # another service: its own limit
+    a.get("https://export.arxiv.org/api/query", params={"id_list": "1"}, cache_ttl=0)
+    b.get("https://export.arxiv.org/api/query", params={"id_list": "2"}, cache_ttl=0)
+    a.get("https://api.crossref.org/works/x", cache_ttl=0)  # another service: its own limit
     assert clock.sleeps == [3.0]
 
 
@@ -202,7 +206,7 @@ def test_config_overrides_a_policy(monkeypatch, tmp_path):
     assert services.effective_policy("arxiv").pause_s == 0 and services.effective_policy("arxiv").interval_s == 3
     cfg.write_text("[services.arxiv]\npause = 5\n")
     with pytest.raises(config.ConfigError, match="not a policy setting"):
-        config.services_overrides()
+        config.services_layers()
 
 
 def test_import_of_the_old_api_log_and_cache(tmp_path):

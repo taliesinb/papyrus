@@ -22,11 +22,10 @@ class FakeClock:
 def make(handler, tmp_path=None, **kw):
     fc = FakeClock()
     client = h.HttpClient(
-        cache_dir=(tmp_path / "cache") if tmp_path else False,
         transport=httpx.MockTransport(handler),
         clock=fc.clock,
         sleep=fc.sleep,
-        **kw,
+        **{"cache_ttl": None if tmp_path else 0, **kw},
     )
     return client, fc
 
@@ -95,7 +94,7 @@ def test_per_host_rate_limit():
         c.get_json("https://slow.example.org/q")
     c.get_json("https://fast.example.org/q")
     assert fc.sleeps == [3.0, 3.0]
-    assert c.intervals["export.arxiv.org"] == 3.0
+    assert c.interval("export.arxiv.org") == 3.0 and c.interval("slow.example.org") == 3.0
 
 
 def test_cache_hits_and_excludes_secrets(tmp_path):
@@ -117,7 +116,7 @@ def test_cache_hits_and_excludes_secrets(tmp_path):
     assert "SECRET" not in everything and "OTHER" not in everything
     assert st.conn.execute("SELECT count(*) FROM credentials WHERE kind='key'").fetchone()[0] == 2  # two keys, one request
     # bypass
-    c.get_json("https://api.example.org/w", params={"q": "x"}, use_cache=False)
+    c.get_json("https://api.example.org/w", params={"q": "x"}, cache_ttl=0)
     assert len(n) == 2
 
 
@@ -147,9 +146,18 @@ def test_cache_ttl(tmp_path, monkeypatch):
 
 def test_env_disables_reuse(monkeypatch):
     monkeypatch.setenv("PAPYRUS_HTTP_CACHE", "0")
-    assert h.HttpClient().reuse is False and h.HttpClient(cache_dir=True).reuse is True
+    p = h.services.Policy(cache_ttl=100)
+    assert h.services.resolve_ttl(h.AUTO, h.AUTO, policy=p) == 0  # the environment says no
+    assert h.services.resolve_ttl(h.AUTO, 5, policy=p) == 5  # a client's own TTL beats it
+    assert h.services.resolve_ttl(None, 5, policy=p) == float("inf")  # and a request's beats the client's
     monkeypatch.delenv("PAPYRUS_HTTP_CACHE")
-    assert h.HttpClient().reuse is True and h.HttpClient(cache_dir=False).reuse is False
+    assert h.services.resolve_ttl(h.AUTO, h.AUTO, policy=p) == 100  # the policy's
+    assert h.services.resolve_ttl(0, None, policy=p) == 0
+    for bad in (-1, True, "1"):
+        with pytest.raises(ValueError):
+            h.services.resolve_ttl(bad, policy=p)
+    with pytest.raises(ValueError):
+        h.HttpClient(cache_ttl=-5)
 
 
 def test_redact_url():

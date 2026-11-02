@@ -171,3 +171,57 @@ def test_watch_background_priority_can_be_turned_off(tmp_path, monkeypatch):
     cfg.write_text("[watch]\nbackground = 'no'\n")
     with pytest.raises(config.ConfigError):
         config.watch()
+
+
+# --- the shipped defaults, the copy a library gets, and the service policies ------------------
+
+
+def test_the_shipped_defaults_are_valid_and_are_the_policy_fallbacks():
+    from dataclasses import fields
+
+    from papyrus import services
+
+    base, per = config.default_services_layer()
+    assert set(per) >= {s.name for s in services.SERVICES}  # every known service has its table
+    fallback = services.Policy()
+    assert {f.name: getattr(fallback, f.name) for f in fields(services.Policy)} == {
+        k: tuple(v) if isinstance(v, list) else v for k, v in base.items()}  # Policy() == [services]
+    arxiv = services.effective_policy("arxiv")
+    assert (arxiv.interval_s, arxiv.timeout_s, arxiv.max_retries, arxiv.pause_s, arxiv.scope) == (3, 15, 2, 300, "service")
+    assert services.effective_policy("slack").cache_ttl == 0
+
+
+def test_a_library_without_a_config_file_gets_the_defaults(tmp_path, monkeypatch):
+    home = config.path().parent
+    assert not home.exists() and config.load() == {} and not config.path().exists()  # no library: nothing written
+    home.mkdir(parents=True)
+    cfg = config.load()
+    text = config.path().read_text()
+    assert text.startswith("# Written by papyrus on ") and text.endswith(config.default_text())
+    assert cfg == config.defaults() and config.differences() == []
+    monkeypatch.setenv("PAPYRUS_CONFIG", str(tmp_path / "missing.toml"))
+    assert config.load() == {} and not (tmp_path / "missing.toml").exists()  # an explicit file is never made up
+
+
+def test_service_settings_layer_and_differences_are_listed():
+    from papyrus import services
+
+    _write("[services]\ntimeout_s = 20\ncache_ttl = inf\n[services.arxiv]\npause_s = 600\n"
+           "[services.\"web:example.org\"]\ninterval_s = 2\n[screen]\naccept = 0.95\n")
+    arxiv = services.effective_policy("arxiv")
+    assert arxiv.pause_s == 600 and arxiv.timeout_s == 15  # the shipped [services.arxiv] beats your [services]
+    assert services.effective_policy("crossref").timeout_s == 20  # where nothing more specific says otherwise
+    assert services.effective_policy("crossref").cache_ttl == float("inf")
+    assert services.effective_policy("slack").cache_ttl == 0
+    web = services.policy_for(services.service_for("https://example.org/x"), services.layers())
+    other = services.policy_for(services.service_for("https://example.com/x"), services.layers())
+    assert (web.interval_s, other.interval_s) == (2, 0)
+    assert services.Policy(cache_ttl=float("inf")).settings()["cache_ttl"] == "inf"  # (JSON has no infinity)
+    diffs = {k: (v, d) for k, v, d in config.differences()}
+    assert diffs["services.arxiv.pause_s"] == (600, 300) and diffs["services.timeout_s"] == (20, 30)
+    assert diffs["services.web:example.org.interval_s"] == (2, 0) and diffs["screen.accept"] == (0.95, None)
+    for bad, msg in (("[services]\ncache_ttl = -1\n", "or inf"), ("[services.s2]\nscope = 'key'\n", "scope must be"),
+                     ("[services]\nmax_retries = 1.5\n", "whole number")):
+        _write(bad)
+        with pytest.raises(config.ConfigError, match=msg):
+            config.services_layers()

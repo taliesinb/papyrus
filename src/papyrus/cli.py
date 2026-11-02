@@ -866,9 +866,10 @@ def show(ctx: click.Context, file_id: int, text: bool) -> None:
 
 
 @main.command("config")
-@click.option("--init", is_flag=True, help="Write a commented config file if there is none.")
+@click.option("--init", is_flag=True, help="Write the default config file if there is none (also its directory).")
 def config_cmd(init: bool) -> None:
-    """Show where the config file is and the settings in effect (and where each comes from)."""
+    """Show where the config file is, the settings in effect (and where each comes from), each
+    web service's policy, and your settings that differ from papyrus's current defaults."""
     from . import config
     from .llm.lmstudio import default_url, lms_path, server_up
 
@@ -884,6 +885,21 @@ def config_cmd(init: bool) -> None:
             click.echo(f"  {name:18} {value:28} ({source})")
         auto, source = config.lmstudio_autostart()
         click.echo(f"  {'lmstudio.autostart':18} {str(auto).lower():28} ({source})")
+        from . import services
+
+        click.echo("web services (interval, timeout, retries, pause after a failure, cache TTL):")
+        layers = config.services_layers()
+        for svc in [*services.SERVICES, services.Service("web", (), "")]:
+            p = services.policy_for(svc, layers)
+            ttl = "forever" if p.cache_ttl == float("inf") else "never" if not p.cache_ttl else f"{p.cache_ttl / 86400:g} d"
+            click.echo(f"  {svc.name + (' (other hosts)' if svc.name == 'web' else ''):18} {p.interval_s:g} s apart, "
+                       f"{p.timeout_s:g} s, {p.max_retries} retries, pause {p.pause_s:g} s, reuse {ttl}"
+                       + (" (per machine)" if p.scope == "service" else ""))
+        diffs = config.differences()
+        if diffs:
+            click.echo("your settings that differ from papyrus's defaults (delete one to follow the default):")
+            for k, v, d in diffs:
+                click.echo(f"  {k} = {v!r}" + (f"  (default {d!r})" if d is not None else "  (no default)"))
     except config.ConfigError as e:
         raise click.ClickException(str(e)) from e
     url = default_url()

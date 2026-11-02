@@ -6,8 +6,8 @@ channel finds (928 of 929 web-link messages, 20 of 20 PDF uploads over 180 days)
 calls instead of ~1,000. Links are then classified locally (`contexts.links`).
 
 Every call goes through `http.HttpClient`, so raw responses land in the web services store
-(services.py, token redacted); none is ever reused (`use_cache=False`, and Slack's policy has
-`reuse_s = 0`): a search must see new messages.
+(services.py, token redacted); none is ever reused (`cache_ttl=0`, and Slack's policy has
+`cache_ttl = 0`): a search must see new messages.
 
 Token: ``PAPYRUS_SLACK_TOKEN``, else the macOS Keychain, service ``papyrus.slack``,
 account ``<variant>/<workspace>``. Settings: ``[slack]`` in config.toml (see `settings`).
@@ -114,7 +114,7 @@ class Slack:
 
     def call(self, method: str, **params: Any) -> dict[str, Any]:
         self.calls += 1
-        r = self._http.request("GET", API + method, params=params, use_cache=False,
+        r = self._http.request("GET", API + method, params=params, cache_ttl=0,
                                headers={"Authorization": f"Bearer {self._token}"})
         d = r.json()
         if not d.get("ok"):

@@ -1,0 +1,103 @@
+# papyrus configuration. Every key is optional: delete one and papyrus's default applies (the
+# defaults are this file as shipped, src/papyrus/data/default-config.toml). Command-line options
+# and the PAPYRUS_BACKEND / PAPYRUS_CLASSIFIER / PAPYRUS_LMSTUDIO_AUTOSTART / PAPYRUS_SCREEN
+# environment variables take precedence over this file. `papyrus config` shows what is in effect
+# and which of your settings differ from the current defaults.
+
+# Extraction model (`papyrus extract`): auto | lmstudio[:model] | apple
+# auto = LM Studio (started if needed, see below), else Apple Foundation Models.
+backend = "auto"
+
+# Classifier for kind / library-vs-personal: auto | none | lmstudio[:model] | jev[:url] | openai:model@url
+# auto = PAPYRUS_JEV_URL if set, else LM Studio. `papyrus classify` refuses to run without a
+# classifier unless this is "none".
+classifier = "auto"
+
+[lmstudio]
+# Start LM Studio's local server (`lms server start`) when it isn't running.
+autostart = true
+
+# The classify stage's fast first step: a small embedding model (0.1-0.4 s a file) sets obvious
+# personal paperwork aside, held for review, and settles the kind of the documents it is sure
+# about, before the language model is asked.
+# [screen]
+# enabled = true
+# threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
+# accept = 0.9            # P(kind) needed to take the screen's kind without the classifier
+#                         # (default: the weights' own; false: always ask the classifier)
+
+# What every model reads of a document (the document description): its names, folder, origin and PDF metadata, then
+# pages from the front and, for a longer document, the back, within about this many tokens.
+# [describe]
+# state_tokens = 1000
+# tail_fraction = 0.2       # share of the page budget kept for the last pages
+
+# `papyrus watch`: add new PDFs from these directories (not their subdirectories; end an entry
+# in /** to include them, e.g. "~/Dropbox/doc/**") as they appear, then ingest them in the
+# background: read, classify, extract, promote, index, match.
+[watch]
+dirs = ["~/Downloads", "~/Desktop"]
+# settle = 3            # seconds a file must stay unchanged before it is added
+# unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
+# background = true     # run at background priority
+
+# Defaults for `papyrus slack links` (command-line options override them).
+# [slack]
+# workspace = "myco"        # name the token is stored under (papyrus slack login -w myco)
+# days = 30
+# dms = false               # include direct and group messages
+# channels = []             # only these channels (names or ids); empty = all
+# exclude_channels = []
+# domains = []              # extra hosts (or host/path) counted as paper links
+
+# How each web service is asked (services.py; every request is recorded in
+# ~/.papyrus/services.sqlite, `papyrus services stats`). The keys here apply to every service;
+# a [services.<name>] table changes them for one: arxiv, arxiv-web (PDF downloads), openalex,
+# crossref, s2 (Semantic Scholar), slack, web (any other host; "web:<host>" for one host).
+# The order: these shipped [services] keys < your [services] keys < shipped [services.<name>]
+# < your [services.<name>]. The rate limit and the pause are shared by every papyrus process
+# on the machine; this file only changes how this library's processes ask.
+[services]
+interval_s = 0          # at least this many seconds between two requests (per scope)
+timeout_s = 30          # seconds an attempt may take
+max_retries = 5         # retries on 429, 5xx and no answer (timeout, refused connection)
+backoff_base = 2        # retry waits: backoff_base * 2^attempt seconds, jittered, or the server's Retry-After,
+backoff_cap = 60        # at most this
+pause_s = 0             # after a request fails for good with one of pause_statuses: ask nothing for this long
+pause_statuses = [0, 429, 503]   # 0: no answer
+cache_ttl = 2592000     # reuse a recorded answer this many seconds old (30 days); 0: never; inf: forever
+scope = "credential"    # what the rate limit and pause count: "credential" (each key apart) or "service"
+
+# 1 request / 3 s, counted per machine (https://info.arxiv.org/help/api/tou.html). When arXiv
+# struggles it refuses ("Rate exceeded", 429, some only after 20-30 s) or times out whatever our
+# rate (2026-11-02, 03:13-04:33 UTC: ~50 min of failed attempts). 99% of answers take under 10 s.
+[services.arxiv]
+interval_s = 3
+timeout_s = 15
+max_retries = 2
+pause_s = 300
+scope = "service"
+
+# PDFs from arxiv.org (`papyrus download`): never reused (they go to the library's store).
+[services.arxiv-web]
+interval_s = 1
+cache_ttl = 0
+scope = "service"
+
+# 10 requests/s keyless, more with OPENALEX_API_KEY.
+[services.openalex]
+interval_s = 0.11
+
+# The polite pool (PAPYRUS_MAILTO): 10 requests/s, 3 at a time (2025-10).
+[services.crossref]
+interval_s = 0.35
+
+# 1 request/s with S2_API_KEY; the keyless pool refuses nearly always (matching doesn't ask it
+# without a key). Paused per key: the keyless pool and a key apart.
+[services.s2]
+interval_s = 1.05
+pause_s = 120
+
+# Never reused: a search must see new messages.
+[services.slack]
+cache_ttl = 0

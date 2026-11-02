@@ -4,11 +4,11 @@
 -- service, with which credential, under which policy, what was asked, when, how long it took,
 -- what came back. Response bodies are files beside it, zstd-compressed and named by their hash:
 --
---   <PAPYRUS_ROOT>/services/bodies/<hash>.zst     a response (or POST request) body, redacted
+--   <PAPYRUS_ROOT>/services.bodies/<hash>.zst     a response (or POST request) body, redacted
 --
 -- Downloaded files (PDFs) are not kept here: they go to the library's store, and the call
 -- records their full sha256 (= files.sha256). Nothing is garbage-collected: answers older than
--- the policy's `reuse_s` are simply not reused.
+-- the cache TTL (the policy's `cache_ttl`, or the caller's) are simply not reused.
 --
 -- One per machine, not per library: arXiv counts every request from this machine together, so
 -- the rate limits and pauses (`state`) are shared by every variant and process. Holds private data
@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS credentials (
 );
 
 -- How a service was asked: id = hash of {service_id, settings}. settings (JSON): interval_s,
--- timeout_s, max_retries, backoff_base, backoff_cap, pause_s, pause_statuses, reuse_s, scope
--- (services.Policy). Recorded per call, so a change of policy shows in the history.
+-- timeout_s, max_retries, backoff_base, backoff_cap, pause_s, pause_statuses, cache_ttl ("inf":
+-- forever), scope (services.Policy; from config, default-config.toml). Recorded per call, so a change of policy shows in the history.
 CREATE TABLE IF NOT EXISTS policies (
     id            TEXT PRIMARY KEY,
     service_id    TEXT NOT NULL REFERENCES services(id),

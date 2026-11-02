@@ -14,7 +14,7 @@ def load(name):
 
 
 def client(handler):
-    return HttpClient(cache_dir=False, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    return HttpClient(cache_ttl=0, transport=httpx.MockTransport(handler), sleep=lambda s: None)
 
 
 def test_parse_journal_article():

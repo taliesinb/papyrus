@@ -32,9 +32,18 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     exclude_channels = []
     domains = []          # extra hosts counted as paper links
 
-    [services.arxiv]      # how a web service is asked (services.Policy; defaults in services.SERVICES)
+    [services]            # how every web service is asked (services.Policy)
+    timeout_s = 30        # also interval_s, max_retries, backoff_base, backoff_cap, pause_s,
+                          # pause_statuses, cache_ttl (inf: forever), scope
+    [services.arxiv]      # one service: arxiv, arxiv-web, openalex, crossref, s2, slack, web, web:<host>
     pause_s = 300         # after a refusal or no answer, ask nothing for this long
-    interval_s = 3        # also timeout_s, max_retries, backoff_base, backoff_cap, reuse_s, pause_statuses, scope
+
+The defaults are a file shipped with papyrus, `src/papyrus/data/default-config.toml`, which
+also holds the service policies and why they are what they are. A library without a config file
+gets a copy of it the first time its config is read, to edit. A setting deleted from the copy
+falls back to the shipped default; one kept stays as it is when the defaults change (`papyrus
+config` lists the settings that differ from the current defaults). For [services], the order is:
+shipped [services] keys < yours < shipped [services.<name>] < yours.
 
 Precedence for each setting: command-line option > environment variable
 (`PAPYRUS_BACKEND`, `PAPYRUS_CLASSIFIER`, `PAPYRUS_LMSTUDIO_AUTOSTART`, `PAPYRUS_SCREEN`) > this file
@@ -51,56 +60,25 @@ from typing import Any
 
 from . import db
 
-TEMPLATE = '''\
-# papyrus configuration. Every key is optional; command-line options and the
-# PAPYRUS_BACKEND / PAPYRUS_CLASSIFIER / PAPYRUS_LMSTUDIO_AUTOSTART environment
-# variables take precedence over this file.
+DEFAULT_FILE = "default-config.toml"  # in src/papyrus/data/: the defaults, and what a new config file starts as
 
-# Extraction model (`papyrus extract`): auto | lmstudio[:model] | apple
-# auto = LM Studio (started if needed, see below), else Apple Foundation Models.
-backend = "auto"
 
-# Classifier for kind / library-vs-personal: auto | none | lmstudio[:model] | jev[:url] | openai:model@url
-# auto = PAPYRUS_JEV_URL if set, else LM Studio. `papyrus classify` refuses to run without a
-# classifier unless this is "none".
-classifier = "auto"
+def default_text() -> str:
+    """The shipped default config (src/papyrus/data/default-config.toml)."""
+    from importlib import resources
 
-[lmstudio]
-# Start LM Studio's local server (`lms server start`) when it isn't running.
-autostart = true
+    return resources.files("papyrus").joinpath("data", DEFAULT_FILE).read_text()
 
-# The classify stage's fast first step: a small embedding model (0.1-0.4 s a file) sets obvious
-# personal paperwork aside, held for review, and settles the kind of the documents it is sure
-# about, before the language model is asked.
-# [screen]
-# enabled = true
-# threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
-# accept = 0.9            # P(kind) needed to take the screen's kind without the classifier
-#                         # (default: the weights' own; false: always ask the classifier)
 
-# What every model reads of a document (the document description): its names, folder, origin and PDF metadata, then
-# pages from the front and, for a longer document, the back, within about this many tokens.
-# [describe]
-# state_tokens = 1000
-# tail_fraction = 0.2       # share of the page budget kept for the last pages
+def defaults() -> dict[str, Any]:
+    """The shipped default config, parsed (once)."""
+    global _defaults
+    if _defaults is None:
+        _defaults = tomllib.loads(default_text())
+    return _defaults
 
-# `papyrus watch`: add new PDFs from these directories (not their subdirectories; end an entry
-# in /** to include them, e.g. "~/Dropbox/doc/**") as they appear, then ingest them in the
-# background: read, classify, extract, promote, index, match.
-[watch]
-dirs = ["~/Downloads", "~/Desktop"]
-# settle = 3            # seconds a file must stay unchanged before it is added
-# unload_after = 600    # seconds idle before unloading a model the watcher loaded itself
 
-# Defaults for `papyrus slack links` (command-line options override them).
-# [slack]
-# workspace = "myco"        # name the token is stored under (papyrus slack login -w myco)
-# days = 30
-# dms = false               # include direct and group messages
-# channels = []             # only these channels (names or ids); empty = all
-# exclude_channels = []
-# domains = []              # extra hosts (or host/path) counted as paper links
-'''
+_defaults: dict[str, Any] | None = None
 
 
 class ConfigError(ValueError):
@@ -112,8 +90,30 @@ def path() -> Path:
     return Path(env).expanduser() if env else db.library_home() / "config.toml"
 
 
+def _header() -> str:
+    from datetime import date
+
+    return (f"# Written by papyrus on {date.today().isoformat()} from its defaults. Delete a setting to follow\n"
+            "# papyrus's default for it; `papyrus config` lists the settings that differ from the defaults.\n\n")
+
+
+def _write_default(p: Path) -> bool:
+    """Write the shipped defaults to `p` unless something is there (another process may race us)."""
+    try:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except OSError:
+        return False
+    with os.fdopen(fd, "w") as fh:
+        fh.write(_header() + default_text())
+    return True
+
+
 def load() -> dict[str, Any]:
+    """The library's config file, parsed. A library (an existing home) without one gets the shipped
+    defaults written there first; a missing PAPYRUS_CONFIG file is not created."""
     p = path()
+    if not os.environ.get("PAPYRUS_CONFIG") and not p.exists() and p.parent.is_dir():
+        _write_default(p)
     try:
         with open(p, "rb") as fh:
             return tomllib.load(fh)
@@ -256,46 +256,79 @@ def watch() -> WatchSettings:
     return WatchSettings(dirs=plain, trees=trees, background=background, **out)
 
 
-def services_overrides() -> dict[str, dict[str, Any]]:
-    """The [services.<name>] tables: per service (arxiv, openalex, crossref, s2, slack, arxiv-web),
-    policy settings that replace the defaults in services.SERVICES, e.g.
-
-        [services.arxiv]
-        pause_s = 600        # ask nothing for 10 min after a refusal or a timeout
-        interval_s = 3.5
-    """
+def _policy_settings(table: dict[str, Any], where: str) -> dict[str, Any]:
+    """One [services] or [services.<name>] table's policy settings, checked (`where` names it)."""
     from dataclasses import fields
 
     from .services import Policy
 
-    section = load().get("services") or {}
+    known = [f.name for f in fields(Policy)]
+    out: dict[str, Any] = {}
+    for k, v in table.items():
+        if k not in known:
+            raise ConfigError(f"{where}.{k} is not a policy setting ({', '.join(known)})")
+        if k == "scope":
+            if v not in ("service", "credential"):
+                raise ConfigError(f'{where}.scope must be "service" or "credential", got {v!r}')
+        elif k == "pause_statuses":
+            if not isinstance(v, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in v):
+                raise ConfigError(f"{where}.pause_statuses must be a list of HTTP statuses (0: no answer), got {v!r}")
+            v = tuple(v)
+        elif k == "max_retries":
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ConfigError(f"{where}.max_retries must be a whole number >= 0, got {v!r}")
+        elif isinstance(v, bool) or not isinstance(v, (int, float)) or not v >= 0:
+            what = "a number of seconds >= 0, or inf (forever)" if k == "cache_ttl" else "a number of seconds >= 0"
+            raise ConfigError(f"{where}.{k} must be {what}, got {v!r}")
+        else:
+            v = float(v)
+        out[k] = v
+    return out
+
+
+def _services_tables(cfg: dict[str, Any], where: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """(the [services] keys, {name: the [services.<name>] keys}) of one config, checked."""
+    section = cfg.get("services") or {}
     if not isinstance(section, dict):
-        raise ConfigError(f"{path()}: [services] must be a table of [services.<name>] tables")
-    known = {f.name: f.type for f in fields(Policy)}
-    out: dict[str, dict[str, Any]] = {}
-    for name, table in section.items():
-        if not isinstance(table, dict):
-            raise ConfigError(f"{path()}: [services.{name}] must be a table")
-        o: dict[str, Any] = {}
-        for k, v in table.items():
-            if k not in known:
-                raise ConfigError(f"{path()}: services.{name}.{k} is not a policy setting ({', '.join(known)})")
-            if k == "scope":
-                if v not in ("service", "credential"):
-                    raise ConfigError(f"{path()}: services.{name}.scope must be \"service\" or \"credential\"")
-            elif k == "pause_statuses":
-                if not isinstance(v, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in v):
-                    raise ConfigError(f"{path()}: services.{name}.pause_statuses must be a list of HTTP statuses")
-                v = tuple(v)
-            elif k == "max_retries":
-                if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                    raise ConfigError(f"{path()}: services.{name}.max_retries must be a whole number >= 0")
-            elif isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-                raise ConfigError(f"{path()}: services.{name}.{k} must be a number of seconds >= 0, got {v!r}")
-            else:
-                v = float(v)
-            o[k] = v
-        out[name] = o
+        raise ConfigError(f"{where}: [services] must be a table")
+    base = {k: v for k, v in section.items() if not isinstance(v, dict)}
+    per = {k: v for k, v in section.items() if isinstance(v, dict)}
+    return (_policy_settings(base, f"{where}: services"),
+            {name: _policy_settings(t, f"{where}: services.{name}") for name, t in per.items()})
+
+
+def default_services_layer() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    return _services_tables(defaults(), f"(papyrus's defaults) {DEFAULT_FILE}")
+
+
+def services_layers() -> list[tuple[dict[str, Any], dict[str, dict[str, Any]]]]:
+    """The service policy settings in the order they apply: the shipped defaults' ([services],
+    [services.<name>]), then this library's config file's (services.policy_for merges them)."""
+    return [default_services_layer(), _services_tables(load(), str(path()))]
+
+
+def _flatten(d: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out.update(_flatten(v, f"{prefix}{k}."))
+        else:
+            out[f"{prefix}{k}"] = v
+    return out
+
+
+def differences() -> list[tuple[str, Any, Any]]:
+    """(dotted key, your value, the default or None) for each setting in this library's config
+    file that isn't papyrus's current default (a [services.<name>] key without a default of its
+    own is compared with the [services] default)."""
+    mine, shipped = _flatten(load()), _flatten(defaults())
+    out = []
+    for k, v in mine.items():
+        d = shipped.get(k)
+        if d is None and k.startswith("services.") and k.count(".") >= 2:  # services.<name>.<key>; a host has dots
+            d = shipped.get("services." + k.rsplit(".", 1)[1])
+        if v != d:
+            out.append((k, v, d))
     return out
 
 
@@ -313,10 +346,10 @@ def split_watch_dirs(entries: list[str] | tuple[str, ...]) -> tuple[tuple[Path, 
 
 
 def init() -> tuple[Path, bool]:
-    """Write the commented template unless a config file exists. Returns (path, written)."""
+    """Write the shipped defaults unless a config file exists (creating its directory, which `load`
+    doesn't). Returns (path, written)."""
     p = path()
     if p.exists():
         return p, False
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(TEMPLATE)
-    return p, True
+    return p, _write_default(p)

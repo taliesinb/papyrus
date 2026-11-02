@@ -5,7 +5,7 @@ API docs: https://info.arxiv.org/help/api/user-manual.html — at most 1 request
 
 When arXiv struggles it refuses ("Rate exceeded", 429, sometimes after 20-30 s) or times out,
 whatever our rate: on 2026-11-02 for 80 minutes (03:13-04:33 UTC), which cost the watcher ~50 min
-of failed attempts. Its policy (services.SERVICES: 3 s apart for every process on the machine, a
+of failed attempts. Its policy (default-config.toml's [services.arxiv]: 3 s apart for every process on the machine, a
 15 s timeout, 2 retries, then 5 min alone) is applied by the HTTP client; while arXiv is paused a
 request raises `http.Cooling`, which matching treats as "not asked" (the work stays pending),
 while OpenAlex still finds arXiv ids.

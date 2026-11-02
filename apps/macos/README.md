@@ -135,7 +135,7 @@ of one library's own: the compiled executables (`apps/macos/.build/`), the
 page-thumbnail cache (`~/.cache/papyrus-web/thumbs`, named by the PDF's
 sha256), the Apple Foundation Models bridge and LM Studio. Also shared, though
 it holds library-specific records: the web services store
-(`~/.papyrus/services.sqlite` and `~/.papyrus/services/`), every request to
+(`~/.papyrus/services.sqlite` and `~/.papyrus/services.bodies/`), every request to
 the matching APIs, downloads and Slack with its answer, because the rate
 limits it enforces are per machine (arXiv counts every request from it). Each
 call records its `library`; Slack bodies are one library's messages, so the

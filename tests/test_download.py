@@ -142,7 +142,7 @@ def _web(tmp_path):
                                   headers={"content-type": "text/html"})
         return httpx.Response(404, text="not found")
 
-    client = h.HttpClient(cache_dir=False, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client = h.HttpClient(cache_ttl=0, transport=httpx.MockTransport(handler), sleep=lambda s: None)
     return client, calls
 
 
@@ -222,7 +222,7 @@ def test_failed_refetch_keeps_earlier_success(tmp_path):
     client, _ = _web(tmp_path)
     conn = db.connect(tmp_path / "t.sqlite")
     dl.download(conn, LINKS[:1], client=client)
-    broken = h.HttpClient(cache_dir=False, transport=httpx.MockTransport(lambda r: httpx.Response(404)),
+    broken = h.HttpClient(cache_ttl=0, transport=httpx.MockTransport(lambda r: httpx.Response(404)),
                           sleep=lambda s: None)
     stats, _ = dl.download(conn, LINKS[:1], client=broken, refetch=True)
     assert stats["failed"] == 1

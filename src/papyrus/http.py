@@ -2,8 +2,10 @@
 
 Every request goes through the web services store (services.py, `<PAPYRUS_ROOT>/services.sqlite`):
 
-* **reuse**: an answer the store has (same request, younger than the service policy's `reuse_s`,
-  status in `cache_statuses`) is returned without asking (`Response.from_cache`);
+* **reuse**: an answer the store has (same request, status in `cache_statuses`, no older than
+  the cache TTL) is returned without asking (`Response.from_cache`). `cache_ttl`, per request and
+  per client: seconds; 0 never reuses; None reuses any age; AUTO (the default) takes the service
+  policy's `cache_ttl` from config (30 days; 0 for Slack and PDFs);
 * **one rate limit and one pause per service, shared by every process**: each attempt reserves
   the scope's next slot (the policy's `interval_s`; arXiv 3 s), then sleeps outside any lock.
   A request that fails for good with one of the policy's `pause_statuses` (429, 503, no answer)
@@ -21,7 +23,7 @@ fingerprint is (`services.credentials`).
 
 Environment:
     PAPYRUS_MAILTO        contact address put into the User-Agent / mailto params
-    PAPYRUS_HTTP_CACHE    '0': never reuse an answer (requests are still recorded)
+    PAPYRUS_HTTP_CACHE    '0': never reuse an answer where cache_ttl is AUTO (requests are still recorded)
     PAPYRUS_SERVICES      directory of the services store (default PAPYRUS_ROOT, ~/.papyrus)
 """
 
@@ -51,7 +53,7 @@ log = logging.getLogger(__name__)
 VERSION = "0.1.0"
 SECRET_PARAMS = frozenset({"api_key", "apikey", "key", "token", "access_token"})
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-OFF = {"0", "false", "no", "off"}
+AUTO = services.AUTO  # cache_ttl: the service policy's (config)
 
 
 class HttpError(RuntimeError):
@@ -157,17 +159,16 @@ def _retry_after(v: str | None) -> float | None:
 class HttpClient:
     """Thread-safe polite client; one instance is shared by all sources (see `default_client`).
 
-    The policy of each request is its service's (services.SERVICES, then config.toml's
-    [services.<name>]); `max_retries`, `backoff_base`, `backoff_cap`, `timeout` and `cache_ttl`
-    given here override it for every service, `intervals` per host. `cache_dir=False` turns reuse
-    off (`True` on; unset: on unless PAPYRUS_HTTP_CACHE=0); requests are recorded either way. `clock` (unix
-    seconds, shared with other processes through the store) and `sleep` are for tests."""
+    The policy of each request is its service's (config: [services] and [services.<name>]);
+    `max_retries`, `backoff_base`, `backoff_cap` and `timeout` given here override it for every
+    service, `intervals` per host. `cache_ttl` is every request's unless the request gives its own
+    (seconds, 0 never, None forever, AUTO: the policy's); requests are recorded either way. `clock`
+    (unix seconds, shared with other processes through the store) and `sleep` are for tests."""
 
     def __init__(
         self,
         *,
-        cache_dir: Path | str | None | bool = None,
-        cache_ttl: float | None = None,
+        cache_ttl: float | None | Any = services.AUTO,
         intervals: Mapping[str, float] | None = None,
         max_retries: int | None = None,
         backoff_base: float | None = None,
@@ -178,12 +179,9 @@ class HttpClient:
         sleep: Callable[[float], None] = time.sleep,
         store: services.Store | None = None,
     ):
-        env = os.environ.get("PAPYRUS_HTTP_CACHE", "").strip().lower()
-        # given: True or a (legacy, unused) directory turns reuse on, False off; else the environment
-        self.reuse = env not in OFF if cache_dir is None else cache_dir is not False
+        services.resolve_ttl(cache_ttl, policy=services.Policy())  # (checks it now)
         self.cache_ttl = cache_ttl
         self._given_intervals = dict(intervals or {})
-        self.intervals = {h: s.policy.interval_s for s in services.SERVICES for h in s.hosts} | self._given_intervals
         self._policy_kw = {"max_retries": max_retries, "backoff_base": backoff_base, "backoff_cap": backoff_cap,
                            "timeout_s": timeout}
         self._clock = clock
@@ -207,10 +205,14 @@ class HttpClient:
         kw = dict(self._policy_kw)
         if host in self._given_intervals:
             kw["interval_s"] = self._given_intervals[host]
-        if self.cache_ttl is not None:
-            kw["reuse_s"] = self.cache_ttl
         kw.update({k: v for k, v in call_kw.items() if v is not None})
-        return self.store.ids(method, url, headers, body, overrides=services.overrides(), **kw)
+        return self.store.ids(method, url, headers, body, layers=services.layers(), **kw)
+
+    def interval(self, host: str) -> float:
+        """Seconds between two requests to `host` (its service's policy, or `intervals`)."""
+        if host in self._given_intervals:
+            return self._given_intervals[host]
+        return services.policy_for(services.service_for(f"https://{host}/"), services.layers()).interval_s
 
     def _wait_slot(self, ids: services.Ids) -> None:
         try:
@@ -252,7 +254,7 @@ class HttpClient:
         params: Mapping[str, Any] | None = None,
         json_body: Any = None,
         headers: Mapping[str, str] | None = None,
-        use_cache: bool = True,
+        cache_ttl: float | None | Any = services.AUTO,
         cache_statuses: frozenset[int] = frozenset({200, 404}),
         ok_statuses: frozenset[int] = frozenset({200, 404}),
         max_retries: int | None = None,
@@ -261,13 +263,15 @@ class HttpClient:
     ) -> Response:
         """Perform a request; returns statuses in `ok_statuses`, raises HttpError otherwise
         (Cooling while the service is paused, RateLimited when `patience` runs out).
-        `use_cache=False`: ask even if the store has an answer. `timeout`: seconds per attempt."""
+        `cache_ttl`: reuse a recorded answer this many seconds old (0: never, ask; None: any age;
+        AUTO: the client's, else the service policy's). `timeout`: seconds per attempt."""
         url = full_url(url, params)
         body = json.dumps(json_body, sort_keys=True) if json_body is not None else None
         ids = self._ids(method, url, headers, body, max_retries=max_retries, backoff_cap=backoff_cap, timeout_s=timeout)
         st = self.store
-        if use_cache and self.reuse:
-            hit = st.lookup(ids.request_id, cache_statuses & ok_statuses, ids.policy.reuse_s)
+        ttl = services.resolve_ttl(cache_ttl, self.cache_ttl, policy=ids.policy)
+        if ttl > 0:
+            hit = st.lookup(ids.request_id, cache_statuses & ok_statuses, ttl)
             if hit is not None:
                 return Response(hit.status, hit.text, hit.url, hit.headers, from_cache=True)
         retries = ids.policy.max_retries

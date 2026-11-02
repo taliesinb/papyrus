@@ -9,7 +9,7 @@ FIX = Path(__file__).parent / "fixtures"
 
 
 def client(handler):
-    return HttpClient(cache_dir=False, transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    return HttpClient(cache_ttl=0, transport=httpx.MockTransport(handler), sleep=lambda s: None)
 
 
 def test_parse_idlist_feed():
@@ -89,7 +89,7 @@ def test_a_refusal_or_timeout_leaves_arxiv_alone_for_a_while(monkeypatch):
     from papyrus import services
     from papyrus.http import Cooling, HttpError
 
-    retries = services.by_name("arxiv").policy.max_retries
+    retries = services.effective_policy("arxiv").max_retries
     calls = []
 
     def refuse(req):
@@ -130,7 +130,7 @@ def test_patience_covers_timeouts_too():
         calls.append(1)
         raise httpx.ReadTimeout("slow", request=req)
 
-    c = HttpClient(cache_dir=False, transport=httpx.MockTransport(timeout), sleep=lambda s: None, max_retries=5)
+    c = HttpClient(cache_ttl=0, transport=httpx.MockTransport(timeout), sleep=lambda s: None, max_retries=5)
     with http_mod.patience(0.1), pytest.raises(http_mod.HttpError) as e:  # the first backoff (~1 s) is over budget
         c.get("https://example.org/x")
     assert e.value.status == 0 and len(calls) == 1
