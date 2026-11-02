@@ -296,6 +296,21 @@ def test_the_watcher_scans_and_follows_a_tree(tmp_path):
     w.close()
 
 
+def test_the_status_shows_a_long_catch_up_scan(tmp_path):
+    """Adding a 2,250-file tree took minutes, with the menu saying "Watching for new files"."""
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    w.scanning = {"done": 0, "total": 0, "t0": time.monotonic(), "shown": 0.0}
+    assert w.stages({}) == []  # nothing listed yet
+    w.scanning.update(done=500, total=2000, t0=time.monotonic() - 50)
+    (s,) = w.stages({})
+    assert (s["label"], s["pending"], s["state"]) == ("Adding", 1500, "active") and 140 <= s["eta_s"] <= 160
+    for i in range(3):
+        _pdf(dl / f"p{i}.pdf", f"Paper {i}. Jane Doe. Abstract We study things.")
+    w.catch_up()
+    assert w.scanning is None and conn.execute("SELECT count(*) FROM files").fetchone()[0] == 3
+    w.close()
+
+
 def test_watch_dirs_entries_ending_in_a_double_star_are_trees(tmp_path):
     from papyrus import config
 

@@ -190,6 +190,7 @@ class Watch:
         # the stage's history (the queue's, else the performance log's); and the stage worked last
         self.ema: dict[str, float | None] = {}
         self.last_worked: dict[str, float] = {}  # stage -> clock() of its last step
+        self.scanning: dict[str, Any] | None = None  # the catch-up scan in progress: done, total
 
     # --- running ------------------------------------------------------------------------------
 
@@ -356,7 +357,17 @@ class Watch:
         now, wall = db.now_iso(), time.time()
         self.unreadable = []
         tree_opts = replace(self.opts, recursive=True, max_depth=scan.TREE_DEPTH)
-        for root, opts in [(d, self.opts) for d in self.dirs] + [(t, tree_opts) for t in self.trees]:
+        roots = [(d, self.opts) for d in self.dirs] + [(t, tree_opts) for t in self.trees]
+        # a big new tree takes minutes to add (hash, first pages, a clone each): the menu says so
+        self.scanning = {"done": 0, "total": 0, "t0": time.monotonic(), "shown": time.monotonic()}
+        try:
+            self._scan_roots(roots, run_id, c, now, wall)
+        finally:
+            self.scanning = None
+
+    def _scan_roots(self, roots: list, run_id: int, c: Counter, now: str, wall: float) -> None:
+        listed = []
+        for root, opts in roots:
             if not root.is_dir():
                 c["dirs_missing"] += 1
                 continue
@@ -370,9 +381,14 @@ class Watch:
                 self.log(f"cannot read {root}: allow access in System Settings > Privacy & Security >"
                          " Files and Folders; trying again every minute")
                 continue
-            for path in scan.iter_pdfs(root, opts):
-                if not is_candidate(path.name):
-                    continue
+            listed.append((root, [p for p in scan.iter_pdfs(root, opts) if is_candidate(p.name)]))
+        self.scanning["total"] = sum(len(ps) for _, ps in listed)
+        for root, paths in listed:
+            for path in paths:
+                self.scanning["done"] += 1
+                if time.monotonic() - self.scanning["shown"] >= 2:
+                    self.scanning["shown"] = time.monotonic()
+                    self._status(INGESTING)
                 try:
                     recent = wall - path.stat().st_mtime < self.debouncer.settle_s
                 except OSError:
@@ -813,6 +829,12 @@ class Watch:
         stages share one loop and the local models; `waiting`: backed off; `paused`), how many
         items, seconds per item (moving average) and seconds left."""
         out, now = [], self.clock()
+        if (s := self.scanning) and s["total"] > s["done"]:  # the catch-up scan: files still to add
+            per = (time.monotonic() - s["t0"]) / s["done"] if s["done"] else None
+            left = s["total"] - s["done"]
+            out.append({"stage": "scan", "label": "Adding", "unit": "files", "pending": left, "state": "active",
+                        "per_item_s": round(per, 2) if per is not None else None,
+                        "eta_s": round(left * per) if per is not None else None})
         for stage in STAGE_ORDER:
             n = counts.get(stage, 0)
             if not n:
