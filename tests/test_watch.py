@@ -423,6 +423,16 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     assert conn.execute("SELECT count(*) FROM contexts").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
     assert _runs(conn)[-1][1]["purged_skipped"] == 1
+    assert "skipped 1 file whose bytes were purged as personal paperwork" in logs
+    # at the next start, every copy still in the directory (the two first ones too) is skipped again: one line
+    shutil.copy(slip, dl / "scan0002.pdf")
+    for p in (again, dl / "scan0002.pdf"):
+        t = time.time() - 3600
+        os.utime(p, (t, t))
+    logs.clear()
+    w.catch_up()
+    assert [m for m in logs if "purged" in m and "skipped" in m and not m.startswith("run ")] == \
+        ["skipped 4 files whose bytes were purged as personal paperwork"]
     assert be.prompts == []  # the classifier was sure: no extraction (prompt 0.4), and never classified again
     # the log holds ids and counts, never names, paths or text
     assert logs and not any(MARK in m or str(dl) in m or "Zebedee" in m or "Payslip" in m for m in logs)

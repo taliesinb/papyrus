@@ -394,10 +394,16 @@ class Watch:
         roots = [(d, self.opts) for d in self.dirs] + [(t, tree_opts) for t in self.trees]
         # a big new tree takes minutes to add (hash, first pages, a clone each): the menu says so
         self.scanning = {"done": 0, "total": 0, "t0": time.monotonic(), "shown": time.monotonic()}
+        before = c["purged_skipped"]
         try:
             self._scan_roots(roots, run_id, c, now, wall)
         finally:
             self.scanning = None
+            self._log_purged_skipped(c["purged_skipped"] - before)
+
+    def _log_purged_skipped(self, n: int) -> None:
+        if n:
+            self.log(f"skipped {n_of(n, 'file')} whose bytes were purged as personal paperwork")
 
     def _scan_roots(self, roots: list, run_id: int, c: Counter, now: str, wall: float) -> None:
         listed = []
@@ -436,8 +442,10 @@ class Watch:
 
     def _take(self, ready: list[Path], gone: list[Path], run_id: int, c: Counter) -> None:
         now = db.now_iso()
+        before = c["purged_skipped"]
         for path in ready:
             self._scan_file(path, run_id, c, now)
+        self._log_purged_skipped(c["purged_skipped"] - before)
         for path in gone:  # a file, or a directory of a tree: everything below it
             prefix = str(path).rstrip("/") + "/"
             n = self.conn.execute("UPDATE contexts SET missing_at=? WHERE kind='filesystem' AND missing_at IS NULL"
@@ -470,8 +478,7 @@ class Watch:
         if outcome in ("new", "dup"):
             self.dirty = True
             self.log(f"{self._file(fid)} added ({outcome}) in {secs(time.monotonic() - t0)}")
-        elif outcome == "purged_skipped":
-            self.log("skipped a file whose bytes were purged as personal paperwork")
+        # (purged_skipped: counted in `c`, logged once per scan by _log_purged_skipped)
 
     # --- the database files under us -----------------------------------------------------------
 
