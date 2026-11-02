@@ -93,10 +93,12 @@ interval_s = 0.11
 interval_s = 0.35
 
 # 1 request/s with S2_API_KEY, across all endpoints (what Semantic Scholar granted our key,
-# 2026-11-02); 1.05 s leaves a margin. The keyless pool refuses nearly always (matching doesn't
-# ask it without a key). Counted and paused per key: the keyless pool and a key apart.
+# 2026-11-02). At 1.05 s apart the key was still refused 4 times in its first 10 requests (one
+# 14 s after the previous request: AWS API Gateway's TooManyRequestsException), so 2 s to be on
+# the safe side. The keyless pool refuses nearly always (matching doesn't ask it without a key).
+# Counted and paused per key: the keyless pool and a key apart.
 [services.s2]
-interval_s = 1.05
+interval_s = 2
 pause_s = 120
 
 # Never reused: a search must see new messages.
