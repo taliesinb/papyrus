@@ -411,9 +411,10 @@ The seed is part of the inference cache's key either way.
 * **One watcher per library** (`<home>/watch.lock`). A second one, or `--once`
   while one runs, exits with status 75, which the app and the unit don't
   treat as a crash.
-* **Its log names ids and counts only.** No titles, paths, page text, or
-  exception messages (an `OSError`'s message is a path). Keep it that way in
-  new log lines.
+* **Its log names ids and counts only** (with the short hash of the file's
+  bytes, `file 1148 [3fa2c1d9]`, kinds and their probabilities, timings). No
+  titles, paths, page text, identifier values, or exception messages (an
+  `OSError`'s message is a path). Keep it that way in new log lines.
 * **Memory pressure reads "warn" on this machine whenever LM Studio holds a
   model.** So warn blocks only calls that may *load* a model; critical
   blocks all of them (`Watch._gate`).

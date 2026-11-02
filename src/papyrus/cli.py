@@ -645,6 +645,10 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[str, ...], poll: bool, sho
                    err=True)
         ctx.exit(EXIT_LOCKED)
     try:
+        import logging
+
+        # warnings (a matching source's HTTP 429) go to the same log as the watcher's lines: give them its timestamps
+        logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
         prio = lower_priority() if settings.background else []
         click.echo(f"watch: {home}, {len(roots) + len(tree_roots)} directories"
                    + (f" ({len(tree_roots)} with their subdirectories)" if tree_roots else "")

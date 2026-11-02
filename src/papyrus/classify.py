@@ -66,6 +66,8 @@ def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier
         s = screen_file(conn, file_id, screen, run_id=run_id)
         if s is not None:
             result["screen"] = {k: v for k, v in s.items() if k not in ("call_id", "kind_probs")}
+            if s.get("kind_probs"):
+                result["screen_probs"] = s["kind_probs"]  # for the watcher's log
             if s["rejected"]:
                 result["screened"] = True
                 result["status"] = "done"
@@ -83,6 +85,9 @@ def classify_file(conn: sqlite3.Connection, file_id: int, classifier: Classifier
         ccalls = inference.calls_of(classifier)
         ctag = "classify:" + classifier.info().tag
         result["classify_s"] = round(time.monotonic() - t1, 2)
+        result["classify_cached"] = bool(getattr(classifier, "last_hit", False))
+    if "kind" in answers:
+        result["kind_probs"] = dict(answers["kind"].probabilities)
     p_personal = answers["kind"].probabilities.get("personal", 0.0) if "kind" in answers else None
     user = user_says(conn, file_id)
     library = user if user is not None else (p_personal < 0.5 if p_personal is not None else None)

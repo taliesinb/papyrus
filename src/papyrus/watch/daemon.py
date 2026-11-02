@@ -33,8 +33,13 @@ synced from the library before every step): a step that fails, or finishes witho
 anything, is retried after 1 h, 4 h and 16 h, then left as `failed` (a failed classify also marks
 the file `error`, as `papyrus classify` does).
 
-Privacy: the log names file and work ids, counts and states only, never titles, paths, page
-text or exception messages (an OSError's message holds the path).
+The log says when each step starts and how long it took, naming files and works by id and the
+first HASH_CHARS hex digits of the file's sha256 (`file 1148 [3fa2c1d9]`; a work by its first
+file's), with the screen's and the classifier's likeliest kinds, the extraction model's time and
+tokens, and the match's score and sources.
+
+Privacy: the log names ids, hashes, kinds, counts, timings and states only, never titles, paths,
+page text, identifier values or exception messages (an OSError's message holds the path).
 
 Status: `<library home>/watch.json` (state, per-stage lines, ingesting N/M, back-off), read by
 the web server's /api/version for the menu bar, and by `papyrus watch --status`. Performance:
@@ -87,6 +92,33 @@ ACTIVE_S = 30.0
 
 def default_log(msg: str) -> None:
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}", file=sys.stderr, flush=True)
+
+
+HASH_CHARS = 8  # hex digits of a file's sha256 in the log (the store's names have 16: store/<hash>*.pdf)
+
+
+def secs(s: float) -> str:
+    """A duration for the log: 0.42 s, 6.2 s, 54 s, 3 min 05 s."""
+    if s < 1:
+        return f"{s:.2f} s"
+    if s < 10:
+        return f"{s:.1f} s"
+    if s < 120:
+        return f"{s:.0f} s"
+    return f"{int(s // 60)} min {int(s % 60):02d} s"
+
+
+def n_of(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def top_kinds(probs: dict[str, float] | None, n: int = 3, floor: float = 0.01) -> str:
+    """The likeliest kinds of a distribution, e.g. `paper 0.94, report 0.03` (labels and numbers only)."""
+    if not probs:
+        return "?"
+    best = sorted(probs.items(), key=lambda kv: -kv[1])
+    shown = [(k, p) for i, (k, p) in enumerate(best[:n]) if i == 0 or p >= floor]
+    return ", ".join(f"{k} {p:.2f}" for k, p in shown)
 
 
 def resolve_models() -> tuple[Any, Any]:
@@ -186,6 +218,7 @@ class Watch:
         self.ledger.log = lambda msg: (ledger_log(msg), self.events.emit("model", msg=msg))
         self.busy: dict[str, Any] | None = None  # since the queue was last empty: start time, counts
         self.step_detail: dict[str, Any] = {}  # what the last step found, for its event
+        self.step_t0 = time.monotonic()  # when the step in progress began (its log lines say how long it took)
         # seconds per item, per stage: an exponential moving average of finished steps, started from
         # the stage's history (the queue's, else the performance log's); and the stage worked last
         self.ema: dict[str, float | None] = {}
@@ -307,6 +340,7 @@ class Watch:
         from ..describe import PROMPT_VERSION
 
         c: Counter = Counter()
+        t0 = time.monotonic()
         self.models = None  # resolved again on the batch's first model step (the config may have changed)
         with db.recorded_run(self.conn, "watch", {"trigger": trigger, "files": len(ready),
                                                    "dirs": len(self.dirs) + len(self.trees)},
@@ -340,7 +374,7 @@ class Watch:
                 self.totals.update(c)
         summary = " ".join(f"{k}={v}" for k, v in sorted(c.items()) if k not in ("seen", "unchanged"))
         if summary:
-            self.log(f"run {run_id} ({trigger}): {summary}")
+            self.log(f"run {run_id} ({trigger}) took {secs(time.monotonic() - t0)}: {summary}")
         self.dirty = more
         self.last_check = self.clock()
         self._settle()
@@ -435,7 +469,7 @@ class Watch:
             self.events.emit("scan", id=fid, outcome=outcome, ms=round((time.monotonic() - t0) * 1000))
         if outcome in ("new", "dup"):
             self.dirty = True
-            self.log(f"file {fid} added ({outcome})")
+            self.log(f"{self._file(fid)} added ({outcome}) in {secs(time.monotonic() - t0)}")
         elif outcome == "purged_skipped":
             self.log("skipped a file whose bytes were purged as personal paperwork")
 
@@ -530,17 +564,42 @@ class Watch:
                 self._promote(fid, run_id, c, quiet=True)
             except Exception as e:  # noqa: BLE001  one bad file must not stop the watcher at every start
                 c["promote_error"] += 1
-                self.log(f"file {fid} promote failed ({type(e).__name__})")
+                self.log(f"{self._file(fid)} promote failed ({type(e).__name__})")
 
     def _promote(self, fid: int, run_id: int, c: Counter, quiet: bool = False) -> None:
         from ..works import promote_file
 
+        ref = self._file(fid)  # before a purge (the tombstone keeps the hash, but ask while it is plainly there)
+        t0 = time.monotonic()
         action, wid = promote_file(self.conn, fid, run_id=run_id)
         c[f"promote_{action}"] += 1
         if action == "purged":
             purge.checkpoint(self.conn)
+        took = time.monotonic() - t0
         if not (quiet and action == "held"):
-            self.log(f"file {fid} {action}" + (f" (work {wid})" if wid else ""))
+            self.log(f"{ref} {action}" + (f" (work {wid})" if wid else "") + (f" in {secs(took)}" if took >= 0.1 else ""))
+
+    # --- naming things in the log: ids and the short hash of the bytes ------------------------
+
+    def _file(self, fid: int | None) -> str:
+        """`file 1148 [3fa2c1d9]`: the id and the first digits of the file's sha256."""
+        if fid is None:
+            return "file ?"
+        r = self.conn.execute("SELECT sha256 FROM files WHERE id=?", (fid,)).fetchone()
+        return f"file {fid} [{r[0][:HASH_CHARS]}]" if r else f"file {fid}"
+
+    def _work(self, wid: int) -> str:
+        """`work 1048 [3fa2c1d9]`: the id and the short hash of its first file."""
+        r = self.conn.execute("SELECT f.sha256 FROM file_works fw JOIN files f ON f.id=fw.file_id WHERE fw.work_id=?"
+                              " ORDER BY f.id LIMIT 1", (wid,)).fetchone()
+        return f"work {wid} [{r[0][:HASH_CHARS]}]" if r else f"work {wid}"
+
+    def _ref(self, stage: str, i: int) -> str:
+        return self._work(i) if stage == "match" else self._file(i)
+
+    def _took(self) -> str:
+        """How long the step in progress has taken so far."""
+        return secs(time.monotonic() - self.step_t0)
 
     # --- steps --------------------------------------------------------------------------------
 
@@ -593,10 +652,15 @@ class Watch:
 
     def _step(self, task: tuple[str, int], run_id: int, c: Counter) -> None:
         stage, i = task
-        what = "work" if stage == "match" else "file"
-        t0 = time.monotonic()
+        ref = self._ref(stage, i)
+        t0 = self.step_t0 = time.monotonic()
         self.step_detail = {}
         outcome = "done"
+        try:
+            left = self.pending().get(stage, 0)
+        except Exception:  # noqa: BLE001  a count for the log must never stop the step
+            left = None
+        self.log(f"{ref} {stage}: starting" + (f" ({left} pending)" if left else ""))
         try:
             getattr(self, f"_{stage}")(i, run_id, c)
             if self._still_pending(stage, i):  # nothing changed (e.g. matching found nothing)
@@ -618,7 +682,7 @@ class Watch:
             c[f"{stage}_error"] += 1
             if stage == "classify":  # (a failed metadata step stays `classified` and is retried)
                 self.conn.execute("UPDATE files SET classify_status='error' WHERE id=?", (i,))
-            self.log(f"{what} {i} {stage} failed ({type(e).__name__})")
+            self.log(f"{ref} {stage} failed after {self._took()} ({type(e).__name__})")
             self._retry(task, type(e).__name__)
         finally:
             if outcome != "backoff":
@@ -632,8 +696,7 @@ class Watch:
     def _retry(self, task: tuple[str, int], error: str) -> None:
         stage, i = task
         delay = self.queue.retry(stage, i, error)
-        what = "work" if stage == "match" else "file"
-        self.log(f"{what} {i} {stage}: " + (f"{error}, trying again in {delay / 3600:.0f} h" if delay
+        self.log(f"{self._ref(stage, i)} {stage}: " + (f"{error}, trying again in {delay / 3600:.0f} h" if delay
                                               else f"{error}, giving up (papyrus watch --retry-failed)"))
 
     def _index(self, fid: int, run_id: int, c: Counter) -> None:
@@ -642,7 +705,8 @@ class Watch:
             c["indexed"] += s["files"]
         if s.get("error"):
             c["extract_error"] += s["error"]
-        self.log(f"file {fid} extracted ({s.get('pages', 0)} pages)" if s.get("files") else f"file {fid} extract failed")
+        self.log(f"{self._file(fid)} indexed in {self._took()} ({n_of(s.get('pages', 0), 'page')})" if s.get("files")
+                 else f"{self._file(fid)} index failed after {self._took()}")
 
     def _read(self, fid: int, run_id: int, c: Counter) -> None:
         self._gate("local", None)  # Apple Vision, in the bridge
@@ -655,7 +719,8 @@ class Watch:
         for k in ("ocr_pages", "requeued"):
             if s.get(k):
                 c[k] += s[k]
-        self.log(f"file {fid} OCR: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)} pages read")
+        self.log(f"{self._file(fid)} OCR in {self._took()}: {s.get('ocr_pages_with_text', 0)} of {s.get('ocr_pages', 0)}"
+                 " pages read")
 
     def _match(self, wid: int, run_id: int, c: Counter) -> None:
         from .. import http
@@ -666,17 +731,49 @@ class Watch:
         with http.patience(MATCH_PATIENCE_S):
             r = match_work(self.conn, wid, run_id=run_id)
         c[f"match_{r['status']}"] += 1
-        self.log(f"work {wid} match: {r['status']}")
+        self.log(f"{self._work(wid)} match: {r['status']} in {self._took()}" + self._match_detail(r))
         if r["status"] == "rate_limited":
             names = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref", "s2": "Semantic Scholar"}
             raise Backoff(RATE_LIMITED, "rate limited by " + ", ".join(names.get(x, x) for x in r["sources"]),
                           delay=max(RATE_LIMIT_DELAY, r.get("retry_after") or 0))
+
+    @staticmethod
+    def _match_detail(r: dict[str, Any]) -> str:
+        """Scores, sources and counts of a match result (no titles: candidates' titles are search terms)."""
+        status = r.get("status")
+        if status == "matched":
+            parts = []
+            if r.get("score") is not None:
+                parts.append(f"score {r['score']:.2f}")
+            if r.get("sources"):
+                parts.append("from " + "+".join(r["sources"]))
+            if r.get("ids"):  # the schemes, not the values
+                parts.append("ids: " + ", ".join(sorted(r["ids"])))
+            if r.get("authors_linked"):
+                parts.append(n_of(r['authors_linked'], 'author') + " linked")
+            if r.get("possible_duplicates"):
+                parts.append(n_of(len(r['possible_duplicates']), 'possible duplicate'))
+            return f" ({'; '.join(parts)})" if parts else ""
+        if status == "ambiguous":
+            return f" (best score {r['best_score']:.2f} of {n_of(r.get('candidates', 0), 'candidate')})"
+        if status == "rate_limited":
+            return " (" + ", ".join(r.get("sources") or []) + ")"
+        if status == "skipped" and r.get("kind"):
+            return f" (a {r['kind']} without identifiers)"
+        return ""
 
     def _classify(self, fid: int, run_id: int, c: Counter) -> None:
         from ..classify import classify_file
 
         _, clf = self._models(run_id)
         r = classify_file(self.conn, fid, clf, run_id=run_id, screen=self.screen)
+        ref, took = self._file(fid), self._took()
+        scr = r.get("screen") or {}
+        screen_note = (f"screen {secs(scr['screen_s'])}" if scr.get("screen_s") is not None else None)
+        model_note = (f"classifier {secs(r['classify_s'])}" + (", cached" if r.get("classify_cached") else "")
+                      if r.get("classify_s") is not None else None)
+        times = "; ".join(x for x in (screen_note, model_note) if x)
+        times = f" [{times}]" if times else ""
         self.memory_delay = MEMORY_DELAY
         c["classified"] += 1
         self.step_detail = {"result": "screened" if r.get("screened") else
@@ -688,14 +785,21 @@ class Watch:
         if r.get("screened"):
             c["screened"] += 1
             self.step_detail["p_personal"] = r["screen"]["p_personal"]
-            self.log(f"file {fid} set aside by the screen (P(personal)={r['screen']['p_personal']:.2f})")
+            kinds = f"; {top_kinds(r['screen_probs'])}" if r.get("screen_probs") else ""
+            self.log(f"{ref} set aside by the screen in {took} (P(personal)={r['screen']['p_personal']:.2f}{kinds})")
         elif r.get("accepted"):
             c["accepted"] += 1
-            self.log(f"file {fid} classified by the screen (P(kind)={r['screen']['p_kind']:.2f})")
-        elif r["status"] == "done":  # not library material: no metadata extraction
-            self.log(f"file {fid} classified: not library (P(personal)={r['p_personal']:.2f})")
+            self.log(f"{ref} classified by the screen in {took}: {top_kinds(r.get('screen_probs'))}")
         else:
-            self.log(f"file {fid} classified")
+            if r.get("screen_probs"):
+                unsure = f"; the screen was unsure: {top_kinds(r['screen_probs'])}"
+            elif scr.get("p_personal") is not None:
+                unsure = f"; the screen: P(personal)={scr['p_personal']:.2f}"
+            else:
+                unsure = ""
+            probs = f": {top_kinds(r['kind_probs'])}" if r.get("kind_probs") else ""
+            verdict = " not library" if r["status"] == "done" else ""  # not library material: no metadata extraction
+            self.log(f"{ref} classified{verdict} in {took}{probs}{unsure}{times}")
         if r["status"] == "done":
             self._promote(fid, run_id, c)
 
@@ -707,8 +811,33 @@ class Watch:
         self.step_detail = {"cached": bool(r.get("cached"))}
         self.memory_delay = MEMORY_DELAY
         c["extracted"] += 1
-        self.log(f"file {fid} metadata extracted")
+        self.log(f"{self._file(fid)} metadata extracted in {self._took()}{self._extract_detail(r, be)}")
         self._promote(fid, run_id, c)
+
+    @staticmethod
+    def _extract_detail(r: dict[str, Any], be: Any) -> str:
+        """The model's time and tokens, and what came back, as counts (no titles or names)."""
+        parts = []
+        if r.get("cached"):
+            parts.append("cached")
+        elif r.get("extract_s") is not None:
+            note = f"model {secs(r['extract_s'])}"
+            usage = getattr(be, "last_usage", None)
+            if isinstance(usage, dict) and usage.get("prompt_tokens") is not None:
+                out = usage.get("completion_tokens") or 0
+                note += f", {usage['prompt_tokens']} tokens in, {out} out"
+                if out and r["extract_s"] > 0:
+                    note += f" ({out / r['extract_s']:.0f} tok/s overall)"
+            parts.append(note)
+        e = r.get("extracted") or {}
+        got = []
+        if isinstance(e.get("authors"), list):
+            got.append(n_of(len(e["authors"]), "author"))
+        if isinstance(e.get("topics"), list) and e["topics"]:
+            got.append(n_of(len(e["topics"]), "topic"))
+        got.append(f"abstract ({r['abstract_method']})" if e.get("abstract") else "no abstract")
+        parts.append(", ".join(got))
+        return " (" + "; ".join(parts) + ")"
 
     # --- models, memory, back-off -------------------------------------------------------------
 

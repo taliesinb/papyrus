@@ -428,6 +428,30 @@ def test_purged_bytes_are_skipped_and_never_triaged_again(tmp_path):
     assert logs and not any(MARK in m or str(dl) in m or "Zebedee" in m or "Payslip" in m for m in logs)
 
 
+def test_the_log_says_when_steps_start_how_long_they_took_and_what_the_classifier_said(tmp_path):
+    w, conn, dl, clock, logs = _watch(tmp_path)
+    _pdf(dl / "attention.pdf", "Attention Is All You Need. Abstract. We propose the Transformer.")
+    w.catch_up()
+    sha = conn.execute("SELECT sha256 FROM files").fetchone()[0]
+    ref = f"file 1 [{sha[:daemon_mod.HASH_CHARS]}]"
+    assert f"{ref} classify: starting (1 pending)" in logs
+    assert any(m.startswith(f"{ref} classified in ") and ": paper 0.9" in m for m in logs)
+    assert any(m.startswith(f"{ref} extract: starting") for m in logs)
+    assert any(m.startswith(f"{ref} metadata extracted in ") and "1 author," in m for m in logs)
+    assert any(m.startswith(f"{ref} created (work 1)") for m in logs)
+    assert any(m.startswith(f"{ref} indexed in ") for m in logs)
+    assert any(m.startswith(f"work 1 [{sha[:8]}] match:") for m in logs)
+    assert any(m.startswith("run ") and " took " in m for m in logs)
+    assert not any("Attention" in m or str(dl) in m for m in logs)
+
+
+def test_log_helpers():
+    assert [daemon_mod.secs(s) for s in (0.42, 6.21, 54.4, 185)] == ["0.42 s", "6.2 s", "54 s", "3 min 05 s"]
+    assert daemon_mod.top_kinds({"paper": 0.9, "report": 0.07, "slides": 0.02, "book": 0.005, "other": 0.005}) \
+        == "paper 0.90, report 0.07, slides 0.02"
+    assert daemon_mod.top_kinds({"paper": 0.999, "report": 0.001}) == "paper 1.00"
+
+
 def test_catch_up_leaves_files_still_being_written_to_the_debouncer(tmp_path):
     w, conn, dl, clock, logs = _watch(tmp_path)
     _make_pdf(dl / "fresh.pdf", "Just written, maybe still downloading")
