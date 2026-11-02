@@ -1,7 +1,9 @@
-"""The screen: the classify stage's fast first step, which sets obvious personal paperwork aside.
+"""The screen: the classify stage's fast first step. It sets obvious personal paperwork aside and,
+with per-kind weights, settles the kind of the documents it is sure about, so that the classifier
+(a 4B language model, ~1-4 s a file) is asked only about the rest.
 
-The classifier asks a 4B language model about every new file (~1 s; extraction takes 5-30 s more). The screen embeds what it sees of a file first, with a small embedding model
-(`llm/embed.py`, nomic-embed-text v1.5, ~30 ms), and scores it with a logistic regression:
+It embeds what it sees of a file with a small embedding model (`llm/embed.py`, through LM Studio)
+and scores the embedding with a logistic regression:
 
     input   version 3: the document description (`describe.build_state`), the text the classifier
             and the extraction model read. Earlier weights used inputs of their own: version 1
@@ -9,14 +11,24 @@ The classifier asks a 4B language model about every new file (~1 s; extraction t
             version 2 the same with "Pages: N" and "PDF metadata: title=…; creator=…" before the
             first words. The weights say which version they were trained on (`input_version`, 1
             if absent).
-    p       sigmoid(w · e/|e| + b), e the embedding of "classification: " + input
+    e       the embedding of the weights' `prefix` (the model's task instruction) + input,
+            L2-normalised
+    p       per-kind weights (`classes`, the classifier's KINDS): softmax(W e + b), a distribution
+            over the kinds, P(personal) among them; one-row (binary) weights: sigmoid(w · e + b) =
+            P(personal) alone
 
-When p >= the threshold (default: the weights' own, 0.9), classifying stops there: the file gets a
-`screen` claim ({p_personal, threshold, rejected: true}, source `screen:<backend>:<model>`), no
-classifier and no extraction, and promote *holds* it (no work, never served, its first pages kept
-for review: `papyrus purge --dry-run` lists it, `purge ID` erases it, `keep ID` sends it through
-the classifier and extraction). It never purges on its own. Below the threshold the classifier is
-asked as before, and the claim (rejected: false) is kept for evaluation.
+Three outcomes, recorded in a `screen` claim ({p_personal, threshold, rejected, and with per-kind
+weights kind, p_kind, accept, accepted, kind_probs}; source `screen:<backend>:<model>`):
+
+* P(personal) >= the threshold (default: the weights' own, 0.9): *set aside*. Classifying stops
+  there (no classifier, no extraction) and promote *holds* the file (no work, never served, its
+  first pages kept for review: `papyrus purge --dry-run` lists it, `purge ID` erases it, `keep ID`
+  sends it through the classifier and extraction). The screen never purges on its own.
+* the most likely kind is not personal and its P >= the accept threshold (per-kind weights only;
+  default: the weights' own `accept_threshold`, `[screen] accept`): *accepted*. classify.py
+  records the screen's `kind` and `kind_probs` (source `screen:…`) as the classifier would, and the
+  file goes on to extraction without the classifier.
+* otherwise the classifier is asked as before; the claim is kept for evaluation.
 
 The screen is skipped for files without a text layer (from the name alone it misjudged library
 files), for files the user has judged (`keep`), with `papyrus classify --no-screen`, and when it
@@ -24,9 +36,9 @@ is turned off (`[screen] enabled = false`, `PAPYRUS_SCREEN=0`) or the embedding 
 unavailable: it only ever saves work.
 
 The production weights are `data/screen.bin` (in the package), trained by
-`tools/screen/train.py` on the files of classified libraries (exported by `tools/screen/export.py`)
-and committed; the format is in `write_weights`. They hold a direction and a bias, no text: the
-standardisation is folded into them.
+`tools/screen/train.py` on the files of classified libraries (exported by `tools/screen/export.py`,
+and sorted folders by `tools/screen/folders.py`) and committed; the format is in `write_weights`.
+They hold directions and biases, no text: the standardisation is folded into them.
 """
 
 from __future__ import annotations
@@ -45,9 +57,10 @@ from typing import Any
 
 from . import db
 
-PREFIX = "classification: "
+PREFIX = "classification: "  # nomic-embed-text's task prefix: weights without their own `prefix`
 WORDS = 128
-MAGIC = b"PAPYSCR1"
+MAGIC = b"PAPYSCR1"  # one row: P(personal)
+MAGIC_KINDS = b"PAPYSCR2"  # a row per kind
 HOME = re.compile(r"^(/Users/[^/]+|/home/[^/]+)(?=/|$)")
 
 
@@ -122,40 +135,82 @@ def file_input(conn: sqlite3.Connection, file_id: int, version: int = 1) -> str 
 
 @dataclass(frozen=True)
 class Weights:
-    w: tuple[float, ...]
-    b: float
+    """`w`: one row (P(personal)) or a row per class (`meta['classes']`); `b`: a bias per row."""
+
+    w: tuple[tuple[float, ...], ...]
+    b: tuple[float, ...]
     meta: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def classes(self) -> list[str]:
+        return list(self.meta.get("classes") or ["personal"])
+
+    @property
+    def kinds(self) -> bool:
+        """Per-kind weights (a distribution over the kinds), not P(personal) alone."""
+        return len(self.w) > 1
 
     @property
     def threshold(self) -> float:
         return float(self.meta.get("threshold", 0.9))
 
     @property
+    def accept_threshold(self) -> float | None:
+        """P(kind) at which the screen's kind is taken without the classifier (per-kind weights)."""
+        t = self.meta.get("accept_threshold")
+        return float(t) if t is not None and self.kinds else None
+
+    @property
     def input_version(self) -> int:
         return int(self.meta.get("input_version", 1))
 
-    def p(self, embedding: list[float]) -> float:
-        """P(personal) for an embedding (L2-normalised here)."""
-        if len(embedding) != len(self.w):
-            raise ValueError(f"embedding has {len(embedding)} dimensions, the weights {len(self.w)}")
+    @property
+    def prefix(self) -> str:
+        """The task instruction embedded before the input (the model's own convention)."""
+        return self.meta.get("prefix", PREFIX)
+
+    def probs(self, embedding: list[float]) -> dict[str, float]:
+        """Class -> P for an embedding (L2-normalised here); one-row weights: {'personal': P}."""
+        if len(embedding) != len(self.w[0]):
+            raise ValueError(f"embedding has {len(embedding)} dimensions, the weights {len(self.w[0])}")
         norm = math.sqrt(sum(x * x for x in embedding)) or 1.0
-        z = sum(a * x for a, x in zip(self.w, embedding)) / norm + self.b
-        return 1.0 / (1.0 + math.exp(-z)) if z >= -700 else 0.0
+        z = [sum(a * x for a, x in zip(row, embedding)) / norm + b for row, b in zip(self.w, self.b)]
+        if not self.kinds:
+            return {"personal": 1.0 / (1.0 + math.exp(-z[0])) if z[0] >= -700 else 0.0}
+        m = max(z)
+        e = [math.exp(v - m) for v in z]
+        s = sum(e)
+        return {c: v / s for c, v in zip(self.classes, e)}
+
+    def p(self, embedding: list[float]) -> float:
+        """P(personal) for an embedding."""
+        return self.probs(embedding).get("personal", 0.0)
 
 
-def write_weights(path: Path, w: list[float], b: float, meta: dict[str, Any]) -> None:
-    """MAGIC, u32 header length, header JSON (utf-8; `dim`, `bias`, `model`, `prefix`, `words`,
-    `threshold`, training counts and metrics), then `dim` little-endian float32 weights."""
-    header = json.dumps({**meta, "dim": len(w), "bias": float(b)}, sort_keys=True).encode()
-    a = array("f", w)
+def write_weights(path: Path, w: list[float] | list[list[float]], b: float | list[float],
+                  meta: dict[str, Any]) -> None:
+    """One row (P(personal)): MAGIC, u32 header length, header JSON (utf-8; `dim`, `bias`, `model`,
+    `prefix`, `threshold`, training counts and metrics), then `dim` little-endian float32 weights.
+    A row per class: MAGIC_KINDS, the same header with `classes` and `bias` a list (one per class),
+    then len(classes) x dim float32, row by row."""
+    rows = [list(w)] if not w or not isinstance(w[0], (list, tuple)) else [list(r) for r in w]  # type: ignore[arg-type]
+    biases = [float(b)] if isinstance(b, (int, float)) else [float(x) for x in b]
+    if len(rows) != len(biases) or len({len(r) for r in rows}) != 1:
+        raise ValueError("screen weights: one bias per row, rows of one length")
+    if len(rows) > 1 and len(meta.get("classes") or []) != len(rows):
+        raise ValueError("screen weights: per-kind weights need `classes`, one per row")
+    one = len(rows) == 1
+    header = json.dumps({**meta, "dim": len(rows[0]), "bias": biases[0] if one else biases},
+                        sort_keys=True).encode()
+    a = array("f", [x for r in rows for x in r])
     if sys.byteorder != "little":
         a.byteswap()
-    path.write_bytes(MAGIC + struct.pack("<I", len(header)) + header + a.tobytes())
+    path.write_bytes((MAGIC if one else MAGIC_KINDS) + struct.pack("<I", len(header)) + header + a.tobytes())
 
 
 def read_weights(path: Path | None = None) -> Weights:
     data = (path or weights_path()).read_bytes()
-    if data[:8] != MAGIC:
+    if data[:8] not in (MAGIC, MAGIC_KINDS):
         raise ValueError("not a screen weights file")
     (n,) = struct.unpack("<I", data[8:12])
     meta = json.loads(data[12:12 + n])
@@ -163,9 +218,12 @@ def read_weights(path: Path | None = None) -> Weights:
     a.frombytes(data[12 + n:])
     if sys.byteorder != "little":
         a.byteswap()
-    if len(a) != meta["dim"]:
-        raise ValueError(f"screen weights: {len(a)} values, header says {meta['dim']}")
-    return Weights(tuple(a), float(meta["bias"]), meta)
+    dim = meta["dim"]
+    biases = [meta["bias"]] if data[:8] == MAGIC else list(meta["bias"])
+    if len(a) != dim * len(biases):
+        raise ValueError(f"screen weights: {len(a)} values, header says {len(biases)} x {dim}")
+    rows = tuple(tuple(a[i * dim:(i + 1) * dim]) for i in range(len(biases)))
+    return Weights(rows, tuple(float(x) for x in biases), meta)
 
 
 # --- screening a file ---------------------------------------------------------------------------
@@ -173,22 +231,42 @@ def read_weights(path: Path | None = None) -> Weights:
 
 @dataclass
 class Screen:
-    """An embedder (usually behind the inference cache) and the weights."""
+    """An embedder (usually behind the inference cache), the weights and the two thresholds:
+    P(personal) to set a file aside, and P(kind) to accept the screen's kind (None: never)."""
 
     embedder: Any
     weights: Weights
     threshold: float
+    accept: float | None = None
 
     @property
     def tag(self) -> str:
         return "screen:" + self.embedder.info().tag
 
-    def p_personal(self, text: str) -> tuple[float, str | None]:
-        """(P(personal), inference call id) for a screen input."""
+    def score(self, text: str) -> tuple[dict[str, float], str | None]:
+        """(class -> P, inference call id) for a screen input."""
         from . import inference
 
-        (e,) = self.embedder.embed([PREFIX + text])
-        return self.weights.p(e), inference.call_of(self.embedder)
+        (e,) = self.embedder.embed([self.weights.prefix + text])
+        return self.weights.probs(e), inference.call_of(self.embedder)
+
+    def p_personal(self, text: str) -> tuple[float, str | None]:
+        """(P(personal), inference call id) for a screen input."""
+        probs, call = self.score(text)
+        return probs.get("personal", 0.0), call
+
+    def decide(self, probs: dict[str, float]) -> dict[str, Any]:
+        """The claim's value for a distribution: set aside, accepted, or neither."""
+        p = probs.get("personal", 0.0)
+        value: dict[str, Any] = {"p_personal": round(p, 4), "threshold": self.threshold,
+                                 "rejected": p >= self.threshold}
+        if self.weights.kinds:
+            kind = max(probs, key=probs.__getitem__)
+            value.update(kind=kind, p_kind=round(probs[kind], 4), accept=self.accept,
+                         accepted=(not value["rejected"] and kind != "personal" and self.accept is not None
+                                   and probs[kind] >= self.accept),
+                         kind_probs={k: round(v, 6) for k, v in probs.items()})
+        return value
 
 
 def get_screen(threshold: float | None = None, weights: Weights | None = None) -> Screen | None:
@@ -203,14 +281,17 @@ def get_screen(threshold: float | None = None, weights: Weights | None = None) -
     emb = LMStudioEmbedder(model=weights.meta.get("model"))
     if not emb.available():
         return None
-    return Screen(emb, weights, threshold if threshold is not None else cfg.threshold or weights.threshold)
+    accept = None if cfg.accept is False or not weights.kinds else (
+        weights.accept_threshold if cfg.accept is None else float(cfg.accept))
+    return Screen(emb, weights, threshold if threshold is not None else cfg.threshold or weights.threshold, accept)
 
 
 def screen_file(conn: sqlite3.Connection, file_id: int, screen: Screen, run_id: int | None = None
                 ) -> dict[str, Any] | None:
-    """Screen one pending file and record the claim. Returns {p_personal, threshold, rejected,
-    screen_s}, or None when the screen does not apply (no text layer, the user has judged it).
-    A rejected file is marked classified and its extraction skipped; the caller stops there."""
+    """Screen one pending file and record the claim. Returns the claim's value (`decide`) with
+    `screen_s` and `call_id`, or None when the screen does not apply (no text layer, the user has
+    judged it). A rejected file is marked classified and its extraction skipped; the caller stops
+    there. An accepted one is left to the caller (classify.classify_file records its kind)."""
     import time
 
     from . import inference
@@ -224,14 +305,14 @@ def screen_file(conn: sqlite3.Connection, file_id: int, screen: Screen, run_id: 
     sha = conn.execute("SELECT sha256 FROM files WHERE id=?", (file_id,)).fetchone()[0]
     t0 = time.monotonic()
     with inference.subject(sha):
-        p, call_id = screen.p_personal(text)
-    value = {"p_personal": round(p, 4), "threshold": screen.threshold, "rejected": p >= screen.threshold}
+        probs, call_id = screen.score(text)
+    value = screen.decide(probs)
     with db.tx(conn):
-        db.assert_(conn, "file", file_id, "screen", value, source=screen.tag, confidence=round(p, 4),
+        db.assert_(conn, "file", file_id, "screen", value, source=screen.tag, confidence=value["p_personal"],
                    run_id=run_id, call_id=call_id)
         if value["rejected"]:
             conn.execute("UPDATE files SET classify_status='done', extract_status='skipped' WHERE id=?", (file_id,))
-    return {**value, "screen_s": round(time.monotonic() - t0, 3)}
+    return {**value, "screen_s": round(time.monotonic() - t0, 3), "call_id": call_id}
 
 
 def rejected(claims: dict[str, list[dict]]) -> float | None:

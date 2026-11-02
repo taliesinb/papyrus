@@ -13,8 +13,9 @@ looks at what is loaded:
   loads beside them if it fits (or memory pressure is normal); else ours are unloaded first (a
   swap, at a phase change; see daemon.py).
 
-Embedding models (the screen's, 84 MB) don't count: `lmstudio.loaded_models` lists language
-models only, and the watcher's gate lets the screen load its model beside one (daemon.py).
+Embedding models (the screen's, 84-640 MB) don't count: `lmstudio.loaded_models` lists language
+models only, and the watcher's gate lets the screen load its model beside one when memory
+pressure is normal, or it fits (daemon.py, `_gate`).
 
 `release_idle` unloads our models once the watcher has not used them for `idle_s` seconds (and
 at exit). A model someone else loaded is never ours, so it is never unloaded. A model of ours

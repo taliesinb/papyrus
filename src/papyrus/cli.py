@@ -267,7 +267,9 @@ def classify(ctx: click.Context, file_ids: tuple[int, ...], classifier_spec: str
                        "about every file)", err=True)
         if scr is not None:
             scr.embedder = inference.cached_embedder(scr.embedder, fresh=fresh, pressure=memory_pressure)
-    click.echo(f"classifying {len(ids)} files with " + (f"{scr.tag} (P >= {scr.threshold:g}), then " if scr else "")
+    click.echo(f"classifying {len(ids)} files with " + (f"{scr.tag} (P(personal) >= {scr.threshold:g}"
+                                                     + (f", P(kind) >= {scr.accept:g}" if scr.accept else "")
+                                                     + "), then " if scr else "")
                + (clf.info().tag if clf else "no classifier"))
     with db.recorded_run(conn, "classify", {"files": len(ids)}, backend=clf.info().tag if clf else None,
                          prompt_version=PROMPT_VERSION) as (run_id, stats):
@@ -287,6 +289,12 @@ def classify(ctx: click.Context, file_ids: tuple[int, ...], classifier_spec: str
                 click.echo(f"{fid:5} - {'personal':13} {sc['screen_s']:5.2f}s screen P(personal)={sc['p_personal']:.2f}")
                 continue
             kind = r.get("kind", ("?",))[0]
+            if r.get("accepted"):
+                stats["accepted"] = stats.get("accepted", 0) + 1
+                sc = r["screen"]
+                click.echo(f"{fid:5} + {kind:13} {sc['screen_s']:5.2f}s screen P({kind})={sc['p_kind']:.2f}")
+                stats["library"] = stats.get("library", 0) + 1
+                continue
             took = f"{r.get('classify_s', 0):5.1f}s" if "classify_s" in r else "     -"
             if r["status"] == "classified":
                 stats["library"] = stats.get("library", 0) + 1
@@ -374,6 +382,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
     PDF metadata, model claims and the stored copy are erased; the same bytes are skipped from
     then on. `papyrus keep PATH` brings a purged file back from its original."""
     from . import purge
+    from .classify import kind_probs
     from .screen import rejected as screen_rejected
 
     conn = _conn(ctx)
@@ -395,7 +404,7 @@ def purge_cmd(ctx: click.Context, file_ids: tuple[int, ...], dry_run: bool) -> N
         held = [fid for fid, why in found if not why]
     for fid in held:
         claims = db.current_assertions(conn, "file", fid)
-        probs = next((c["value"] for c in claims.get("kind_probs", []) if c["source"].startswith("classify:")), {})
+        probs = (kind_probs(claims) or ({}, None))[0]
         title = next((c["value"] for c in claims.get("title", [])), "") or _filename(conn, fid)
         by = ""
         if not probs and (p := screen_rejected(claims)) is not None:

@@ -13,7 +13,8 @@ from typing import Any
 
 from . import db
 
-SOURCE_RANK = [("user", 0), ("api:", 1), ("classify:", 2), ("llm:", 3), ("heuristic:", 4), ("pdf:", 5)]
+SOURCE_RANK = [("user", 0), ("api:", 1), ("classify:", 2), ("screen:", 3), ("llm:", 4), ("heuristic:", 5),
+               ("pdf:", 6)]
 
 
 def _rank(source: str) -> int:
@@ -76,15 +77,17 @@ def is_library(claims: dict[str, list[dict]]) -> bool:
 
     The classifier's *kind* distribution is well calibrated, but its yes/no 'is this library
     material' answer is biased towards yes (0.7 for an exam paper it calls personal with p=1.0).
-    So: the user's own claim if any, else P(kind=personal) from the classifier when present, else
-    the screen's verdict if it set the file aside (screen.py), else the extraction model's flag.
+    So: the user's own claim if any, else P(kind=personal) from the classifier when present (or
+    from the screen, when it accepted a kind), else the screen's verdict if it set the file aside
+    (screen.py), else the extraction model's flag.
     """
     for c in claims.get("is_library_material") or []:
         if c["source"] == "user":
             return c["value"] is not False
-    for c in claims.get("kind_probs") or []:
-        if c["source"].startswith("classify:") and isinstance(c["value"], dict):
-            return c["value"].get("personal", 0.0) < 0.5
+    from .classify import kind_probs
+
+    if (kp := kind_probs(claims)) is not None:
+        return kp[0].get("personal", 0.0) < 0.5
     from .screen import rejected
 
     if rejected(claims) is not None:  # set aside by the screen, before any language model was asked

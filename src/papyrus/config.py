@@ -12,6 +12,7 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     [screen]              # the classify stage's fast first step (screen.py)
     enabled = true        # also PAPYRUS_SCREEN=0
     threshold = 0.9       # P(personal) at which a file is set aside without asking the 4B model
+    accept = 0.9          # P(kind) at which the screen's kind is taken without the 4B (false: never)
 
     [describe]            # the document description every model reads (describe.build_state, pagetext.py)
     state_tokens = 1000   # about this many tokens: the header, then pages from the front and the back
@@ -64,11 +65,14 @@ classifier = "auto"
 # Start LM Studio's local server (`lms server start`) when it isn't running.
 autostart = true
 
-# The classify stage's fast first step: a small embedding model (84 MB, ~30 ms a file) sets obvious
-# personal paperwork aside, held for review, before the language model is asked.
+# The classify stage's fast first step: a small embedding model (0.1-0.4 s a file) sets obvious
+# personal paperwork aside, held for review, and settles the kind of the documents it is sure
+# about, before the language model is asked.
 # [screen]
 # enabled = true
 # threshold = 0.9         # P(personal) needed to set a file aside (default: the weights' own)
+# accept = 0.9            # P(kind) needed to take the screen's kind without the classifier
+#                         # (default: the weights' own; false: always ask the classifier)
 
 # What every model reads of a document (the document description): its names, folder, origin and PDF metadata, then
 # pages from the front and, for a longer document, the back, within about this many tokens.
@@ -168,6 +172,7 @@ def lmstudio_autostart() -> tuple[bool, str]:
 class ScreenSettings:
     enabled: bool = True
     threshold: float | None = None  # None: the weights' own
+    accept: float | bool | None = None  # P(kind) to accept the screen's kind; None: the weights' own; False: never
 
 
 def screen() -> ScreenSettings:
@@ -184,7 +189,10 @@ def screen() -> ScreenSettings:
     t = section.get("threshold")
     if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 < t <= 1):
         raise ConfigError(f"{path()}: screen.threshold must be a probability in (0, 1], got {t!r}")
-    return ScreenSettings(enabled, None if t is None else float(t))
+    a = section.get("accept")
+    if a is not None and a is not False and (a is True or not isinstance(a, (int, float)) or not 0 < a <= 1):
+        raise ConfigError(f"{path()}: screen.accept must be a probability in (0, 1] or false, got {a!r}")
+    return ScreenSettings(enabled, None if t is None else float(t), a if a is None or a is False else float(a))
 
 
 @dataclass(frozen=True)

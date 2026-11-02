@@ -40,7 +40,7 @@
 
 	function sourceClass(s: string): string {
 		if (s.startsWith('llm:') || s === 'extract') return 'llm';
-		if (s.startsWith('classify:')) return 'classify';
+		if (s.startsWith('classify:') || s.startsWith('screen:')) return 'classify';
 		if (s.startsWith('api:')) return 'api';
 		if (s.startsWith('heuristic:') || s.startsWith('pdf:')) return 'heur';
 		if (s === 'user') return 'user';

@@ -1,10 +1,14 @@
 """Text embeddings from LM Studio's OpenAI-compatible `/v1/embeddings` (the `Embedder` contract
 in base.py), for the screen (screen.py).
 
-The default model, nomic-embed-text v1.5, is 84 MB, about 30 ms per input on a base M4,
-and loads just in time (~6 s) next to a language model without crowding it out. It expects a
-task prefix on each input ("classification: "), which the caller adds, so that the inference
-cache records the exact text sent.
+The screen's weights name their model (`model` in data/screen.bin), so this default only serves
+callers without weights. Measured on a base M4 for the ~1000-token document description:
+nomic-embed-text v1.5 (84 MB) ~110 ms, Qwen3-Embedding-0.6B (640 MB, the per-kind weights'
+model) ~420 ms; both load just in time in 1-6 s beside a language model. Each model expects its
+own task prefix on every input, which the caller adds (the weights' `prefix`), so that the
+inference cache records the exact text sent. LM Studio serves only models it indexes as
+embedding models: jina-embeddings-v5, granite-embedding R2 and LFM2.5-Embedding GGUFs load as
+language models, and /v1/embeddings won't take them.
 """
 
 from __future__ import annotations

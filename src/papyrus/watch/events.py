@@ -7,7 +7,7 @@ Every line has `t` (UTC, ISO 8601, milliseconds) and `event`:
     scan      id, outcome (new | dup | purged_skipped | ...), ms   (a file added: snapshot, hash, first pages)
     step      stage (read | classify | extract | index | match), id, ms, outcome (done | no_progress |
               backoff | error), phase, and for classify: result (screened | library | not_library),
-              p_personal; for extract: cached
+              p_personal, by (screen, when the screen settled the kind); for extract: cached
     model     msg (a model loaded, unloaded or swapped, from watch/models.ModelLedger)
     backoff   stage, state, reason, delay_s
     drained   the queue went empty: busy_s since the work started, steps per stage, files added

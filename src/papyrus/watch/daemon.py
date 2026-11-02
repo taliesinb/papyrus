@@ -654,12 +654,17 @@ class Watch:
         c["classified"] += 1
         self.step_detail = {"result": "screened" if r.get("screened") else
                             "not_library" if r["status"] == "done" else "library"}
+        if r.get("accepted"):
+            self.step_detail["by"] = "screen"
         if r.get("p_personal") is not None:
             self.step_detail["p_personal"] = round(r["p_personal"], 3)
         if r.get("screened"):
             c["screened"] += 1
             self.step_detail["p_personal"] = r["screen"]["p_personal"]
             self.log(f"file {fid} set aside by the screen (P(personal)={r['screen']['p_personal']:.2f})")
+        elif r.get("accepted"):
+            c["accepted"] += 1
+            self.log(f"file {fid} classified by the screen (P(kind)={r['screen']['p_kind']:.2f})")
         elif r["status"] == "done":  # not library material: no metadata extraction
             self.log(f"file {fid} classified: not library (P(personal)={r['p_personal']:.2f})")
         else:
@@ -703,7 +708,9 @@ class Watch:
             self.conn.execute("UPDATE runs SET backend=? WHERE id=?", (tag, run_id))
             self.events.emit("models", extract=tag, classify=dec.info().tag if dec is not None else None,
                              screen=self.screen.tag if self.screen else None)
-            self.log("classify with " + (f"{self.screen.tag} (P >= {self.screen.threshold:g}), then " if self.screen else "")
+            self.log("classify with " + (f"{self.screen.tag} (P(personal) >= {self.screen.threshold:g}"
+                                         + (f", P(kind) >= {self.screen.accept:g}" if self.screen.accept else "")
+                                         + "), then " if self.screen else "")
                      + tag + (f" + {dec.info().tag}" if dec is not None else " (no classifier)"))
         return self.models
 
@@ -722,16 +729,26 @@ class Watch:
         if level == CRITICAL:
             raise Backoff(WAITING_MEMORY, "memory pressure is critical")
         if kind == "embed":
-            # the screen's embedding model (84 MB) loads beside whatever is loaded, even under
-            # "warn" (which this machine reads whenever LM Studio holds a model); LM Studio's own
-            # idle timeout unloads it
-            return
+            # the screen's embedding model (84-640 MB) loads beside whatever is loaded; under "warn"
+            # (which this machine reads whenever LM Studio holds a model) only if it is loaded
+            # already or fits (system.has_room). LM Studio's own idle timeout unloads it.
+            if level == NORMAL or self._embedder_fits():
+                return
+            raise Backoff(WAITING_MEMORY, f"memory pressure ({level}): no room for the screen's model")
         if kind == "lmstudio" and model:
             # a model that is already loaded costs little more; loading one beside another under
             # pressure would swap, so then the watcher swaps its own instead (models.ModelLedger)
             self.ledger.claim(model, may_load=level == NORMAL)
         elif level != NORMAL:
             raise Backoff(WAITING_MEMORY, f"memory pressure ({level})")
+
+    def _embedder_fits(self) -> bool:
+        emb = getattr(self.screen.embedder, "inner", self.screen.embedder) if self.screen else None
+        if emb is None:
+            return True
+        if getattr(emb, "model_loaded", lambda: None)():
+            return True
+        return self.ledger.room is not None and self.ledger.room(emb.info().model)
 
     def _back_off(self, stage: str, b: Backoff, c: Counter) -> None:
         if b.state == WAITING_MEMORY:

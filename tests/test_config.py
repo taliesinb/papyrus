@@ -59,6 +59,18 @@ def test_bad_config_is_reported(monkeypatch, text, msg):
         config.lmstudio_autostart()
 
 
+def test_screen_accept_threshold():
+    assert config.screen().accept is None  # the weights' own
+    _write("[screen]\naccept = 0.95\n")
+    assert config.screen().accept == 0.95
+    _write("[screen]\naccept = false\n")
+    assert config.screen().accept is False
+    for bad in ("true", "1.5", "'high'"):
+        _write(f"[screen]\naccept = {bad}\n")
+        with pytest.raises(config.ConfigError, match="screen.accept"):
+            config.screen()
+
+
 def test_ensure_server_starts_lms_once_and_only_locally(monkeypatch):
     up = iter([False, False, True])
     monkeypatch.setattr(lmstudio, "server_up", lambda url, timeout=2.0: next(up))

@@ -229,11 +229,13 @@ history.
   and a 5× slowdown. Don't load models you don't need, and only unload what
   you loaded (`~/.cache/lm-studio/bin/lms ps / unload`).
   The exception is the screen's embedding model
-  (`text-embedding-nomic-embed-text-v1.5`, 84 MB, ~100 ms a file for the
-  ~1000-token state, within its 2048-token context; ~6 s to load just in
-  time). It sits beside the 4B without pressure (measured 2026-11-01),
-  `lmstudio.loaded_models` doesn't list it, and the watcher lets it load even
-  under "warn". LM Studio's own idle timeout (1 h) unloads it.
+  (`text-embedding-qwen3-embedding-0.6b`, 640 MB, ~400 ms a file for the
+  ~1000-token description, 8192-token context when loaded just in time, ~1 s
+  to load; the old weights' nomic-embed-text was 84 MB and ~100 ms).
+  `lmstudio.loaded_models` doesn't list it; the watcher lets it load beside
+  the 4B when memory pressure is normal, and under "warn" only if it is
+  loaded already or fits (`system.has_room`). LM Studio's own idle timeout
+  (1 h) unloads it.
 * **Speed on this machine:**
 
   | model | prompt processing | generation | per file |
@@ -277,23 +279,43 @@ The seed is part of the inference cache's key either way.
 
 **The screen** (`screen.py`, `data/screen.bin`, `tools/screen/`):
 
-* `data/screen.bin` is the production classifier: a logistic regression on
-  nomic-embed-text embeddings of the document description (`describe.build_state`,
-  input version 3; the weights record the version they were trained on, and
-  versions 1 and 2, the name, folder, size, host and first 128 words, are
-  still read). Changing the description (`build_state`, `pagetext.py`, the
-  `[describe]` budget) changes what the screen sees: retrain it with
-  `tools/screen/export.py` (each library, any machine) and
-  `tools/screen/train.py` (its docstring has the commands), then commit the
-  new file. The weights hold no text (standardisation folded in).
+* `data/screen.bin` is the production classifier: a multinomial logistic
+  regression over the classifier's `KINDS` on Qwen3-Embedding-0.6B embeddings
+  of the document description (`describe.build_state`, input version 3),
+  behind the weights' own task `prefix`. It sets a file aside at
+  P(personal) >= 0.9 and *accepts* a library kind at P(kind) >= 0.9
+  (`[screen] accept`; the 4B is then not asked), else the 4B decides. The
+  weights record the model, prefix, classes, thresholds and input version; the
+  older one-row weights (P(personal) on nomic-embed-text, versions 1-3) are
+  still read. Changing the description (`build_state`, `pagetext.py`, the
+  `[describe]` budget) or `KINDS` changes what the screen sees or says:
+  retrain it with `tools/screen/export.py` (each library, any machine),
+  `tools/screen/folders.py` (a folder tree sorted by kind, e.g.
+  `~/Dropbox/doc`, labelled by the 4B) and `tools/screen/train.py` (its
+  docstring has the commands), then commit the new file. The weights hold no
+  text (standardisation folded in).
+* Its target is the 4B's kind distribution, so it learns to say what the 4B
+  would, and only where it is sure. Measured 2026-11-02 (809 files, 10-fold
+  CV grouped by series): at P(kind) >= 0.9 it accepts 67% of library files
+  and agrees with the 4B on 98% of them, and accepted no personal file; on
+  606 files of `~/Dropbox/doc` (folders as truth) "screen if sure, else the
+  4B" scores 0.838, the 4B alone 0.833. On kinds with few examples
+  (chapter, article, report, lecture notes) it is rarely sure, so the 4B
+  still decides those. More sorted files help most there.
+* LM Studio serves `/v1/embeddings` only for models it indexes as embedding
+  models: jina-embeddings-v5, granite-embedding R2 and LFM2.5-Embedding GGUFs
+  load as LLMs and are refused (they also did worse than nomic on kinds).
 * Another machine's library at an older schema can be exported from a
   `.backup` copy brought up to the current schema (the copy only), with
   `PAPYRUS_HOME` at a directory whose `store/` holds its PDFs: `build_state`
   reads pages from the stored copies.
 * The exports and the training run see the pages of personal
   documents. Keep them out of git (`/training/` is ignored), tests and logs.
-  `train.py` embeds without the inference cache on purpose: the cache would
-  write purged documents' text back to disk.
+  `train.py` embeds (and, with `--ask-classifier`, asks the 4B about files
+  the screen set aside) without the inference cache on purpose: the cache
+  would write purged documents' text back to disk. Cross-validate grouped by
+  series (`train.group_of`): ungrouped, a 23-file lecture series made the
+  lecture-notes score look like 41/46 instead of 18/46.
 * Its labels come from earlier classifying (then called triage), which made
   mistakes: the first training run found two personal documents it had
   promoted to works. Where the screen disagrees with a label, look at the file.
