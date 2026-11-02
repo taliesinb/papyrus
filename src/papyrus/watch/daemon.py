@@ -381,6 +381,10 @@ class Watch:
                 steps, more = 0, False
                 while True:
                     if self.paused:  # paused mid-batch: the step in progress is done; stop here
+                        if not self.was_paused:  # so pump() sees the resume as a change
+                            self.was_paused = True
+                            self.log("ingestion paused")
+                        more = True  # work is left: take it up on resume
                         break
                     if self.watcher is not None:  # new files go first
                         for p in self.watcher.get(0):

@@ -604,6 +604,14 @@ def test_a_pause_mid_batch_stops_after_the_step_in_progress(tmp_path):
     w.catch_up()
     assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 3  # the scan came first
     assert conn.execute("SELECT count(*) FROM files WHERE classify_status='done'").fetchone()[0] == 1
+    assert json.loads(w.status_path.read_text())["state"] == "paused" and "ingestion paused" in logs
+    # resumed a moment later (2026-11-02: the menu kept saying "paused": the resume wasn't noticed)
+    w._step = real
+    w.pause_path.unlink()
+    w.pump()
+    assert "ingestion resumed" in logs
+    assert conn.execute("SELECT count(*) FROM files WHERE classify_status='done'").fetchone()[0] == 3
+    assert json.loads(w.status_path.read_text())["state"] != "paused"
 
 
 def test_an_ocr_back_off_does_not_hold_triage(tmp_path):
