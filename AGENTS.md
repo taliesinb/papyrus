@@ -256,6 +256,28 @@ history.
   the 4B when memory pressure is normal, and under "warn" only if it is
   loaded already or fits (`system.has_room`). LM Studio's own idle timeout
   (1 h) unloads it.
+* **Just-in-time loading fights the pipeline** (found setting up the second
+  Mac, 2026-11-02). The watcher needs three models at once (the screen's
+  embedding model, the 4B classifier, the 2B extractor), but relies on LM
+  Studio loading them just in time, and two LM Studio settings (Settings →
+  Developer; `settings.json` `developer.*`) undo that:
+  * "Only Keep Last JIT Loaded Model" (`unloadPreviousJITModelOnLoad`, on by
+    default): each JIT load evicts the previous JIT model, so the screen and
+    the 4B evicted each other on every file (classify 20-25 s a file instead
+    of ~4.5 s), and the 2B evicted the embedding model;
+  * "Auto unload unused JIT loaded models" (`jitModelTTL`, 1 h): idle
+    models go, and come back at…
+  * …the model's *maximum* context (262,144 tokens for Qwen3.5-4B) unless
+    LM Studio has a default context for it: slow prompts and gigabytes of
+    KV cache.
+
+  On a fresh machine: turn the TTL off (done on both Macs) and load the three
+  models explicitly, which neither setting touches:
+  `lms load <key> --context-length 8192 --parallel 4 --identifier <key> -y`
+  for `qwen3.5-4b-mlx`, `qwen3.5-2b-optiq` and
+  `text-embedding-qwen3-embedding-0.6b` (`lms ps`: no TTL, context 8192).
+  An explicit load doesn't survive a reboot or an LM Studio restart. The
+  watcher should do this itself (docs/architecture.md, open issues).
 * **Speed on this machine:**
 
   | model | prompt processing | generation | per file |

@@ -320,6 +320,20 @@ Roughly by value:
   * AIMA 4th edition was matched to the 2010 3rd edition.
   * The Sutton & Barto PDF came out titled by its series name ("Adaptive
     Computation and Machine Learning").
+* **The watcher loads its models itself.** It relies on LM Studio's
+  just-in-time loading today, which LM Studio's own JIT settings undo (each
+  JIT load evicting the last; idle unloads; reloads at the model's maximum
+  context: AGENTS.md, "Just-in-time loading fights the pipeline"). On a fresh
+  machine the screen and the 4B evicted each other on every file. Instead,
+  `ModelLedger.claim` should load each model it needs explicitly (`lms load
+  --context-length 8192 --parallel 4`, or LM Studio's REST load endpoint), so
+  the load survives the JIT settings, still loading only what fits and
+  unloading only its own; `papyrus config` could report the two settings.
+* **OpenAlex's daily budget:** the key's $1 a day (10,000 credits; a title
+  search costs 10) ran out on 2026-11-02 with two machines ingesting
+  (`Retry-After` until midnight UTC; matching waited ~13 h). Options: fall
+  back to the keyless allowance when the key's budget is spent; spend fewer
+  credits (ids before title searches, one search per work); prepaid funds.
 * **Keys:** `S2_API_KEY` (venues, SPECTER2 embeddings, papers only S2 has,
   e.g. Bellard's) and `OPENALEX_API_KEY`. Ask the user.
 * **Embeddings and semantic search:**
