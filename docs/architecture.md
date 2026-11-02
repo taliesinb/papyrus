@@ -104,7 +104,7 @@ background:
    the pipeline, or set aside, of those it has had since it was last idle;
    `stages`: per stage with files left, its state, a moving average of seconds
    per file and the time left; the queue's counts, `eta_s`), served in
-   `/api/version` for the menu bar ("Ingesting N/M files", then a line per
+   `/api/version` for the menu bar ("Ingested N/M files", then a line per
    stage: Reading, Classifying, Extracting, Indexing, Matching); one watcher
    per library (`<home>/watch.lock`, an flock). The menu-bar scroll's paper is
    solid while the queue has items. **Performance log:**

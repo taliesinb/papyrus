@@ -189,7 +189,7 @@ variant (`<home>/api-log/`), since it can hold one library's Slack messages.
     without stopping the run.
 * **The menu's watcher lines**, in a section of their own, come from
   `/api/version`'s `watch` (the library's `watch.json`): "Watching for new
-  files" when there is nothing to do; otherwise "Ingesting N/M files" (files
+  files" when there is nothing to do; otherwise "Ingested N/M files" (files
   through the pipeline, or set aside, of those it has had since it was last
   idle) and one line per stage with files left, in pipeline order: Reading
   (OCR), Classifying, Extracting, Indexing, Matching. The stage being worked

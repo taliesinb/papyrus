@@ -423,7 +423,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The menu's lines about the watcher: "Watching for new files" when there is nothing to do, else
-    /// "Ingesting N/M files" and one line per pipeline stage with work left. The stages take turns
+    /// "Ingested N/M files" and one line per pipeline stage with work left. The stages take turns
     /// (one loop, local models), so one is active and the others say "pending" (or why they wait).
     var watchLines: [String] {
         guard config.watch != nil else { return [] }
@@ -436,7 +436,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var lines: [String] = []
         let stages = w.stages ?? []
         if let i = w.ingesting, !stages.isEmpty {
-            lines.append("Ingesting \(i.done)/\(i.total) \(i.total == 1 ? "file" : "files")")
+            lines.append("Ingested \(i.done)/\(i.total) \(i.total == 1 ? "file" : "files")")
         } else if stages.isEmpty {
             lines.append("Watching for new files")
         } else {
