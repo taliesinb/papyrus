@@ -20,7 +20,6 @@ def client(handler):
 
 @pytest.fixture(autouse=True)
 def reset(monkeypatch):
-    monkeypatch.setattr(s2, "_cooldown_until", 0.0)
     monkeypatch.delenv("S2_API_KEY", raising=False)
 
 

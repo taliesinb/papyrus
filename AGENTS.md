@@ -17,9 +17,10 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_match_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | classify | extract | promote | index | match | ingest | purge | keep | watch | inference | works | work | files | show | search | stats | config | mcp | slack | resolve
+uv run papyrus --help                  # scan | download | store | classify | extract | promote | index | match | ingest | purge | keep | watch | inference | services | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/classifier in effect
 uv run papyrus inference stats         # every model call so far: hits, failures, timings (also: show CALL_ID, prune)
+uv run papyrus services stats          # every web API call: failures, pauses, reuse, timings (also: state, show, pause, resume, import)
 uv run python tools/words/fetch.py     # src/papyrus/data/words.txt (gitignored; the installers run it)
 PAPYRUS_HOME=/tmp/ph uv run papyrus watch --dir /tmp/dl   # the ingestion daemon in the foreground (--once: catch up and exit; --status)
 cd tools/afm-bridge && swift build -c release                # Apple Foundation Models bridge (CLT is enough)
@@ -98,7 +99,7 @@ history.
 * **The inference cache holds that text too** (`<home>/inference/inputs/`:
   every model prompt, i.e. documents' first pages and paths;
   `inference/outputs/`: the answers). `inference.sqlite` itself holds only
-  hashes and timings. Treat the files like the API log: private, never in
+  hashes and timings. Treat the files like the services store's bodies: private, never in
   commits or fixtures. Model calls about a document must run inside
   `with inference.subject(files.sha256):`, or purge can't find their texts.
 * **Personal paperwork is purged, or held out of sight** (`purge.py`):
@@ -179,17 +180,24 @@ history.
    prefill, how the schema is sent) means bumping its `cache_params()["impl"]`,
    or old cached answers are served for the new layout.
 9. **Never throw away an API response.** Every request through
-   `http.HttpClient` (matching, `papyrus download`, Slack) is
-   appended, with its raw response, to `<library home>/api-log/<UTC date>.jsonl`
-   (`apilog.py`; format in its docstring). Later code can trawl old responses
-   for fields nobody extracted at the time. So:
+   `http.HttpClient` (matching, `papyrus download`, Slack, tools) is recorded,
+   attempt by attempt with its response, in the web services store
+   (`services.py`, `~/.papyrus/services.sqlite`, one per machine; tables in
+   `docs/schema.md`; bodies as zstd files in `~/.papyrus/services/bodies/`).
+   It also reuses answers (the policy's `reuse_s`) and holds every service's
+   rate limit and pause, shared by every process. Query it with `sqlite3` or
+   `papyrus services stats | state | show`. Later code can trawl old
+   responses for fields nobody extracted at the time. So:
    * new API clients go through `HttpClient`, never a bare `httpx`/`urllib`
      call, and one-off experiments too (`uv run python …` with
-     `http.default_client()`);
-   * credentials are redacted before writing (`apilog.SECRET_*`); pass keys as
-     headers;
-   * the log is private data (Slack messages): never copy it into commits,
-     tests or fixtures;
+     `http.default_client()`); a new API gets a `services.Service` (host,
+     policy: interval, timeout, retries, pause, reuse) in `services.SERVICES`;
+   * credentials are redacted before writing (`apilog.SECRET_*`; only a
+     fingerprint is kept, `services.credentials`); pass keys as headers;
+   * the store is private data (Slack messages): never copy it into commits,
+     tests or fixtures. It is not reachable through MCP's `sql`;
+   * matching code says what a request is about (`services.subject("work:<id>")`,
+     `match_work` does), so trouble can be traced back to works;
    * LM Studio and classifier calls are *not* logged (`llm/*` uses its own httpx
      clients): their prompts hold the first pages of personal documents.
      They are recorded by the inference cache instead (next).
@@ -379,22 +387,26 @@ The seed is part of the inference cache's key either way.
 
 * **Semantic Scholar** returns 429 almost always without `S2_API_KEY`, so it
   is not asked without one (`candidates.default_sources`; the key goes in
-  `~/.papyrus/env`, `envfile.py`). With a key, after a 429 it is skipped for
+  `~/.papyrus/env`, `envfile.py`). With a key, after a 429 it is paused for
   120 s. A source's failures are reported by status and exception type only
   (`candidates.describe_error`): the URL holds the title.
-* **arXiv** (no keys; 1 request / 3 s) sometimes refuses ("Rate exceeded", 429,
-  some after 20-30 s) or times out whatever our rate: 2026-11-02 03:13-04:33
-  UTC. So `arxiv.py` gives a request 15 s and 2 retries, then leaves arXiv
-  alone for 5 min (`http.Cooling`). A source that refused, didn't answer or is
-  cooling down counts as *not asked*: no verdict, the work stays pending.
-  The raw exchanges are in `<home>/api-log/*.jsonl` (no table).
+* **arXiv** (no keys; 1 request / 3 s per machine) sometimes refuses ("Rate
+  exceeded", 429, some after 20-30 s) or times out whatever our rate:
+  2026-11-02 03:13-04:33 UTC. So its policy (`services.SERVICES`) gives a
+  request 15 s and 2 retries, then pauses arXiv for 5 min in every process
+  (`http.Cooling`; `papyrus services state`, `resume arxiv`). A source that
+  refused, didn't answer or is paused counts as *not asked*: no verdict, the
+  work stays pending. Tune a service in config.toml: `[services.arxiv]`
+  `pause_s = 600`.
 * **OpenAlex** works keyless on a small shared budget (`OPENALEX_API_KEY`
   for $1/day). Its records are sometimes wrong (another paper's title under
   an arXiv id, wrong affiliations).
 * **Books:** Crossref, OpenAlex and S2 are poor for books. Open Library is
   the planned fix.
-* Set `PAPYRUS_MAILTO`. Responses are cached in `~/.cache/papyrus/http` for
-  30 days (`PAPYRUS_HTTP_CACHE=0` turns that off).
+* Set `PAPYRUS_MAILTO`. Answers are reused from the services store for 30
+  days (the policy's `reuse_s`; `PAPYRUS_HTTP_CACHE=0` turns reuse off; the
+  requests are recorded either way). The old `~/.cache/papyrus/http` and
+  `<home>/api-log/` were imported on 2026-11-02 (`papyrus services import`).
 
 **Downloads and the clipboard** (`download.py`):
 
@@ -464,7 +476,8 @@ The seed is part of the inference cache's key either way.
     files. It refuses to start (status 78) while a `rescued-*` folder exists.
   * **To restore:** quit Papyrus Server.app and any watcher; check
     `lsof +D ~/.papyrus/<variant>` is empty; move `papyrus.sqlite*`,
-    `inference.sqlite*` and `queue.sqlite*` aside; copy the rescued files in;
+    `inference.sqlite*` and `queue.sqlite*` aside (and
+    `~/.papyrus/services.sqlite*`, if it was the one replaced); copy the rescued files in;
     run `PRAGMA integrity_check`; delete the set-aside copies (they can hold
     text that purge erased) and the rescued folder.
   * A process without the guard can still be rescued: `lldb -p PID` and
@@ -503,6 +516,11 @@ with the same decorators.
 * **Downloads:** `tests/test_download.py::_web` serves PDFs, redirects and
   landing pages through `httpx.MockTransport`; pass the client to
   `download.download` (or `http.set_default_client` for CLI tests).
+* **The web services store:** `tests/test_services.py`. It follows
+  `PAPYRUS_ROOT`, so each test has its own (a pause in one test doesn't reach
+  the next); conftest turns reuse off (`PAPYRUS_HTTP_CACHE=0`; pass
+  `cache_dir=True` to test it). Give `HttpClient` a fake `clock` (unix
+  seconds) and `sleep` to test rate limits and pauses without waiting.
 * **The inference cache:** `tests/test_inference.py`. Wrap `FakeBackend` /
   `FakeClassifier` with `inference.cached_backend` / `cached_classifier`; the store
   follows `PAPYRUS_HOME`, so each test has its own.

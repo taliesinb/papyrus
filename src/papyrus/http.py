@@ -1,35 +1,42 @@
-"""Shared polite HTTP client for the matching sources (match/), `papyrus download` and Slack.
+"""Shared polite HTTP client for the matching sources (match/), `papyrus download`, Slack and tools.
 
-* User-Agent ``papyrus/<version> (mailto:<PAPYRUS_MAILTO>)`` so APIs can contact us
-  (Crossref and OpenAlex route such requests to their "polite" pools).
-* Per-host minimum interval between requests (arXiv asks for 1 request / 3 s).
-* Retries with exponential backoff (+jitter) on 429, 5xx and transport errors,
-  honouring ``Retry-After``.
-* Optional on-disk JSON cache under ``~/.cache/papyrus/http`` keyed by the request
-  URL (+ POST body). Secrets are never part of the key or the stored entry: pass API
-  keys as headers (or list query params in ``SECRET_PARAMS``).
-* Every attempt (and every cache hit) is appended to the permanent API log
-  (`papyrus.apilog`): the cache expires, the log doesn't. New API clients go through
-  this class so that no response is ever lost.
+Every request goes through the web services store (services.py, `<PAPYRUS_ROOT>/services.sqlite`):
+
+* **reuse**: an answer the store has (same request, younger than the service policy's `reuse_s`,
+  status in `cache_statuses`) is returned without asking (`Response.from_cache`);
+* **one rate limit and one pause per service, shared by every process**: each attempt reserves
+  the scope's next slot (the policy's `interval_s`; arXiv 3 s), then sleeps outside any lock.
+  A request that fails for good with one of the policy's `pause_statuses` (429, 503, no answer)
+  pauses the service for `pause_s` (arXiv 5 min, Semantic Scholar 2 min); while paused, requests
+  raise `Cooling` without being sent;
+* **retries** with exponential backoff (+jitter) on 429, 5xx and no answer, honouring
+  ``Retry-After``, up to the policy's `max_retries`; `patience()` caps the total wait;
+* **the record**: every attempt, its status, timing, headers and body (secrets redacted, apilog.py's
+  rules), the run in progress and the subject (`services.subject`). No response is ever lost.
+
+User-Agent ``papyrus/<version> (mailto:<PAPYRUS_MAILTO>)`` so APIs can contact us (Crossref and
+OpenAlex route such requests to their "polite" pools). Pass API keys as headers (or query params in
+`apilog.SECRET_PARAMS`): they are never part of a request's identity or the record, only their
+fingerprint is (`services.credentials`).
 
 Environment:
     PAPYRUS_MAILTO        contact address put into the User-Agent / mailto params
-    PAPYRUS_HTTP_CACHE    '0' disables the cache, or a directory path to use instead
-    PAPYRUS_HTTP_CACHE_TTL_DAYS  cache freshness (default 30)
+    PAPYRUS_HTTP_CACHE    '0': never reuse an answer (requests are still recorded)
+    PAPYRUS_SERVICES      directory of the services store (default PAPYRUS_ROOT, ~/.papyrus)
 """
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
 import os
 import random
-import contextvars
 import threading
 import time
-from contextlib import contextmanager
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,24 +44,14 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from . import apilog
+from . import services
 
 log = logging.getLogger(__name__)
 
 VERSION = "0.1.0"
-DEFAULT_CACHE_DIR = Path("~/.cache/papyrus/http").expanduser()
 SECRET_PARAMS = frozenset({"api_key", "apikey", "key", "token", "access_token"})
-
-# Minimum seconds between requests, per host.
-DEFAULT_INTERVALS: dict[str, float] = {
-    "export.arxiv.org": 3.0,  # https://info.arxiv.org/help/api/tou.html
-    "api.semanticscholar.org": 1.05,  # 1 rps with a key; shared pool without
-    "api.openalex.org": 0.11,  # 10 rps keyless, 30 rps with a key
-    "api.crossref.org": 0.35,  # polite pool advertises 3 rps (x-rate-limit-*)
-    "arxiv.org": 1.0,  # PDF downloads (papyrus download)
-}
-
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+OFF = {"0", "false", "no", "off"}
 
 
 class HttpError(RuntimeError):
@@ -75,8 +72,13 @@ class RateLimited(HttpError):
 
 
 class Cooling(HttpError):
-    """Not sent: the source refused (or didn't answer) recently and is left alone for a while
-    (arxiv.py, semanticscholar.py). Matching treats it as "not asked", not as "not found"."""
+    """Not sent: the service is paused (it refused or didn't answer recently; services.state).
+    Matching treats it as "not asked", not as "not found". `service`, `until` (unix seconds), `reason`."""
+
+    def __init__(self, status: int, url: str, body: str = "", *, service: str | None = None,
+                 until: float | None = None, reason: str | None = None):
+        super().__init__(status, url, body)
+        self.service, self.until, self.reason = service, until, reason
 
 
 _patience: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("papyrus_http_patience", default=None)
@@ -86,8 +88,8 @@ _patience: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("
 def patience(seconds: float):
     """Within the block, retries sleep at most `seconds` in all: a 429/503 whose backoff would go
     beyond raises `RateLimited` instead of waiting, and a timeout or dropped connection its HttpError
-    (status 0). For callers that have other work to do (the
-    watcher); without it a request waits through all its retries (up to minutes)."""
+    (status 0). For callers that have other work to do (the watcher); without it a request waits
+    through all its retries (up to minutes)."""
     token = _patience.set([seconds])
     try:
         yield
@@ -107,7 +109,7 @@ def user_agent() -> str:
 
 
 def redact_url(url: str) -> str:
-    """Drop secret query params (used for cache keys and log messages)."""
+    """Drop secret query params (for messages)."""
     parts = urlsplit(url)
     if not parts.query:
         return url
@@ -116,7 +118,7 @@ def redact_url(url: str) -> str:
 
 
 def full_url(url: str, params: Mapping[str, Any] | None) -> str:
-    """URL with params merged in (sorted, so equivalent requests share a cache key)."""
+    """URL with params merged in (sorted, so equivalent requests are the same request)."""
     if not params:
         return url
     parts = urlsplit(url)
@@ -145,29 +147,21 @@ class Download:
     size: int
 
 
-class _HostLimiter:
-    def __init__(self, interval: float, clock: Callable[[], float], sleep: Callable[[float], None]):
-        self.interval = interval
-        self.lock = threading.Lock()
-        self.next_ok = 0.0
-        self._clock = clock
-        self._sleep = sleep
-
-    def wait(self) -> None:
-        with self.lock:
-            now = self._clock()
-            if now < self.next_ok:
-                self._sleep(self.next_ok - now)
-                now = self._clock()
-            self.next_ok = now + self.interval
-
-    def penalise(self, seconds: float) -> None:
-        with self.lock:
-            self.next_ok = max(self.next_ok, self._clock() + seconds)
+def _retry_after(v: str | None) -> float | None:
+    try:
+        return max(0.0, float(v)) if v else None
+    except ValueError:
+        return None
 
 
 class HttpClient:
-    """Thread-safe polite client; one instance is shared by all sources (see `default_client`)."""
+    """Thread-safe polite client; one instance is shared by all sources (see `default_client`).
+
+    The policy of each request is its service's (services.SERVICES, then config.toml's
+    [services.<name>]); `max_retries`, `backoff_base`, `backoff_cap`, `timeout` and `cache_ttl`
+    given here override it for every service, `intervals` per host. `cache_dir=False` turns reuse
+    off (`True` on; unset: on unless PAPYRUS_HTTP_CACHE=0); requests are recorded either way. `clock` (unix
+    seconds, shared with other processes through the store) and `sleep` are for tests."""
 
     def __init__(
         self,
@@ -175,87 +169,79 @@ class HttpClient:
         cache_dir: Path | str | None | bool = None,
         cache_ttl: float | None = None,
         intervals: Mapping[str, float] | None = None,
-        max_retries: int = 5,
-        backoff_base: float = 2.0,
-        backoff_cap: float = 60.0,
-        timeout: float = 30.0,
+        max_retries: int | None = None,
+        backoff_base: float | None = None,
+        backoff_cap: float | None = None,
+        timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        store: services.Store | None = None,
     ):
-        if cache_dir is None:
-            env = os.environ.get("PAPYRUS_HTTP_CACHE", "").strip()
-            cache_dir = False if env in {"0", "false", "no", "off"} else (Path(env) if env else DEFAULT_CACHE_DIR)
-        elif cache_dir is True:
-            cache_dir = DEFAULT_CACHE_DIR
-        self.cache_dir: Path | None = Path(cache_dir).expanduser() if cache_dir else None
-        if cache_ttl is None:
-            cache_ttl = float(os.environ.get("PAPYRUS_HTTP_CACHE_TTL_DAYS", "30")) * 86400
+        env = os.environ.get("PAPYRUS_HTTP_CACHE", "").strip().lower()
+        # given: True or a (legacy, unused) directory turns reuse on, False off; else the environment
+        self.reuse = env not in OFF if cache_dir is None else cache_dir is not False
         self.cache_ttl = cache_ttl
-        self.intervals = dict(DEFAULT_INTERVALS)
-        if intervals:
-            self.intervals.update(intervals)
-        self.max_retries = max_retries
-        self.backoff_base = backoff_base
-        self.backoff_cap = backoff_cap
+        self._given_intervals = dict(intervals or {})
+        self.intervals = {h: s.policy.interval_s for s in services.SERVICES for h in s.hosts} | self._given_intervals
+        self._policy_kw = {"max_retries": max_retries, "backoff_base": backoff_base, "backoff_cap": backoff_cap,
+                           "timeout_s": timeout}
         self._clock = clock
         self._sleep = sleep
-        self._limiters: dict[str, _HostLimiter] = {}
-        self._limiters_lock = threading.Lock()
+        self._store = store
         self._client = httpx.Client(
-            timeout=timeout,
+            timeout=30.0 if timeout is None else timeout,
             follow_redirects=True,
             headers={"User-Agent": user_agent(), "Accept-Encoding": "gzip"},
             transport=transport,
         )
 
-    # -- rate limiting -------------------------------------------------------
-    def _limiter(self, host: str) -> _HostLimiter:
-        with self._limiters_lock:
-            lim = self._limiters.get(host)
-            if lim is None:
-                lim = _HostLimiter(self.intervals.get(host, 0.0), self._clock, self._sleep)
-                self._limiters[host] = lim
-            return lim
+    @property
+    def store(self) -> services.Store:
+        return self._store or services.store()
 
-    # -- cache ---------------------------------------------------------------
-    def _cache_path(self, key: str) -> Path | None:
-        if self.cache_dir is None:
-            return None
-        h = hashlib.sha256(key.encode()).hexdigest()[:16]  # one flat directory, 64-bit names
-        return self.cache_dir / f"{h}.json"
+    # -- the policy, the slot, the outcome -------------------------------------
+    def _ids(self, method: str, url: str, headers: Mapping[str, str] | None, body: str | None,
+             **call_kw: Any) -> services.Ids:
+        host = (urlsplit(url).hostname or "").lower()
+        kw = dict(self._policy_kw)
+        if host in self._given_intervals:
+            kw["interval_s"] = self._given_intervals[host]
+        if self.cache_ttl is not None:
+            kw["reuse_s"] = self.cache_ttl
+        kw.update({k: v for k, v in call_kw.items() if v is not None})
+        return self.store.ids(method, url, headers, body, overrides=services.overrides(), **kw)
 
-    def _cache_get(self, key: str) -> Response | None:
-        p = self._cache_path(key)
-        if p is None or not p.exists():
-            return None
+    def _wait_slot(self, ids: services.Ids) -> None:
         try:
-            entry = json.loads(p.read_text())
-        except OSError, ValueError:
-            return None
-        if self.cache_ttl and time.time() - entry.get("fetched_at", 0) > self.cache_ttl:
-            return None
-        return Response(entry["status"], entry["body"], entry["url"], entry.get("headers", {}), from_cache=True)
+            wait = self.store.claim(ids, self._clock())
+        except services.Paused as p:
+            raise Cooling(429, ids.url, f"not sent: {p}", service=p.service, until=p.until, reason=p.reason) from None
+        if wait > 0:
+            self._sleep(wait)
 
-    def _cache_put(self, key: str, resp: Response) -> None:
-        p = self._cache_path(key)
-        if p is None:
-            return
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            entry = {
-                "key": key,
-                "url": resp.url,
-                "status": resp.status,
-                "headers": {k: v for k, v in resp.headers.items() if k.lower() == "content-type"},
-                "body": resp.text,
-                "fetched_at": time.time(),
-            }
-            tmp = p.with_suffix(".tmp")
-            tmp.write_text(json.dumps(entry))
-            tmp.replace(p)
-        except OSError as e:  # cache is best-effort
-            log.debug("cache write failed: %s", e)
+    def _backoff(self, ids: services.Ids, attempt: int, retry_after: str | None) -> float:
+        p = ids.policy
+        if (asked := _retry_after(retry_after)) is not None:
+            return min(p.backoff_cap, asked)
+        d = p.backoff_base * (2**attempt)
+        return min(p.backoff_cap, d * (0.75 + 0.5 * random.random()))
+
+    def _spend(self, delay: float) -> bool:
+        """Take `delay` from the caller's patience; False if it doesn't have that much left."""
+        budget = _patience.get()
+        if budget is None:
+            return True
+        if delay > budget[0]:
+            return False
+        budget[0] -= delay
+        return True
+
+    def _give_up(self, ids: services.Ids, status: int | None, error: str | None, call_id: str) -> None:
+        until = self.store.failed(ids, status, error, call_id, self._clock())
+        if until is not None:
+            log.info("%s paused for %.0f s (%s)", ids.service.name, until - self._clock(),
+                     f"HTTP {status}" if status else error)
 
     # -- requests ------------------------------------------------------------
     def request(
@@ -273,66 +259,65 @@ class HttpClient:
         backoff_cap: float | None = None,
         timeout: float | None = None,
     ) -> Response:
-        """Perform a request; returns statuses in `ok_statuses`, raises HttpError otherwise.
-        `timeout`: seconds for this request (default: the client's)."""
+        """Perform a request; returns statuses in `ok_statuses`, raises HttpError otherwise
+        (Cooling while the service is paused, RateLimited when `patience` runs out).
+        `use_cache=False`: ask even if the store has an answer. `timeout`: seconds per attempt."""
         url = full_url(url, params)
         body = json.dumps(json_body, sort_keys=True) if json_body is not None else None
-        key = f"{method.upper()} {redact_url(url)}" + (f"\n{body}" if body else "")
-        if use_cache:
-            hit = self._cache_get(key)
-            if hit is not None and hit.status in ok_statuses:
-                apilog.record({"t": apilog.now_iso(), "method": method.upper(), "url": apilog.redact_url(url),
-                               "from_cache": True, "status": hit.status})
-                return hit
-        host = urlsplit(url).hostname or ""
-        limiter = self._limiter(host)
-        retries = self.max_retries if max_retries is None else max_retries
+        ids = self._ids(method, url, headers, body, max_retries=max_retries, backoff_cap=backoff_cap, timeout_s=timeout)
+        st = self.store
+        if use_cache and self.reuse:
+            hit = st.lookup(ids.request_id, cache_statuses & ok_statuses, ids.policy.reuse_s)
+            if hit is not None:
+                return Response(hit.status, hit.text, hit.url, hit.headers, from_cache=True)
+        retries = ids.policy.max_retries
         attempt = 0
         while True:
-            limiter.wait()
+            self._wait_slot(ids)
             req_headers = {**({"Content-Type": "application/json"} if body else {}), **(headers or {})}
-            started = time.time()
+            started, t0 = time.time(), time.monotonic()
             try:
                 r = self._client.request(method, url, content=body.encode() if body else None, headers=req_headers,
-                                         timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout)
+                                         timeout=ids.policy.timeout_s)
             except httpx.TransportError as e:
-                _log_attempt(method, url, req_headers, body, started, attempt, error=f"{type(e).__name__}: {e}")
-                if attempt >= retries:
-                    raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
-                delay = self._backoff(attempt, None, backoff_cap)
-                budget = _patience.get()
-                if budget is not None:  # a server that times out is slow to recover: don't sit through retries
-                    if delay > budget[0]:
-                        raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
-                    budget[0] -= delay
-                log.info("%s %s: %s; retrying in %.1fs", method, redact_url(url), e, delay)
+                what = type(e).__name__
+                cid = st.record(ids, attempt=attempt, status="no_answer", started=started,
+                                finished=started + time.monotonic() - t0, error=what, req_headers=req_headers)
+                delay = self._backoff(ids, attempt, None) if attempt < retries else None
+                if delay is None or not self._spend(delay):  # a server that times out is slow to recover
+                    self._give_up(ids, None, what, cid)
+                    raise HttpError(0, url, f"{what}: {e}") from e
+                log.info("%s %s: %s; retrying in %.1fs", method, redact_url(url), what, delay)
                 self._sleep(delay)
                 attempt += 1
                 continue
-            _log_attempt(method, url, req_headers, body, started, attempt, response=r, resp_body=r.text)
+            except KeyboardInterrupt:
+                st.record(ids, attempt=attempt, status="interrupted", started=started,
+                          finished=started + time.monotonic() - t0, req_headers=req_headers)
+                raise
+            ok = r.status_code in ok_statuses
+            cid = st.record(ids, attempt=attempt, status="ok" if ok else "http_error", started=started,
+                            finished=started + time.monotonic() - t0, http_status=r.status_code,
+                            req_headers=req_headers, resp_headers=dict(r.headers), body=r.text, resp_size=len(r.content),
+                            final_url=str(r.url), redirects=[[h.status_code, str(h.url)] for h in r.history],
+                            retry_after=_retry_after(r.headers.get("Retry-After")))
             if r.status_code in RETRY_STATUSES and attempt < retries:
-                delay = self._backoff(attempt, r.headers.get("Retry-After"), backoff_cap)
-                budget = _patience.get()
-                if budget is not None and r.status_code in (429, 503):
-                    if delay > budget[0]:
-                        asked = r.headers.get("Retry-After")
-                        try:
-                            wait = float(asked) if asked else delay
-                        except ValueError:
-                            wait = delay
-                        raise RateLimited(r.status_code, url, wait)
-                    budget[0] -= delay
+                delay = self._backoff(ids, attempt, r.headers.get("Retry-After"))
+                if r.status_code in (429, 503) and not self._spend(delay):
+                    self._give_up(ids, r.status_code, None, cid)
+                    raise RateLimited(r.status_code, url, _retry_after(r.headers.get("Retry-After")) or delay)
                 log.info("%s %s -> %d; retrying in %.1fs", method, redact_url(url), r.status_code, delay)
-                limiter.penalise(delay)
+                st.penalise(ids, self._clock() + delay)
                 self._sleep(delay)
                 attempt += 1
                 continue
-            resp = Response(r.status_code, r.text, redact_url(str(r.request.url)), dict(r.headers))
-            if r.status_code not in ok_statuses:
+            if r.status_code in RETRY_STATUSES:
+                self._give_up(ids, r.status_code, None, cid)
+            else:
+                st.succeeded(ids)  # it answered (a 400 is ours to fix, not a sign of trouble)
+            if not ok:
                 raise HttpError(r.status_code, url, r.text)
-            if use_cache and r.status_code in cache_statuses:
-                self._cache_put(key, resp)
-            return resp
+            return Response(r.status_code, r.text, redact_url(str(r.request.url)), dict(r.headers))
 
     def download(
         self,
@@ -343,29 +328,43 @@ class HttpClient:
         max_retries: int | None = None,
         max_bytes: int | None = None,
     ) -> Download:
-        """Stream a GET into `dest` (overwritten), with the rate limiting and retries of `request`
-        but no cache. Raises HttpError unless the final status is 200."""
-        host = urlsplit(url).hostname or ""
-        limiter = self._limiter(host)
-        retries = self.max_retries if max_retries is None else max_retries
+        """Stream a GET into `dest` (overwritten), with the rate limit, pauses and retries of
+        `request` but no reuse. The record keeps the bytes' sha256 and size, not the bytes (they go
+        to the library's store). Raises HttpError unless the final status is 200."""
+        ids = self._ids("GET", url, headers, None, max_retries=max_retries)
+        st = self.store
+        retries = ids.policy.max_retries
         attempt = 0
         while True:
-            limiter.wait()
+            self._wait_slot(ids)
             delay = None
-            started = time.time()
             hdrs = dict(headers or {})
+            started, t0 = time.time(), time.monotonic()
+
+            def rec(status: str, r: httpx.Response | None = None, **kw: Any) -> str:
+                extra = {}
+                if r is not None:
+                    extra = {"http_status": r.status_code, "resp_headers": dict(r.headers), "final_url": str(r.url),
+                             "redirects": [[h.status_code, str(h.url)] for h in r.history],
+                             "retry_after": _retry_after(r.headers.get("Retry-After"))}
+                return st.record(ids, attempt=attempt, status=status, started=started,
+                                 finished=started + time.monotonic() - t0, req_headers=hdrs, **extra, **kw)
+
             r = None
             try:
-                with self._client.stream("GET", url, headers=hdrs) as r:
+                with self._client.stream("GET", url, headers=hdrs, timeout=ids.policy.timeout_s) as r:
                     if r.status_code in RETRY_STATUSES and attempt < retries:
-                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r)
-                        delay = self._backoff(attempt, r.headers.get("Retry-After"))
+                        rec("http_error", r)
+                        delay = self._backoff(ids, attempt, r.headers.get("Retry-After"))
                         log.info("GET %s -> %d; retrying in %.1fs", redact_url(url), r.status_code, delay)
-                        limiter.penalise(delay)
+                        st.penalise(ids, self._clock() + delay)
                     elif r.status_code != 200:
                         raw = r.read()
-                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
-                                     resp_body=raw.decode("utf-8", "replace"))
+                        cid = rec("http_error", r, body=raw, resp_size=len(raw))
+                        if r.status_code in RETRY_STATUSES:
+                            self._give_up(ids, r.status_code, None, cid)
+                        else:
+                            st.succeeded(ids)
                         raise HttpError(r.status_code, url, raw[:2000].decode("utf-8", "replace"))
                     else:
                         size = 0
@@ -376,32 +375,25 @@ class HttpClient:
                                 digest.update(chunk)
                                 size += len(chunk)
                                 if max_bytes is not None and size > max_bytes:
-                                    _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
-                                                 error=f"larger than {max_bytes} bytes (stopped)")
+                                    rec("too_large", r, resp_size=size)
                                     raise HttpError(200, url, f"larger than {max_bytes} bytes")
-                        _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
-                                     resp_size=size, resp_sha256=digest.hexdigest())
+                        rec("ok", r, resp_size=size, resp_sha256=digest.hexdigest())
+                        st.succeeded(ids)
                         return Download(r.status_code, redact_url(str(r.url)),
                                         {k.lower(): v for k, v in r.headers.items()}, size)
             except httpx.TransportError as e:  # includes connections dropped mid-body
-                _log_attempt("GET", url, hdrs, None, started, attempt, response=r,
-                             error=f"{type(e).__name__}: {e}")
+                what = type(e).__name__
+                cid = rec("no_answer", r, error=what)
                 if attempt >= retries:
-                    raise HttpError(0, url, f"{type(e).__name__}: {e}") from e
-                delay = self._backoff(attempt, None)
-                log.info("GET %s: %s; retrying in %.1fs", redact_url(url), e, delay)
+                    self._give_up(ids, None, what, cid)
+                    raise HttpError(0, url, f"{what}: {e}") from e
+                delay = self._backoff(ids, attempt, None)
+                log.info("GET %s: %s; retrying in %.1fs", redact_url(url), what, delay)
+            except KeyboardInterrupt:
+                rec("interrupted", r)
+                raise
             self._sleep(delay)
             attempt += 1
-
-    def _backoff(self, attempt: int, retry_after: str | None, cap: float | None = None) -> float:
-        cap = self.backoff_cap if cap is None else cap
-        if retry_after:
-            try:
-                return min(cap, max(0.0, float(retry_after)))
-            except ValueError:
-                pass
-        d = self.backoff_base * (2**attempt)
-        return min(cap, d * (0.75 + 0.5 * random.random()))
 
     def get(self, url: str, **kw: Any) -> Response:
         return self.request("GET", url, **kw)
@@ -417,37 +409,6 @@ class HttpClient:
 
     def close(self) -> None:
         self._client.close()
-
-
-def _log_attempt(method: str, url: str, req_headers: Mapping[str, str], req_body: str | None, started: float,
-                 attempt: int, *, response: httpx.Response | None = None, resp_body: str | None = None,
-                 resp_size: int | None = None, resp_sha256: str | None = None, error: str | None = None) -> None:
-    """One `apilog` event for one attempt."""
-    ev: dict[str, Any] = {
-        "t": apilog.now_iso(started),
-        "ms": round((time.time() - started) * 1000),
-        "attempt": attempt,
-        "method": method.upper(),
-        "url": apilog.redact_url(str(response.url) if response is not None else url),
-        "req_headers": apilog.request_headers(req_headers),
-    }
-    if req_body is not None:
-        ev["req_body"] = apilog.redact_body(req_body, req_headers.get("Content-Type"))
-    if response is not None:
-        ev["status"] = response.status_code
-        ev["resp_headers"] = apilog.redact_headers(response.headers)
-        if response.history:
-            ev["redirects"] = [[h.status_code, apilog.redact_url(str(h.url))] for h in response.history]
-        if response.url != httpx.URL(url):
-            ev["requested_url"] = apilog.redact_url(url)
-    if resp_body is not None:
-        ev["resp_body"] = apilog.redact_body(resp_body, response.headers.get("content-type") if response else None)
-    if resp_size is not None:
-        ev["resp_size"] = resp_size
-        ev["resp_sha256"] = resp_sha256
-    if error:
-        ev["error"] = error
-    apilog.record(ev)
 
 
 _default: HttpClient | None = None

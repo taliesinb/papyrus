@@ -336,4 +336,4 @@ def test_an_unanswered_or_cooling_source_counts_as_not_asked(monkeypatch):
     report = {}
     candidates.resolve({"arxiv_id": "2412.06464", "title": "Gated Delta Networks"}, report=report)
     assert "arxiv" in report["rate_limited"] and report["cooling"] == ["arxiv"]
-    assert [candidates.cools_down(e) for e in report["errors"]] == [arxiv.COOLDOWN_S]
+    assert [candidates.cools_down(e) for e in report["errors"]] == [300.0]  # arXiv's pause (services.SERVICES)

@@ -29,6 +29,7 @@ Early. What works today:
 | search | `papyrus search QUERY [--kind K] [--files] [--json]` | Works matching in their metadata or anywhere in their pages, ranked by Reciprocal Rank Fusion of the two, each with its best pages (page, section, snippet). Free text or FTS5 syntax. `--files` ranks files instead, personal ones included. |
 | browse | `papyrus works [QUERY]`, `papyrus work ID`, `papyrus files`, `papyrus show ID`, `papyrus stats` | |
 | inference | `papyrus inference stats`, `show CALL_ID`, `prune [--older-than DAYS] [--outputs]` | Every model call is recorded in `~/.papyrus/<variant>/inference.sqlite`: which model, which question, a hash of the data, how long it took, a hash of the answer. The texts are files beside it, which `prune` deletes and purging a document removes. A question already asked about the same text (same model, prompt, parameters and seed) is answered from it; `--fresh` (`papyrus classify`, `extract`) asks anyway. Each claim a model writes points at the call it came from (`assertions.call_id`). |
+| services | `papyrus services stats [--since 7d]`, `state`, `show CALL_ID`, `pause SERVICE`, `resume [SERVICE]`, `import` | Every request to a web API (arXiv, OpenAlex, Crossref, Semantic Scholar, Slack) and every download is recorded in `~/.papyrus/services.sqlite`, one per machine: which service, with which credential (a fingerprint, never the key), under which policy, what was asked, when, how long it took, what came back (bodies as compressed files beside it). It answers a request already asked within 30 days, and holds each service's rate limit and pause for every papyrus process: after a refusal or a timeout arXiv is left alone for 5 minutes (config `[services.arxiv]`). |
 | web | `cd web && pnpm dev` | Read-only SvelteKit browser at `/papyrus/`: facets, full-text search, TF‑IDF "similar", inline PDF viewer, provenance. See [`web/README.md`](web/README.md). |
 | apps | `python3 apps/macos/build.py --install` | `Papyrus.app`, a window on the web browser, and `Papyrus Server.app`, a menu-bar app that runs the server, publishes it with `tailscale serve` at `https://<mac>.<tailnet>.ts.net/papyrus/`, and runs `papyrus watch`. See [`apps/macos/README.md`](apps/macos/README.md). |
 | Linux | `python3 apps/linux/install.py` | The web server as a systemd user service, published the same way, and `papyrus watch` as another. Page thumbnails need poppler's `pdftoppm` there. See [`apps/linux/README.md`](apps/linux/README.md). |
@@ -126,6 +127,10 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 * Inference cache: `~/.papyrus/<variant>/inference.sqlite` (hashes and
   timings of every model call) and `~/.papyrus/<variant>/inference/` (the
   texts asked about and answered, by hash; private, like the store).
+* Web services store: `~/.papyrus/services.sqlite` and `~/.papyrus/services/`
+  (every API request and download, with the answers; shared by every
+  variant; private: it holds Slack messages). Tables in
+  [`docs/schema.md`](docs/schema.md#the-web-services-store-papyrus_rootservicessqlite).
 
 ## Environment
 
@@ -141,6 +146,7 @@ Precedence: command-line option > environment variable (`PAPYRUS_BACKEND`,
 | `PAPYRUS_JEV_URL`, `PAPYRUS_JEV_API_KEY` | Jev-compatible classifier server |
 | `PAPYRUS_AFM_BIN` | Apple bridge binary |
 | `OPENALEX_API_KEY`, `S2_API_KEY`, `PAPYRUS_MAILTO` | matching APIs |
+| `PAPYRUS_HTTP_CACHE`, `PAPYRUS_SERVICES` | `0`: never reuse a recorded answer; where the web services store lives (default `$PAPYRUS_ROOT`) |
 
 ## Development
 

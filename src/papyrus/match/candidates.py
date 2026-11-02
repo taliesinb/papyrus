@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 
 from papyrus.match import arxiv, crossref, openalex, semanticscholar
-from papyrus import ids as _ids
+from papyrus import ids as _ids, services
 from papyrus.http import Cooling, HttpClient, HttpError
 from papyrus.models import AuthorRecord, WorkRecord
 
@@ -36,13 +36,16 @@ CALL_NAMES = {"get": "lookup by id", "get_by_arxiv": "lookup by arXiv id", "get_
 
 def cooldown_s(source: str) -> float | None:
     """How long a source is left alone after a refusal or a timeout (None: it isn't)."""
-    return {"arxiv": arxiv.COOLDOWN_S, "s2": semanticscholar.COOLDOWN_S}.get(source)
+    p = services.effective_policy(source)
+    return p.pause_s if p and p.pause_s > 0 else None
 
 
 def cools_down(err: Mapping[str, Any]) -> float | None:
     """The pause this failure starts (arxiv.py, semanticscholar.py: 429, 503 or no answer)."""
-    statuses = {"arxiv": arxiv.COOLDOWN_STATUSES, "s2": semanticscholar.COOLDOWN_STATUSES}.get(err["source"], ())
-    return cooldown_s(err["source"]) if err.get("status") in statuses else None
+    p = services.effective_policy(err["source"])
+    if p is None or p.pause_s <= 0:
+        return None
+    return p.pause_s if (err.get("status") or 0) in p.pause_statuses and err.get("status") is not None else None
 
 
 def default_sources() -> tuple[str, ...]:

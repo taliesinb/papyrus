@@ -377,8 +377,11 @@ def match_work(
             db.assert_(conn, "work", work_id, "match_skipped", {"reason": "kind", "kind": kind},
                        source=MATCH_SOURCE, run_id=run_id)
         return {"status": "skipped", "work_id": work_id, "kind": kind}
+    from papyrus import services
+
     report: dict[str, Any] = {}
-    records = candidates.resolve(hint, report=report, **resolve_kw)
+    with services.subject(f"work:{work_id}"):  # the services store's calls.subject
+        records = candidates.resolve(hint, report=report, **resolve_kw)
     # what went wrong on the way, for the watcher's log (candidates.describe_error)
     notes = {k: report[k] for k in ("errors", "cooling") if report.get(k)}
     good = [r for r in records if (r.match_score or 0) >= threshold]

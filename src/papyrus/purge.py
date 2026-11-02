@@ -8,7 +8,8 @@ a CV none of that belongs in the library, so once the classifier is sure a file 
 * **kept** (a tombstone): the `files` row with `sha256`, `size` and `purged_at`, so the same
   bytes are recognised and skipped wherever they turn up again without being classified again; one
   `purged` assertion saying why (`{by, p_personal, prompt_version}`); download contexts keep
-  their URL (the link given to `papyrus download`, and `where_froms`); the API log is untouched.
+  their URL (the link given to `papyrus download`, and `where_froms`); the web services store
+  (services.py) is untouched: a download's call keeps the URL and the bytes' sha256, never the bytes.
 * **erased**: page text and its full-text index entries, the outline, PDF metadata, page
   count, every claim about the file, filesystem contexts (path, filename, dates), download
   contexts' titles and filenames, the stored copy, cached page thumbnails, and the inference

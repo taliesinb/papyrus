@@ -350,3 +350,46 @@ FROM calls c JOIN models m ON m.id = c.model_id JOIN queries q ON q.id = c.query
 WHERE q.kind = 'extract' AND c.status = 'ok' AND c.model_loaded IS NOT 0
 GROUP BY m.id;
 ```
+
+## The web services store: `<PAPYRUS_ROOT>/services.sqlite`
+
+A third database, one per machine (`~/.papyrus/services.sqlite`, shared by
+every variant), with its own DDL,
+[`src/papyrus/services.sql`](../src/papyrus/services.sql), and its own
+`meta.schema_version`, now `0.1`. It records every HTTP exchange papyrus
+makes (matching APIs, `papyrus download`, Slack, tools), reuses answers, and
+holds each service's rate limit and pause for every process
+(`src/papyrus/services.py`, used by `http.HttpClient`). It is not reachable
+through MCP's `sql` tool: it holds Slack messages. `papyrus services
+stats | state | show | pause | resume | import`.
+
+| table | key | what |
+|---|---|---|
+| `services` | hash of `{name, base_url, api_version}` | who answers: `arxiv`, `openalex`, `crossref`, `s2`, `slack`, `arxiv-web` (PDFs), or `web:<host>` for any other host |
+| `credentials` | hash of `{service, kind, location, fingerprint}` | what it was asked with: `public`, a `key` (where it was sent, e.g. `header:x-api-key`, and the first 16 hex digits of the sha256 of `<location>:<secret>`: never the secret), or `unknown` (imported, redacted before we saw it) |
+| `policies` | hash of `{service, settings}` | how it was asked: `interval_s`, `timeout_s`, `max_retries`, `backoff_base`, `backoff_cap`, `pause_s`, `pause_statuses`, `reuse_s`, `scope` (`services.Policy`; defaults in `services.SERVICES`, overrides in config.toml's `[services.<name>]`) |
+| `requests` | hash of `{service, method, url, body_hash}` | what was asked: the URL with its query sorted, secrets and the service's `ignore_params` (`mailto`) dropped. The same request with another key is the same request |
+| `calls` | 16 random hex digits | one attempt (retries are calls of their own, `attempt` 0, 1, …) or a request not sent because its service was paused: `status` (`ok`, `http_error`, `no_answer`, `paused`, `interrupted`, `too_large`), `http_status`, `error` (the exception type only), `started_at`, `finished_at`, `duration_ms`, `url` (as sent, secrets redacted), `final_url`, `redirects`, `req_headers` / `resp_headers` (redacted), `resp_type`, `resp_hash` (the body, in `services/bodies/`), `resp_size`, `resp_sha256` (downloads: `files.sha256`), `retry_after_s`, `subject` (`work:<id>` for matching), `run_id` + `library` (the library's run), `pid`, `host`, `hits`/`last_hit_at` (times the answer was reused), `imported` (`api-log`, `http-cache`) |
+| `state` | `<service id>` or `<service id>/<credential id>` | one per rate-limit scope: `next_ok_at` (unix seconds: no request before), `paused_until`, `pause_reason` (`HTTP 429`, `no answer (ReadTimeout)`, `by hand`), `paused_by` (the call), `last_ok_at`, `last_failure_at`, `failures` (in a row) |
+
+Response bodies (and POST bodies) are not in the database: they are zstd
+files named by the hash of the redacted text,
+`~/.papyrus/services/bodies/<hash>.zst`. Downloaded PDFs are not kept here
+(they go to the library's store). Nothing is deleted: an answer older than
+the policy's `reuse_s` (30 days; never for Slack and PDFs) is just not
+reused. A request that fails for good with one of `pause_statuses` (429,
+503, no answer) pauses its scope for `pause_s` (arXiv 5 min, Semantic
+Scholar 2 min); matching counts a paused source as "not asked".
+
+```sql
+-- arXiv, hour by hour: answered, refused, unanswered, not sent
+SELECT substr(c.started_at, 1, 13) AS hour,
+       sum(c.status = 'ok') AS ok, sum(c.http_status = 429) AS refused,
+       sum(c.status = 'no_answer') AS no_answer, sum(c.status = 'paused') AS not_sent
+FROM calls c JOIN services s ON s.id = c.service_id
+WHERE s.name = 'arxiv' GROUP BY hour ORDER BY hour;
+
+-- works whose matching met trouble, to match again
+SELECT DISTINCT c.subject FROM calls c
+WHERE c.subject LIKE 'work:%' AND c.status IN ('no_answer', 'paused', 'http_error');
+```

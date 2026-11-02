@@ -58,7 +58,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import db, index, inference, purge, scan
+from .. import db, index, inference, purge, scan, services
 from ..llm.base import BackendUnavailable, ModelBusy
 from .debounce import Debouncer, is_candidate
 from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMORY_DELAY, MEMORY_DELAY_MAX, PAUSED,
@@ -493,9 +493,9 @@ class Watch:
 
     def _databases(self) -> dict[str, tuple[sqlite3.Connection, Path]]:
         main = Path(self.conn.execute("PRAGMA database_list").fetchone()[2])
-        store = inference.store()
+        store, svc = inference.store(), services.store()
         return {"papyrus.sqlite": (self.conn, main), "inference.sqlite": (store.conn, store.path),
-                "queue.sqlite": (self.queue.conn, self.queue.path)}
+                "queue.sqlite": (self.queue.conn, self.queue.path), "services.sqlite": (svc.conn, svc.path)}
 
     def _guard(self) -> None:
         """Stop if a database file (or its WAL) was replaced while we hold it open. A GUI editor

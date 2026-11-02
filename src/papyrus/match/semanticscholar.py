@@ -2,7 +2,9 @@
 
 * Optional key in env ``S2_API_KEY`` (sent as ``x-api-key``). With a key: 1 request/s
   on all endpoints. Without: requests share a global unauthenticated pool and 429s are
-  common — the HTTP client backs off and retries (several seconds per call is normal).
+  common — the HTTP client backs off and retries (several seconds per call is normal), then
+  pauses Semantic Scholar for 2 min (services.SERVICES; per key: the keyless pool and a key are
+  paused apart). match/candidates doesn't ask it at all without a key.
 * Paper ids: 'arXiv:2405.21060', 'DOI:10.1007/...', 'CorpusId:123', or the 40-hex paperId.
 * ``embedding.specter_v2`` (768 floats) is available on the paper and batch endpoints
   (verified 2026-10-26); it is kept in ``record.raw['embedding']``.
@@ -18,7 +20,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from papyrus import ids as _ids
-from papyrus.http import Cooling, HttpClient, HttpError, default_client
+from papyrus.http import Cooling, HttpClient, default_client
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://api.semanticscholar.org/graph/v1"
@@ -46,33 +48,17 @@ def _headers() -> dict[str, str]:
     return {"x-api-key": k} if k else {}
 
 
-# After retries are exhausted on 429 (or 503, or no answer) we stop calling S2 for a while instead
-# of making every subsequent lookup wait through its own backoff cycle.
-COOLDOWN_S = 120.0
-COOLDOWN_STATUSES = (0, 429, 503)
-_cooldown_until = 0.0
-
-
-class S2RateLimited(Cooling):
-    pass
+S2RateLimited = Cooling  # the old name of "not sent: Semantic Scholar is paused"
 
 
 def _call(method: str, url: str, *, http: HttpClient | None, **kw: Any) -> Any | None:
-    global _cooldown_until
-    if time.monotonic() < _cooldown_until:
-        raise S2RateLimited(429, url, "skipped: Semantic Scholar rate-limit cooldown")
     http = http or default_client()
     keyed = api_key() is not None
     kw.setdefault("max_retries", 6 if keyed else 4)
     kw.setdefault("backoff_cap", 30.0 if keyed else 20.0)
-    try:
-        if method == "POST":
-            return http.post_json(url, kw.pop("body"), headers=_headers(), **kw)
-        return http.get_json(url, headers=_headers(), **kw)
-    except HttpError as e:
-        if e.status in COOLDOWN_STATUSES:
-            _cooldown_until = time.monotonic() + COOLDOWN_S
-        raise
+    if method == "POST":
+        return http.post_json(url, kw.pop("body"), headers=_headers(), **kw)
+    return http.get_json(url, headers=_headers(), **kw)
 
 
 def _fields(embedding: bool) -> str:

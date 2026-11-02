@@ -933,6 +933,10 @@ from .contexts.slack_cli import slack_group  # noqa: E402  (kept out of this fil
 
 main.add_command(slack_group)
 
+from .services_cli import services_group  # noqa: E402  (services_cli.py)
+
+main.add_command(services_group)
+
 
 if __name__ == "__main__":
     main()

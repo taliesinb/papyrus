@@ -1,6 +1,6 @@
 """Live checks against the real APIs. Run with:  PAPYRUS_LIVE=1 uv run pytest tests/test_match_live.py
 
-Responses are cached under ~/.cache/papyrus/http (PAPYRUS_HTTP_CACHE=0 to disable).
+Answers are recorded and reused through the web services store (services.py; PAPYRUS_HTTP_CACHE=0: no reuse).
 Semantic Scholar without S2_API_KEY is frequently rate limited; such tests skip.
 """
 

@@ -15,7 +15,7 @@ not used: its inflections come from AGID, which carries notices of its own.
 
 The zip and the file inside it are checked against their sha256, so a changed upstream fails
 loudly instead of shipping a different list. The download goes through papyrus's HttpClient, so
-it is recorded in the library's api-log (AGENTS.md, invariant 9) like every other request.
+it is recorded in the web services store (AGENTS.md, invariant 9) like every other request.
 """
 
 from __future__ import annotations

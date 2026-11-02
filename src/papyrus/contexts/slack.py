@@ -5,9 +5,9 @@ How (measured in docs/slack.md): two `search.messages` queries with the user's t
 channel finds (928 of 929 web-link messages, 20 of 20 PDF uploads over 180 days) in ~16
 calls instead of ~1,000. Links are then classified locally (`contexts.links`).
 
-Every call goes through `http.HttpClient`, so raw responses land in the API log;
-nothing here is cached (`use_cache=False`), since the cache would keep messages for 30 days
-outside the library's home.
+Every call goes through `http.HttpClient`, so raw responses land in the web services store
+(services.py, token redacted); none is ever reused (`use_cache=False`, and Slack's policy has
+`reuse_s = 0`): a search must see new messages.
 
 Token: ``PAPYRUS_SLACK_TOKEN``, else the macOS Keychain, service ``papyrus.slack``,
 account ``<variant>/<workspace>``. Settings: ``[slack]`` in config.toml (see `settings`).

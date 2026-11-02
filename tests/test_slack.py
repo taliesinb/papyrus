@@ -7,10 +7,17 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from papyrus import apilog
+from papyrus import services
 from papyrus.contexts import links as L
 from papyrus.contexts import slack as S
 from papyrus import http as h
+
+
+def _recorded() -> list[dict]:
+    """Every call in the web services store, with its body."""
+    st = services.store()
+    return [{**dict(r), "body": (st.read_body(r["resp_hash"]) or b"").decode()}
+            for r in st.conn.execute("SELECT * FROM calls ORDER BY started_at")]
 
 
 @pytest.mark.parametrize("url,kind,id_", [
@@ -148,7 +155,6 @@ def _fake_slack(now):
 
 
 def test_find_filters_and_records(tmp_path, monkeypatch):
-    monkeypatch.setenv("PAPYRUS_API_LOG", str(tmp_path / "log"))
     now = time.time()
     client, calls = _fake_slack(now)
     slack = S.Slack("xoxp-test", client)
@@ -163,9 +169,10 @@ def test_find_filters_and_records(tmp_path, monkeypatch):
     assert r["occurred_at"].endswith("Z")
     assert stats["skipped_dm"] == 1 and stats["messages"] == 3
     assert calls.count("search.messages") == 2
-    # every call is in the API log, token redacted
-    evs = list(apilog.events())
+    # every call is in the services store, token redacted (headers and bodies)
+    evs = _recorded()
     assert len(evs) == len(calls) and "xoxp-test" not in json.dumps(evs)
+    assert {e["status"] for e in evs} == {"ok"} and json.loads(evs[0]["req_headers"])["authorization"] == "<redacted>"
 
     with_dms = S.find(S.Slack("xoxp-test", _fake_slack(now)[0]), S.Filters(since=now - 30 * 86400, dms=True),
                       workspace="ws")
@@ -182,7 +189,6 @@ def test_find_filters_and_records(tmp_path, monkeypatch):
 
 
 def test_cli_links_json(tmp_path, monkeypatch):
-    monkeypatch.setenv("PAPYRUS_API_LOG", str(tmp_path / "log"))
     monkeypatch.setenv("PAPYRUS_SLACK_TOKEN", "xoxp-test")
     monkeypatch.setenv("PAPYRUS_SLACK_WORKSPACE", "ws")
     client, _ = _fake_slack(time.time())
@@ -197,7 +203,7 @@ def test_cli_links_json(tmp_path, monkeypatch):
     lines = [json.loads(x) for x in res.stdout.splitlines() if x.startswith("{")]
     assert len(lines) == 3 and lines[0]["links"][0]["kind"] == "arxiv"
     assert "3 messages" in res.stderr
-    assert {e["run_id"] for e in apilog.events()} != {None}  # tagged with the slack-links run
+    assert {e["run_id"] for e in _recorded()} != {None}  # tagged with the slack-links run
 
 
 def test_manifest_scopes():

@@ -32,6 +32,10 @@ scratch library (`PAPYRUS_HOME=/tmp/x`) has its own. `PAPYRUS_CONFIG` points at 
     exclude_channels = []
     domains = []          # extra hosts counted as paper links
 
+    [services.arxiv]      # how a web service is asked (services.Policy; defaults in services.SERVICES)
+    pause_s = 300         # after a refusal or no answer, ask nothing for this long
+    interval_s = 3        # also timeout_s, max_retries, backoff_base, backoff_cap, reuse_s, pause_statuses, scope
+
 Precedence for each setting: command-line option > environment variable
 (`PAPYRUS_BACKEND`, `PAPYRUS_CLASSIFIER`, `PAPYRUS_LMSTUDIO_AUTOSTART`, `PAPYRUS_SCREEN`) > this file
 > default.
@@ -250,6 +254,49 @@ def watch() -> WatchSettings:
         raise ConfigError(f"{path()}: watch.background must be true or false, got {background!r}")
     plain, trees = split_watch_dirs(dirs)
     return WatchSettings(dirs=plain, trees=trees, background=background, **out)
+
+
+def services_overrides() -> dict[str, dict[str, Any]]:
+    """The [services.<name>] tables: per service (arxiv, openalex, crossref, s2, slack, arxiv-web),
+    policy settings that replace the defaults in services.SERVICES, e.g.
+
+        [services.arxiv]
+        pause_s = 600        # ask nothing for 10 min after a refusal or a timeout
+        interval_s = 3.5
+    """
+    from dataclasses import fields
+
+    from .services import Policy
+
+    section = load().get("services") or {}
+    if not isinstance(section, dict):
+        raise ConfigError(f"{path()}: [services] must be a table of [services.<name>] tables")
+    known = {f.name: f.type for f in fields(Policy)}
+    out: dict[str, dict[str, Any]] = {}
+    for name, table in section.items():
+        if not isinstance(table, dict):
+            raise ConfigError(f"{path()}: [services.{name}] must be a table")
+        o: dict[str, Any] = {}
+        for k, v in table.items():
+            if k not in known:
+                raise ConfigError(f"{path()}: services.{name}.{k} is not a policy setting ({', '.join(known)})")
+            if k == "scope":
+                if v not in ("service", "credential"):
+                    raise ConfigError(f"{path()}: services.{name}.scope must be \"service\" or \"credential\"")
+            elif k == "pause_statuses":
+                if not isinstance(v, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in v):
+                    raise ConfigError(f"{path()}: services.{name}.pause_statuses must be a list of HTTP statuses")
+                v = tuple(v)
+            elif k == "max_retries":
+                if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                    raise ConfigError(f"{path()}: services.{name}.max_retries must be a whole number >= 0")
+            elif isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                raise ConfigError(f"{path()}: services.{name}.{k} must be a number of seconds >= 0, got {v!r}")
+            else:
+                v = float(v)
+            o[k] = v
+        out[name] = o
+    return out
 
 
 def split_watch_dirs(entries: list[str] | tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:

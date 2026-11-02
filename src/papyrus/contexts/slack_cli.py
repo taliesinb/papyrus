@@ -160,7 +160,7 @@ def links_cmd(ctx: click.Context, workspace, days, since_date, dms, channels, ex
     """List messages with paper links: arXiv, DOI, PDF and allow-listed hosts, plus uploaded PDFs.
 
     Reads only (see `import` to store them). Two Slack searches cover the whole period
-    (docs/slack.md), and every API response is kept in the API log.
+    (docs/slack.md), and every API response is kept in the web services store (`papyrus services`).
     """
     records, stats = _search(ctx.obj["conn"], "slack-links", workspace, days, since_date, dms, channels,
                              exclude_channels, domains, all_links)

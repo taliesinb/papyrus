@@ -9,7 +9,7 @@ For each distinct identifier:
 3. a live work already has one of the record's other ids, or its title and year (the
    published DOI of an arXiv link, say) → link to that work;
 4. else create a ``candidate`` work holding the identifier and match it
-   (`match.pipeline.match_work`, which repeats the lookup from the HTTP cache), so its
+   (`match.pipeline.match_work`, which repeats the lookup from the web services store's answers), so its
    title, authors, abstract and topics come with API provenance.
 
 Refs become ``resolved`` with ``work_id``, ``confidence`` 1.0 (identifier match) and

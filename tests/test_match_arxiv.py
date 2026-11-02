@@ -86,8 +86,10 @@ def test_search_falls_back_to_title_only():
 def test_a_refusal_or_timeout_leaves_arxiv_alone_for_a_while(monkeypatch):
     import pytest
 
+    from papyrus import services
     from papyrus.http import Cooling, HttpError
 
+    retries = services.by_name("arxiv").policy.max_retries
     calls = []
 
     def refuse(req):
@@ -96,11 +98,11 @@ def test_a_refusal_or_timeout_leaves_arxiv_alone_for_a_while(monkeypatch):
 
     with pytest.raises(HttpError) as e:
         arxiv.get("2412.06464", http=client(refuse))
-    assert e.value.status == 429 and len(calls) == 1 + arxiv.MAX_RETRIES
-    with pytest.raises(Cooling):  # not sent
+    assert e.value.status == 429 and len(calls) == 1 + retries
+    with pytest.raises(Cooling) as c:  # not sent, by another client too: the pause is the machine's
         arxiv.search("Anything at all", http=client(refuse))
-    assert len(calls) == 1 + arxiv.MAX_RETRIES
-    monkeypatch.setattr(arxiv, "_cooldown_until", 0.0)  # the pause is over
+    assert len(calls) == 1 + retries and c.value.service == "arxiv" and c.value.reason == "HTTP 429"
+    assert services.store().resume("arxiv") == 1  # papyrus services resume arxiv
 
     def timeout(req):
         calls.append(1)
@@ -109,8 +111,12 @@ def test_a_refusal_or_timeout_leaves_arxiv_alone_for_a_while(monkeypatch):
     with pytest.raises(HttpError) as e:
         arxiv.get("2412.06464", http=client(timeout))
     assert e.value.status == 0
-    with pytest.raises(Cooling):
+    with pytest.raises(Cooling) as c:
         arxiv.get("2412.06464", http=client(timeout))
+    assert c.value.reason == "no answer (ReadTimeout)"
+    st = services.store()
+    counts = dict(st.conn.execute("SELECT status, count(*) FROM calls GROUP BY status").fetchall())
+    assert counts == {"http_error": 1 + retries, "no_answer": 1 + retries, "paused": 2}
 
 
 def test_patience_covers_timeouts_too():

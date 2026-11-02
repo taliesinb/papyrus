@@ -110,11 +110,12 @@ def test_cache_hits_and_excludes_secrets(tmp_path):
     b = c.get_json("https://api.example.org/w", params={"api_key": "OTHER", "q": "x"})
     assert a == b == {"n": 1}
     assert len(n) == 1
-    files = list((tmp_path / "cache").rglob("*.json"))
-    assert len(files) == 1
-    content = files[0].read_text()
-    assert "SECRET" not in content
-    assert json.loads(content)["status"] == 200
+    st = h.services.store()
+    (call,) = st.conn.execute("SELECT * FROM calls").fetchall()
+    assert call["http_status"] == 200 and call["hits"] == 1
+    everything = json.dumps([dict(r) for t in ("calls", "requests", "credentials") for r in st.conn.execute(f"SELECT * FROM {t}")])
+    assert "SECRET" not in everything and "OTHER" not in everything
+    assert st.conn.execute("SELECT count(*) FROM credentials WHERE kind='key'").fetchone()[0] == 2  # two keys, one request
     # bypass
     c.get_json("https://api.example.org/w", params={"q": "x"}, use_cache=False)
     assert len(n) == 2
@@ -144,9 +145,11 @@ def test_cache_ttl(tmp_path, monkeypatch):
     assert len(n) == 2
 
 
-def test_env_disables_cache(monkeypatch):
+def test_env_disables_reuse(monkeypatch):
     monkeypatch.setenv("PAPYRUS_HTTP_CACHE", "0")
-    assert h.HttpClient().cache_dir is None
+    assert h.HttpClient().reuse is False and h.HttpClient(cache_dir=True).reuse is True
+    monkeypatch.delenv("PAPYRUS_HTTP_CACHE")
+    assert h.HttpClient().reuse is True and h.HttpClient(cache_dir=False).reuse is False
 
 
 def test_redact_url():

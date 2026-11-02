@@ -1,25 +1,25 @@
 """arXiv export API client (Atom feed).
 
 API docs: https://info.arxiv.org/help/api/user-manual.html — at most 1 request every
-3 seconds (enforced by the shared HTTP client's per-host limiter), single connection.
+3 seconds, single connection, counted per machine.
 
 When arXiv struggles it refuses ("Rate exceeded", 429, sometimes after 20-30 s) or times out,
 whatever our rate: on 2026-11-02 for 80 minutes (03:13-04:33 UTC), which cost the watcher ~50 min
-of failed attempts. So a request gets TIMEOUT_S and MAX_RETRIES retries, and once one fails
-(429/503/no answer) arXiv is not asked for COOLDOWN_S: `Cooling` is raised instead, which matching
-treats as "not asked" (the work stays pending), while OpenAlex still finds arXiv ids.
+of failed attempts. Its policy (services.SERVICES: 3 s apart for every process on the machine, a
+15 s timeout, 2 retries, then 5 min alone) is applied by the HTTP client; while arXiv is paused a
+request raises `http.Cooling`, which matching treats as "not asked" (the work stays pending),
+while OpenAlex still finds arXiv ids.
 """
 
 from __future__ import annotations
 
 import re
-import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from papyrus import ids as _ids
-from papyrus.http import Cooling, HttpClient, HttpError, Response, default_client
+from papyrus.http import HttpClient, Response, default_client
 from papyrus.models import AuthorRecord, WorkRecord
 
 API = "https://export.arxiv.org/api/query"
@@ -29,23 +29,10 @@ NS = {
     "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
 }
 BATCH = 100
-TIMEOUT_S = 15.0  # 99% of answers take under 10 s (median 0.2 s)
-MAX_RETRIES = 2
-COOLDOWN_S = 300.0
-COOLDOWN_STATUSES = (0, 429, 503)
-_cooldown_until = 0.0
 
 
 def _get(http: HttpClient, params: Mapping[str, Any]) -> Response:
-    global _cooldown_until
-    if time.monotonic() < _cooldown_until:
-        raise Cooling(429, API, "skipped: arXiv refused or didn't answer recently")
-    try:
-        return http.get(API, params=params, ok_statuses=frozenset({200}), max_retries=MAX_RETRIES, timeout=TIMEOUT_S)
-    except HttpError as e:
-        if e.status in COOLDOWN_STATUSES:
-            _cooldown_until = time.monotonic() + COOLDOWN_S
-        raise
+    return http.get(API, params=params, ok_statuses=frozenset({200}))
 
 _STOP = set(
     "a an and are as at be by for from in into is it of on or the to with via towards toward "

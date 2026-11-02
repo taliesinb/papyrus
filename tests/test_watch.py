@@ -526,7 +526,8 @@ def test_a_database_replaced_under_the_watcher_is_rescued(tmp_path, monkeypatch)
         w.pump()
     assert exits == [daemon.EXIT_REPLACED]
     [rescued] = (tmp_path / "papyrus-home").glob("rescued-*")
-    assert {p.name for p in rescued.iterdir()} == {"papyrus.sqlite", "inference.sqlite", "queue.sqlite"}
+    assert {p.name for p in rescued.iterdir()} == {"papyrus.sqlite", "inference.sqlite", "queue.sqlite",
+                                                  "services.sqlite"}
     r = sqlite3.connect(rescued / "papyrus.sqlite")
     assert r.execute("SELECT value FROM meta WHERE key='written-after-the-swap'").fetchone() == ("1",)
     assert r.execute("SELECT count(*) FROM files").fetchone()[0] == 1
