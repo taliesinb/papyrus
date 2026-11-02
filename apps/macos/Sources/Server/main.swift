@@ -400,18 +400,19 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return URL(fileURLWithPath: root).appendingPathComponent(config.variant)
     }
 
-    /// `<home>/watch.pause`: while it exists, the watcher (ours or one in a terminal) adds files but
-    /// asks no model (`papyrus watch --pause` / `--resume`). For LM Studio experiments.
+    /// `<home>/watch.pause`: while it exists, the watcher (ours or one in a terminal) halts its loop:
+    /// it adds and ingests nothing, and takes the files that arrived meanwhile on resume
+    /// (`papyrus pause` / `papyrus resume`).
     var pauseFile: URL { libraryHome.appendingPathComponent("watch.pause") }
-    var modelWorkPaused: Bool { FileManager.default.fileExists(atPath: pauseFile.path) }
+    var ingestionPaused: Bool { FileManager.default.fileExists(atPath: pauseFile.path) }
 
     @objc func togglePause() {
-        if modelWorkPaused {
+        if ingestionPaused {
             try? FileManager.default.removeItem(at: pauseFile)
-            watchLog.line("model work resumed from the menu")
+            watchLog.line("ingestion resumed from the menu")
         } else {
             FileManager.default.createFile(atPath: pauseFile.path, contents: nil)
-            watchLog.line("model work paused from the menu")
+            watchLog.line("ingestion paused from the menu")
         }
         poll()
     }
@@ -635,7 +636,7 @@ final class ServerDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Publish on Tailnet", #selector(togglePublish), "").state = publishEnabled ? .on : .off
         if config.watch != nil {
             add(menu, "Watch for New PDFs", #selector(toggleWatch), "").state = watchEnabled ? .on : .off
-            add(menu, "Pause Model Work", #selector(togglePause), "").state = modelWorkPaused ? .on : .off
+            add(menu, "Pause Ingestion", #selector(togglePause), "").state = ingestionPaused ? .on : .off
         }
         add(menu, "Restart Server", #selector(restartServer), "r")
         add(menu, "Show Server Log", #selector(showLog), "l")

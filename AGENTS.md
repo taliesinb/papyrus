@@ -17,7 +17,7 @@ Read these first:
 ```sh
 uv run pytest -q                       # ~10 s; live LM Studio / Apple FM / network tests skip themselves
 PAPYRUS_LIVE=1 uv run pytest -q tests/test_match_live.py   # hits arXiv/OpenAlex/S2/Crossref
-uv run papyrus --help                  # scan | download | store | classify | extract | promote | index | match | ingest | purge | keep | watch | inference | services | works | work | files | show | search | stats | config | mcp | slack | resolve
+uv run papyrus --help                  # scan | download | store | classify | extract | promote | index | match | ingest | purge | keep | watch | start | stop | open | status | pause | resume | inference | services | works | work | files | show | search | stats | config | mcp | slack | resolve
 uv run papyrus config                  # config file path and the backend/classifier in effect
 uv run papyrus inference stats         # every model call so far: hits, failures, timings (also: show CALL_ID, prune)
 uv run papyrus services stats          # every web API call: failures, pauses, reuse, timings (also: state, show, pause, resume, import)
@@ -495,11 +495,15 @@ The seed is part of the inference cache's key either way.
   * A process without the guard can still be rescued: `lldb -p PID` and
     `expr (int)fcopyfile(FD, open("/tmp/x", 0x601, 420), 0, 8)` for each
     database fd that `lsof -p PID` lists, then `kill -9` it (not SIGTERM).
-* **Pause it for LM Studio experiments:** `papyrus watch --pause` (or the
-  menu bar's Pause Model Work) creates `<home>/watch.pause`. While it exists,
-  the watcher, whoever runs it, asks no model (read, classify and extract
-  wait; state `paused`) but still scans, indexes and matches files. The file
-  in progress finishes first (up to ~20 s). It lasts across restarts until `--resume`.
+* **Pause it (for LM Studio experiments, say):** `papyrus pause` (also
+  `papyrus watch --pause`, the menu bar's Pause Ingestion) creates
+  `<home>/watch.pause`. While it exists, the watcher, whoever runs it, halts
+  its loop (state `paused`): it adds, reads, classifies, extracts, indexes
+  and matches nothing. File events wait in the debouncer; a catch-up scan
+  skipped or cut short by the pause (before `mark_missing`) is done on resume.
+  The step in progress finishes first (up to ~20 s). It lasts across restarts
+  until `papyrus resume`. `papyrus start | stop | open | status` drive the
+  apps and units (`control.py`).
 * **Its performance log is `<home>/watch-events.jsonl`** (`watch/events.py`):
   one JSON line per file scanned (`scan`), step (stage, id, ms, outcome), model load or
   swap, back-off, and a `drained` line with the busy time when the queue

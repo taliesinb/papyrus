@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS items_done ON items(stage, done_at) WHERE duration_ms
 """
 
 STAGES = ("index", "read", "match", "classify", "extract")  # the order work is taken in: finish files first
-MODEL_STAGES = ("read", "classify", "extract")  # ask a model (paused by watch.pause, gated by memory)
+MODEL_STAGES = ("read", "classify", "extract")  # ask a model (gated by memory pressure and LM Studio)
 RETRY_S = (3600, 4 * 3600, 16 * 3600)  # after the 1st, 2nd, 3rd failure; the 4th gives up
 MAX_ATTEMPTS = len(RETRY_S) + 1
 

@@ -66,7 +66,7 @@ from .errors import (IDLE, INGESTING, LMSTUDIO_DELAY, LMSTUDIO_UNAVAILABLE, MEMO
                      STOPPED, WAITING_MEMORY, Backoff, MATCH_PATIENCE_S, RATE_LIMIT_DELAY, RATE_LIMITED)
 from .models import ModelLedger
 from .events import NAME as EVENTS_NAME, EventLog
-from .queue import MODEL_STAGES, STAGES, Queue
+from .queue import STAGES, Queue
 from .sources import PollingWatcher, Watcher, make_watcher
 from . import system
 from .system import CRITICAL, NORMAL, memory_pressure
@@ -208,6 +208,7 @@ class Watch:
         self.inodes: dict[Path, int] = {}  # the database files as first seen (see _guard)
         self.pause_path = self.status_path.with_name("watch.pause")
         self.was_paused = self.pause_path.exists()  # pump() acts when this changes
+        self.need_catch_up = False  # the catch-up scan was skipped (or cut short) by a pause: do it on resume
         self.unreadable: list[Path] = []  # watched directories macOS won't let us read
         self.last_access_check = clock()
         self.totals: Counter = Counter()
@@ -237,9 +238,11 @@ class Watch:
         try:
             if not once:
                 self._start_watcher()
+            if self.paused:
+                self.log("ingestion paused (papyrus resume): nothing is added or ingested until then")
             self.catch_up(once=once)
             if once:
-                while self.dirty and self._next_task() is not None:
+                while self.dirty and not self.paused and self._next_task() is not None:
                     self.batch("once", limit=None)
                 return
             while True:
@@ -277,23 +280,37 @@ class Watch:
             self._status(STOPPED)
             self.events.emit("stop", totals={k: v for k, v in self.totals.items() if v and k not in ("seen", "unchanged")})
 
-    def catch_up(self, once: bool = False) -> None:
-        self.batch("startup", catch_up=True, limit=None if once else self.batch_steps)
+    def catch_up(self, once: bool = False, trigger: str = "startup") -> None:
+        if self.paused:  # done on resume
+            self.need_catch_up = True
+            self._settle()
+            return
+        self.need_catch_up = False
+        self.batch(trigger, catch_up=True, limit=None if once else self.batch_steps)
 
     def pump(self, timeout: float = 0.0) -> None:
         """One turn of the loop: take events (waiting up to `timeout`), run a batch if there is
-        anything to do, unload idle models."""
+        anything to do, unload idle models. While ingestion is paused, events are only collected
+        (they wait in the debouncer) and idle models unloaded."""
         self._guard()
         if self.watcher is not None:
             for p in self.watcher.get(timeout):
                 self.debouncer.touch(p)
-        ready, gone = self._due()
         now = self.clock()
-        if self.paused != self.was_paused:
-            self.was_paused = not self.was_paused
-            self.log("model work paused" if self.was_paused else "model work resumed")
+        paused = self.paused
+        if paused != self.was_paused:
+            self.was_paused = paused
+            self.log("ingestion paused" if paused else "ingestion resumed")
             self.dirty = True
             self._settle()
+        if paused:
+            if self.ledger.release_idle():
+                self._status(self.state, self.detail)
+            return
+        if self.need_catch_up:  # paused at startup, or during the catch-up scan
+            self.catch_up(trigger="resume")
+            return
+        ready, gone = self._due()
         for stage in [s for s, (until, _, _) in self.backoffs.items() if now >= until]:
             del self.backoffs[stage]
             self.dirty = True
@@ -329,6 +346,8 @@ class Watch:
             return False
 
     def _timeout(self) -> float:
+        if self.paused:
+            return 5.0  # nothing to do but notice a resume (file events are collected meanwhile)
         if self.dirty:
             return 0.0
         now = self.clock()
@@ -338,8 +357,6 @@ class Watch:
         waits += [until - now for until, _, _ in self.backoffs.values()]
         if (d := self.ledger.idle_due()) is not None:
             waits.append(d + 1)
-        if self.paused:
-            waits.append(5.0)  # notice a resume soon
         return max(0.2, min(waits))
 
     # --- a batch ------------------------------------------------------------------------------
@@ -363,6 +380,8 @@ class Watch:
                     self._promote_backlog(run_id, c)
                 steps, more = 0, False
                 while True:
+                    if self.paused:  # paused mid-batch: the step in progress is done; stop here
+                        break
                     if self.watcher is not None:  # new files go first
                         for p in self.watcher.get(0):
                             self.debouncer.touch(p)
@@ -434,6 +453,9 @@ class Watch:
         self.scanning["total"] = sum(len(ps) for _, ps in listed)
         for root, paths in listed:
             for path in paths:
+                if self.paused:  # stop here, before mark_missing (the rest of the root wasn't looked at)
+                    self.need_catch_up = True
+                    return
                 self.scanning["done"] += 1
                 if time.monotonic() - self.scanning["shown"] >= 2:
                     self.scanning["shown"] = time.monotonic()
@@ -634,20 +656,21 @@ class Watch:
 
     @property
     def paused(self) -> bool:
-        """Model work (read, classify, extract) is paused: `<home>/watch.pause` exists (the menu bar's Pause
-        Model Work, `papyrus watch --pause`). Files are still scanned, indexed and matched."""
+        """Ingestion is paused: `<home>/watch.pause` exists (`papyrus pause`, the menu bar's Pause
+        Ingestion). The loop stops: nothing is added (scanned), read, classified, extracted,
+        indexed or matched; file events wait in the debouncer, and a skipped catch-up scan is done
+        on resume. The step in progress finishes first."""
         return self.pause_path.exists()
 
     def _next_task(self) -> tuple[str, int] | None:
         self.queue.sync(self._library_pending())
-        paused = self.paused
-        if paused and not self.was_paused:  # noticed mid-batch: pump() then sees the resume
-            self.was_paused = True
-            self.log("model work paused")
+        if self.paused:
+            if not self.was_paused:  # noticed mid-batch: pump() then sees the resume
+                self.was_paused = True
+                self.log("ingestion paused")
+            return None
         now = self.clock()
         waiting = {s for s, (until, _, _) in self.backoffs.items() if now < until}
-        if paused:
-            waiting |= set(MODEL_STAGES)
         free = [s for s in STAGES if s not in waiting]
         # In phases: classify everything pending, then extract metadata for everything
         # classified, then classify what arrived meanwhile, and so on. The two may be different
@@ -1009,8 +1032,8 @@ class Watch:
                 continue
             per = self.per_item_s(stage)
             b = self.backoffs.get(stage)
-            if self.paused and stage in MODEL_STAGES:
-                state, reason = "paused", "model work paused"
+            if self.paused:
+                state, reason = "paused", "ingestion paused"
             elif b and now < b[0]:
                 state, reason = "waiting", b[2]
             else:
@@ -1063,10 +1086,9 @@ class Watch:
         return self.queue.eta_s(per)
 
     def _settle(self) -> None:
-        """The state between batches: paused or waiting (if model work is pending), or idle."""
-        counts = self.pending()
-        if self.paused and any(counts.get(s) for s in MODEL_STAGES):
-            self._status(PAUSED, "model work paused (papyrus watch --resume)")
+        """The state between batches: paused, waiting (if model work is pending), or idle."""
+        if self.paused:
+            self._status(PAUSED, "ingestion paused (papyrus resume)")
         elif waiting := self._waiting():
             self._status(waiting[1], waiting[2])
         elif self.unreadable:

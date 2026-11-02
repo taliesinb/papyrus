@@ -564,22 +564,46 @@ def test_memory_pressure_skips_model_calls_and_backs_off(tmp_path):
     assert json.loads(w.status_path.read_text())["state"] == IDLE
 
 
-def test_pausing_model_work_keeps_adding_files(tmp_path):
+def test_pausing_halts_the_whole_loop_and_resuming_catches_up(tmp_path):
     be = FakeBackend(PAPER)
     w, conn, dl, clock, logs = _watch(tmp_path, backend=be)
-    r = CliRunner().invoke(main, ["watch", "--pause"])
+    r = CliRunner().invoke(main, ["pause"])
     assert r.exit_code == 0 and w.paused
     _pdf(dl / "a.pdf", "Lecture notes on things")
-    w.catch_up()
-    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1  # added
-    assert be.prompts == [] and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "pending"
+    w.catch_up()  # paused at startup: no scan
+    late = _pdf(dl / "b.pdf", "Slides about other things")
+    w.watcher.inject(late)  # an event while paused: kept for later
+    w.pump()
+    clock.advance(10)
+    w.pump()
+    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 0 and be.prompts == []
+    assert _runs(conn) == []  # no batch at all
     status = json.loads(w.status_path.read_text())
-    assert status["state"] == "paused" and status["paused"] is True and status["pending"]["classify"] == 1
-    CliRunner().invoke(main, ["watch", "--resume"])
-    w.pump()  # notices the resume, classifies
-    assert len(be.prompts) == 1 and conn.execute("SELECT classify_status FROM files").fetchone()[0] == "done"
-    assert json.loads(w.status_path.read_text())["state"] == IDLE
-    assert any(m == "model work resumed" for m in logs)
+    assert status["state"] == "paused" and status["paused"] is True and "papyrus resume" in status["detail"]
+    assert w._timeout() == 5.0  # no busy loop while paused
+    CliRunner().invoke(main, ["resume"])
+    w.pump()  # notices the resume: the skipped catch-up scan
+    w.pump()
+    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 2
+    assert len(be.prompts) == 2 and json.loads(w.status_path.read_text())["state"] == IDLE
+    assert "ingestion paused" in logs and "ingestion resumed" in logs
+
+
+def test_a_pause_mid_batch_stops_after_the_step_in_progress(tmp_path):
+    be = FakeBackend(PAPER)
+    w, conn, dl, clock, logs = _watch(tmp_path, backend=be)
+    for i in range(3):
+        _pdf(dl / f"p{i}.pdf", f"Paper number {i} about things")
+    real = w._step
+
+    def step(task, run_id, c):
+        real(task, run_id, c)
+        w.pause_path.touch()  # paused during the first step
+
+    w._step = step
+    w.catch_up()
+    assert conn.execute("SELECT count(*) FROM files").fetchone()[0] == 3  # the scan came first
+    assert conn.execute("SELECT count(*) FROM files WHERE classify_status='done'").fetchone()[0] == 1
 
 
 def test_an_ocr_back_off_does_not_hold_triage(tmp_path):

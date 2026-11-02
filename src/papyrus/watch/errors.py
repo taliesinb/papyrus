@@ -7,7 +7,7 @@ IDLE = "idle"
 INGESTING = "ingesting"  # scanning new files, or reading / classifying / extracting / indexing / matching
 WAITING_MEMORY = "waiting-memory"
 LMSTUDIO_UNAVAILABLE = "lmstudio-unavailable"  # off, not serving the model, or busy with another
-PAUSED = "paused"  # model work paused by the user (<home>/watch.pause); files are still added
+PAUSED = "paused"  # ingestion paused by the user (<home>/watch.pause, papyrus pause): the loop is halted
 RATE_LIMITED = "rate-limited"  # a matching API refused (429/503): matching waits, the rest goes on
 STOPPED = "stopped"
 

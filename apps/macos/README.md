@@ -174,7 +174,7 @@ services import`.
   * the tailnet address.
 
   Its items are Open Papyrus (⌘O), Open in Browser, Open / Copy Tailnet
-  Address, Publish on Tailnet, Watch for New PDFs, Pause Model Work, Restart Server (⌘R), Show
+  Address, Publish on Tailnet, Watch for New PDFs, Pause Ingestion, Restart Server (⌘R), Show
   Server Log (⌘L), Show Watcher Log, Open at Login (`SMAppService`) and Quit
   (⌘Q).
 * **Runs the watcher** (`papyrus watch`, the `watch` command in
@@ -189,10 +189,13 @@ services import`.
   * Quit sends it SIGTERM first (its run closes as `interrupted`, and it
     unloads any model it loaded), waiting up to 10 s.
   * Watch for New PDFs (on by default) stops and starts it.
-  * Pause Model Work creates `<home>/watch.pause` (`papyrus watch --pause`):
-    the watcher, whoever runs it, then asks no model but keeps adding files,
-    until the item is unticked (`--resume`). For LM Studio experiments
-    without stopping the run.
+  * Pause Ingestion creates `<home>/watch.pause` (`papyrus pause`): the
+    watcher, whoever runs it, halts its loop (it adds and ingests nothing) until
+    the item is unticked (`papyrus resume`), then takes the files that arrived
+    meanwhile. For LM Studio experiments without stopping the watcher.
+* **From the command line:** `papyrus start` launches this app in the
+  background (`open -g -b <server id>`), `papyrus stop` quits it as Quit does
+  (SIGTERM), `papyrus open` opens Papyrus.app, `papyrus status` says what runs.
 * **The menu's watcher lines**, in a section of their own, come from
   `/api/version`'s `watch` (the library's `watch.json`): "Watching for new
   files" when there is nothing to do; otherwise "Ingested N/M files" (files

@@ -575,9 +575,9 @@ def ingest(ctx: click.Context, file_ids: tuple[int, ...], backend: str | None, c
 @click.option("--perf-all", "perf", flag_value="all", help="The same, over every session.")
 @click.option("--retry-failed", is_flag=True, help="Give the queue's failed items another round of attempts, and exit.")
 @click.option("--pause", "pause", flag_value=True, default=None,
-              help="Pause model work (read, classify, extract) of this library's watcher, running or not, and exit. New "
+              help="Pause ingestion by this library's watcher, running or not (as `papyrus pause`), and exit. New "
                    "files are still added. Lasts until --resume.")
-@click.option("--resume", "pause", flag_value=False, help="Resume model work, and exit.")
+@click.option("--resume", "pause", flag_value=False, help="Resume ingestion (as `papyrus resume`), and exit.")
 @click.pass_context
 def watch(ctx: click.Context, once: bool, dirs: tuple[str, ...], poll: bool, show_status: bool, perf: str | None,
           retry_failed: bool, pause: bool | None) -> None:
@@ -605,13 +605,10 @@ def watch(ctx: click.Context, once: bool, dirs: tuple[str, ...], poll: bool, sho
     if show_status:
         click.echo(json.dumps(read_status(home), indent=2))
         return
-    if pause is not None:
-        flag = home / "watch.pause"
-        if pause:
-            flag.touch()
-        else:
-            flag.unlink(missing_ok=True)
-        click.echo("model work paused (papyrus watch --resume)" if pause else "model work resumed")
+    if pause is not None:  # (the same as `papyrus pause` / `papyrus resume`)
+        from . import control
+
+        click.echo(control.pause() if pause else control.resume())
         return
     if retry_failed:
         from .watch.queue import Queue
@@ -952,6 +949,11 @@ main.add_command(slack_group)
 from .services_cli import services_group  # noqa: E402  (services_cli.py)
 
 main.add_command(services_group)
+
+from .control_cli import COMMANDS as CONTROL_COMMANDS  # noqa: E402  (control_cli.py: start, stop, open, status, pause, resume)
+
+for _cmd in CONTROL_COMMANDS:
+    main.add_command(_cmd)
 
 
 if __name__ == "__main__":
