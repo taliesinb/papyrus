@@ -92,8 +92,9 @@ interval_s = 0.11
 [services.crossref]
 interval_s = 0.35
 
-# 1 request/s with S2_API_KEY; the keyless pool refuses nearly always (matching doesn't ask it
-# without a key). Paused per key: the keyless pool and a key apart.
+# 1 request/s with S2_API_KEY, across all endpoints (what Semantic Scholar granted our key,
+# 2026-11-02); 1.05 s leaves a margin. The keyless pool refuses nearly always (matching doesn't
+# ask it without a key). Counted and paused per key: the keyless pool and a key apart.
 [services.s2]
 interval_s = 1.05
 pause_s = 120
